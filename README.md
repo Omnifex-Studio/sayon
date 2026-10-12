@@ -63,4 +63,5 @@ Native builds need [LLVM](https://releases.llvm.org)'s clang at build time (foun
 | `crates/runtime` | Runtime library linked into compiled programs |
 | `crates/cli` | The `sayon` command |
 | `tests` | Example programs and diagnostic snapshots |
+| `editors/vscode` | VS Code extension: highlighting and the `.sayon` file icon |
 | `assets` | Logo and icons |

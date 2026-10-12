@@ -1,0 +1,52 @@
+{
+  "name": "sayon",
+  "displayName": "Sayon",
+  "description": "Syntax highlighting and editing support for the Sayon programming language",
+  "version": "0.0.1",
+  "publisher": "omnifex-studio",
+  "icon": "images/icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Omnifex-Studio/sayon"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "sayon",
+        "aliases": [
+          "Sayon",
+          "sayon"
+        ],
+        "extensions": [
+          ".sayon"
+        ],
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./images/file-icon.png",
+          "dark": "./images/file-icon.png"
+        }
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sayon",
+        "scopeName": "source.sayon",
+        "path": "./syntaxes/sayon.tmLanguage.json"
+      }
+    ],
+    "configurationDefaults": {
+      "[sayon]": {
+        "editor.insertSpaces": true,
+        "editor.tabSize": 4,
+        "editor.detectIndentation": false,
+        "files.eol": "\n"
+      }
+    }
+  }
+}
