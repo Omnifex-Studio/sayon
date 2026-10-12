@@ -14,6 +14,7 @@ sayon-syntax = { path = "crates/syntax" }
 sayon-check = { path = "crates/check" }
 sayon-ir = { path = "crates/ir" }
 sayon-interp = { path = "crates/interp" }
+sayon-runtime = { path = "crates/runtime" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

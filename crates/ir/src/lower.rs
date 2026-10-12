@@ -892,7 +892,7 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 let base = self.hir_place(target);
                 match target_ty {
                     Type::Dict(..) => {
-                        let key = self.operand(index, Want::Owned);
+                        let key = self.operand(index, Want::Read);
                         let value_ty = self.ty(&value.ty);
                         let temp = self.temp(value_ty.clone());
                         self.expr_into(value, Place::slot(temp));

@@ -99,49 +99,7 @@ pub struct ErrorValue {
 
 // ----- display ---------------------------------------------------------------
 
-pub fn format_f64(value: f64) -> String {
-    if value.is_nan() {
-        return "nan".to_string();
-    }
-    if value.is_infinite() {
-        return if value > 0.0 {
-            "inf".to_string()
-        } else {
-            "-inf".to_string()
-        };
-    }
-    let magnitude = value.abs();
-    if magnitude != 0.0 && !(1e-5..1e16).contains(&magnitude) {
-        return format!("{value:e}");
-    }
-    if value.fract() == 0.0 {
-        format!("{value:.1}")
-    } else {
-        format!("{value}")
-    }
-}
-
-pub fn format_f32(value: f32) -> String {
-    if value.is_nan() {
-        return "nan".to_string();
-    }
-    if value.is_infinite() {
-        return if value > 0.0 {
-            "inf".to_string()
-        } else {
-            "-inf".to_string()
-        };
-    }
-    let magnitude = value.abs();
-    if magnitude != 0.0 && !(1e-5..1e16).contains(&magnitude) {
-        return format!("{value:e}");
-    }
-    if value.fract() == 0.0 {
-        format!("{value:.1}")
-    } else {
-        format!("{value}")
-    }
-}
+pub use sayon_runtime::text::{format_f32, format_f64};
 
 /// The text `tostring` and `print` produce. Strings nested inside collections
 /// are quoted so that `["a", "b"]` displays like the literal that made it.
@@ -203,26 +161,7 @@ pub fn display(value: &Value, out: &mut String, nested: bool) {
     }
 }
 
-fn quote(text: &str, out: &mut String) {
-    out.push('"');
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\0' => out.push_str("\\0"),
-            '{' => out.push_str("{{"),
-            '}' => out.push_str("}}"),
-            c if c.is_control() => {
-                let _ = write!(out, "\\u{{{:X}}}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-}
+use sayon_runtime::text::quote;
 
 pub fn to_display_string(value: &Value) -> String {
     let mut out = String::new();
@@ -285,17 +224,6 @@ pub fn compare_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn floats_display_like_literals() {
-        assert_eq!(format_f64(3.0), "3.0");
-        assert_eq!(format_f64(2.75), "2.75");
-        assert_eq!(format_f64(0.1 + 0.2), "0.30000000000000004");
-        assert_eq!(format_f64(1e20), "1e20");
-        assert_eq!(format_f64(-0.5), "-0.5");
-        assert_eq!(format_f64(f64::NAN), "nan");
-        assert_eq!(format_f32(0.1), "0.1");
-    }
 
     #[test]
     fn collections_quote_nested_strings() {

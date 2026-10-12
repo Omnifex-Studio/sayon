@@ -7,6 +7,7 @@
 use crate::value::*;
 use sayon_check::types::{FloatType, IntType, Type};
 use sayon_ir::*;
+use sayon_runtime::text::{Number, parse_number, range_length};
 use sayon_syntax::{SourceMap, Span};
 use std::io::Write;
 use std::rc::Rc;
@@ -611,7 +612,7 @@ impl<'m> Machine<'m> {
             Rvalue::RangeLength(range) => {
                 let source = self.source(range);
                 let (start, end, step) = self.with_source(&source, range_parts);
-                Value::Int(range_length(start, end, step))
+                Value::Int(range_length(start, end, step) as i128)
             }
             Rvalue::RangeAt { range, index } => {
                 let index = self.int(index);
@@ -796,10 +797,13 @@ impl<'m> Machine<'m> {
             } => {
                 let text = self.string(text);
                 match parse_number(&text) {
-                    Ok(Value::Int(value)) => {
-                        Ok(Value::Union(*integer_tag, Box::new(Value::Int(value))))
+                    Ok(Number::Integer(value)) => Ok(Value::Union(
+                        *integer_tag,
+                        Box::new(Value::Int(value as i128)),
+                    )),
+                    Ok(Number::Float(value)) => {
+                        Ok(Value::Union(*float_tag, Box::new(Value::F64(value))))
                     }
-                    Ok(value) => Ok(Value::Union(*float_tag, Box::new(value))),
                     Err((code, message)) => Err(self.error(code, message, span)),
                 }
             }
@@ -914,87 +918,10 @@ fn range_parts(value: &Value) -> (i64, i64, i64) {
     }
 }
 
-/// Number of values `range(start, end, step)` yields, computed without overflow.
-pub fn range_length(start: i64, end: i64, step: i64) -> i128 {
-    let (start, end, step) = (start as i128, end as i128, step as i128);
-    if step > 0 {
-        if end <= start {
-            0
-        } else {
-            (end - start + step - 1) / step
-        }
-    } else if end >= start {
-        0
-    } else {
-        (start - end + (-step) - 1) / (-step)
-    }
-}
-
 fn io_message(error: &std::io::Error) -> String {
     match error.kind() {
         std::io::ErrorKind::NotFound => "the file does not exist".to_string(),
         std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
         _ => error.to_string(),
-    }
-}
-
-/// Parses `tonumber` input: the whole text must be a decimal integer or float.
-pub fn parse_number(text: &str) -> Result<Value, (&'static str, String)> {
-    let digits = text.strip_prefix(['-', '+']).unwrap_or(text);
-    if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
-        return match text.parse::<i64>() {
-            Ok(value) => Ok(Value::Int(value as i128)),
-            Err(_) => Err((
-                "ConversionError",
-                format!("\"{text}\" is outside the integer range"),
-            )),
-        };
-    }
-    let valid_float = !digits.is_empty()
-        && digits
-            .bytes()
-            .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-'))
-        && digits
-            .bytes()
-            .next()
-            .is_some_and(|b| b.is_ascii_digit() || b == b'.');
-    match text.parse::<f64>() {
-        Ok(value) if valid_float && value.is_finite() => Ok(Value::F64(value)),
-        Ok(_) if valid_float => Err((
-            "ConversionError",
-            format!("\"{text}\" is outside the float range"),
-        )),
-        _ => Err(("ParseError", format!("\"{text}\" is not a number"))),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn range_lengths() {
-        assert_eq!(range_length(0, 10, 1), 10);
-        assert_eq!(range_length(0, 10, 3), 4);
-        assert_eq!(range_length(10, 0, -3), 4);
-        assert_eq!(range_length(5, 5, 1), 0);
-        assert_eq!(range_length(5, 0, 1), 0);
-        assert_eq!(range_length(i64::MIN, i64::MAX, i64::MAX), 3);
-    }
-
-    #[test]
-    fn number_parsing() {
-        assert!(matches!(parse_number("42"), Ok(Value::Int(42))));
-        assert!(matches!(parse_number("-7"), Ok(Value::Int(-7))));
-        assert!(matches!(parse_number("2.5"), Ok(Value::F64(_))));
-        assert!(matches!(parse_number("1e3"), Ok(Value::F64(_))));
-        assert!(parse_number(" 42").is_err());
-        assert!(parse_number("12abc").is_err());
-        assert!(parse_number("").is_err());
-        assert!(parse_number("inf").is_err());
-        assert!(matches!(
-            parse_number("99999999999999999999"),
-            Err(("ConversionError", _))
-        ));
     }
 }

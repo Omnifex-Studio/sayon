@@ -25,6 +25,7 @@ version = "0.0.1"
 dependencies = [
  "sayon-check",
  "sayon-ir",
+ "sayon-runtime",
  "sayon-syntax",
 ]
 
@@ -35,6 +36,10 @@ dependencies = [
  "sayon-check",
  "sayon-syntax",
 ]
+
+[[package]]
+name = "sayon-runtime"
+version = "0.0.1"
 
 [[package]]
 name = "sayon-syntax"

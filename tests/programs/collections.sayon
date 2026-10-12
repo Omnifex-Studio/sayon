@@ -38,3 +38,11 @@ push(copy, [9])
 print(grid, copy)
 print([1, 2] == [1, 2], [1, 2] == [2, 1])
 print(["a" = 1, "b" = 2] == ["b" = 2, "a" = 1])
+
+counts: Dict<string, integer> = []
+for word in ["a", "b", "a"]
+    if haskey(counts, word)
+        counts[word] += 1
+    else
+        counts[word] = 1
+print(counts)
