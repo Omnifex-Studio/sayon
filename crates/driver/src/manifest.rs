@@ -153,17 +153,17 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
             }
             "description" => description = expect_string(&mut errors),
             "language" => {
-                if let Some(text) = expect_string(&mut errors) {
-                    if text != "1" {
-                        errors.push(
-                            Diagnostic::error(
-                                "E_MANIFEST",
-                                format!("language edition \"{text}\" is not supported"),
-                            )
-                            .primary(item.value_span, "")
-                            .help("this release supports edition \"1\""),
-                        );
-                    }
+                if let Some(text) = expect_string(&mut errors)
+                    && text != "1"
+                {
+                    errors.push(
+                        Diagnostic::error(
+                            "E_MANIFEST",
+                            format!("language edition \"{text}\" is not supported"),
+                        )
+                        .primary(item.value_span, "")
+                        .help("this release supports edition \"1\""),
+                    );
                 }
             }
             "authors" => match &item.value {

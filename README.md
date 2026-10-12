@@ -37,7 +37,7 @@ Sayon is in early development and not ready for real programs. What works today:
 - `test` blocks and the `sayon test` runner, and the `sayon fmt` formatter
 - Projects with a `sayon.toml` manifest, and the `run`, `build`, `check`, `test`, `fmt`, `init`, `clean`, and `doctor` commands
 
-Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Structures and enums, closures, and project manifests come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
+Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Structures and enums, closures, and dependencies come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
 
 ## Documentation
 
@@ -55,6 +55,8 @@ cargo run -p sayon-cli -- run tests/programs/functions.sayon
 cargo run -p sayon-cli -- build tests/programs/functions.sayon -o functions.exe
 cargo test
 ```
+
+`scripts/package.ps1` builds a release and assembles `dist/sayon-<version>-x86_64-windows.zip`, which holds `bin/sayon.exe`, the runtime library, the standard library, the docs, and the editor extension. Unzip it anywhere and add its `bin` folder to `PATH`; `sayon doctor` checks the installation.
 
 With `sayon` on your `PATH`, a project looks like this:
 
@@ -86,5 +88,6 @@ Native builds need [LLVM](https://releases.llvm.org)'s clang at build time (foun
 | `examples` | Small programs written in Sayon |
 | `tests` | Example programs and diagnostic snapshots |
 | `docs` | Language reference, feature ledger, and implementation records |
+| `scripts` | Release packaging |
 | `editors/vscode` | VS Code extension: highlighting and the `.sayon` file icon |
 | `assets` | Logo and icons |

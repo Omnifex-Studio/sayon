@@ -53,10 +53,11 @@ impl Toolchain {
             None => {
                 let candidates: Vec<PathBuf> = exe_dir
                     .map(|dir| {
-                        vec![
-                            dir.join(RUNTIME_FILE),
-                            dir.join("..").join("lib").join(RUNTIME_FILE),
-                        ]
+                        let mut paths = vec![dir.join(RUNTIME_FILE)];
+                        if let Some(parent) = dir.parent() {
+                            paths.push(parent.join("lib").join(RUNTIME_FILE));
+                        }
+                        paths
                     })
                     .unwrap_or_default();
                 candidates.into_iter().find(|path| path.is_file()).ok_or_else(|| {

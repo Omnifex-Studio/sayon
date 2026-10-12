@@ -57,6 +57,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `sayon test` with `test` blocks (interpreter) | experimental | M1 |
 | `sayon fmt` (keeps comments and literal spelling; verifies the result means the same) | experimental | M1 |
 | Project manifests (`sayon.toml` [package]), `sayon init`, `sayon clean`, `sayon doctor` | experimental | M1 |
+| Release archive for Windows x64 (`scripts/package.ps1`) | experimental | M1 |
 | `sayon lint`, `sayon explain`, package installation and lock files | planned | M2 |
 | Registry commands: `publish`, `search`, `info`, `login`, `logout` | planned | M5 |
 | Language server | planned | before M6 |

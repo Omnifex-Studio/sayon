@@ -441,11 +441,11 @@ pub fn init(name: &str) -> u8 {
     ];
     for (relative, content) in files {
         let path = root.join(relative);
-        if let Some(parent) = path.parent() {
-            if let Err(error) = std::fs::create_dir_all(parent) {
-                eprintln!("error: cannot create {}: {error}", parent.display());
-                return status::INPUT;
-            }
+        if let Some(parent) = path.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            eprintln!("error: cannot create {}: {error}", parent.display());
+            return status::INPUT;
         }
         if let Err(error) = std::fs::write(&path, content) {
             eprintln!("error: cannot write {}: {error}", path.display());
