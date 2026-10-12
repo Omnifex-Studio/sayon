@@ -165,7 +165,7 @@ impl<'a> Checker<'a> {
         if name.name != "typeof"
             || args.len() != 1
             || cx.lookup("typeof").is_some()
-            || self.items.contains_key("typeof")
+            || self.item(cx.module, "typeof").is_some()
         {
             return None;
         }

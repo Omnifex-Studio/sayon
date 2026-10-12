@@ -1,7 +1,7 @@
 //! Expression checking: name resolution, inference, and HIR construction.
 
 use crate::builtins::{self, PreludeItem};
-use crate::checker::{Checker, Deferred, FnCtx, Item};
+use crate::checker::{self, Checker, Deferred, FnCtx, Item};
 use crate::hir::{self, Arg, Builtin, ErrorField, ExprKind, Segment, Usage};
 use crate::infer::{Bounds, LiteralKind, Traits};
 use crate::types::Type;
@@ -237,18 +237,24 @@ impl<'a> Checker<'a> {
         if let Some(local) = cx.lookup(&name.name) {
             return self.local_use(cx, local, span);
         }
-        match self.items.get(&name.name).copied() {
-            Some(Item::Constant(id)) => {
-                let ty = self.constant_type(id);
-                return expr(ExprKind::Constant(id), ty, span);
-            }
-            Some(Item::Function(_)) => {
-                self.unavailable(span, "function values", "M2");
-                return expr(ExprKind::Nothing, Type::Unknown, span);
-            }
-            None => {}
+        if let Some(item) = self.item(cx.module, &name.name) {
+            return self.item_value(item, span);
         }
-        if builtins::lookup(&name.name).is_some() {
+        if self.import(cx.module, &name.name).is_some() {
+            self.error(
+                Diagnostic::error(
+                    "E_MODULE_VALUE",
+                    format!("`{}` is a module, not a value", name.name),
+                )
+                .primary(span, "")
+                .help(format!(
+                    "use one of its definitions, such as `{}.name`",
+                    name.name
+                )),
+            );
+            return expr(ExprKind::Nothing, Type::Unknown, span);
+        }
+        if builtins::lookup(&name.name, self.modules[cx.module.0 as usize].standard).is_some() {
             self.error(
                 Diagnostic::error(
                     "E_BUILTIN_VALUE",
@@ -272,7 +278,11 @@ impl<'a> Checker<'a> {
             format!("`{}` is not defined", name.name),
         )
         .primary(name.span, "not found in this scope");
-        if !cx.is_script && cx.func.is_some() && self.script_names.contains(&name.name) {
+        if !cx.is_script
+            && cx.func.is_some()
+            && self.modules[cx.module.0 as usize].entry
+            && self.script_names.contains(&name.name)
+        {
             diagnostic = diagnostic
                 .note(format!("`{}` is a variable of the script's top level; functions cannot see script variables", name.name))
                 .help("pass it to the function as a parameter, or declare it with `constant` if it never changes");
@@ -288,7 +298,8 @@ impl<'a> Checker<'a> {
             .iter()
             .flat_map(|s| s.names.keys().cloned())
             .collect();
-        candidates.extend(self.items.keys().cloned());
+        candidates.extend(self.modules[cx.module.0 as usize].items.keys().cloned());
+        candidates.extend(self.modules[cx.module.0 as usize].imports.keys().cloned());
         candidates.extend(
             [
                 "print",
@@ -497,6 +508,12 @@ impl<'a> Checker<'a> {
         name: &ast::Ident,
         span: Span,
     ) -> hir::Expr {
+        if let Some(module) = self.module_alias(cx, target) {
+            return match self.module_member(cx.module, module, name) {
+                Some(item) => self.item_value(item, span),
+                None => expr(ExprKind::Nothing, Type::Unknown, span),
+            };
+        }
         let value = self.check_expr(cx, target, None);
         match self.unifier.shallow(&value.ty) {
             Type::Error => {
@@ -845,6 +862,30 @@ impl<'a> Checker<'a> {
     ) -> hir::Expr {
         let name = match &callee.kind {
             ast::ExprKind::Name(name) => name,
+            ast::ExprKind::Member { target, name } if self.module_alias(cx, target).is_some() => {
+                let module = self.module_alias(cx, target).expect("module");
+                return match self.module_member(cx.module, module, name) {
+                    Some(Item::Function(id)) => {
+                        self.call_function(cx, id, name, generic_args, args, span)
+                    }
+                    Some(Item::Constant(_)) => {
+                        self.error(
+                            Diagnostic::error(
+                                "E_NOT_CALLABLE",
+                                format!("`{}` is a constant, not a function", name.name),
+                            )
+                            .primary(callee.span, ""),
+                        );
+                        expr(ExprKind::Nothing, Type::Unknown, span)
+                    }
+                    None => {
+                        for arg in args {
+                            self.check_expr(cx, arg, None);
+                        }
+                        expr(ExprKind::Nothing, Type::Unknown, span)
+                    }
+                };
+            }
             ast::ExprKind::Member { name, .. } => {
                 self.error(
                     Diagnostic::error("E_UNKNOWN_METHOD", format!("no method `{}` is available here", name.name))
@@ -870,7 +911,7 @@ impl<'a> Checker<'a> {
             self.unavailable(callee.span, "calling a function stored in a variable", "M2");
             return expr(ExprKind::Nothing, Type::Unknown, span);
         }
-        match self.items.get(&name.name).copied() {
+        match self.item(cx.module, &name.name) {
             Some(Item::Function(id)) => {
                 return self.call_function(cx, id, name, generic_args, args, span);
             }
@@ -895,7 +936,7 @@ impl<'a> Checker<'a> {
                 .primary(callee.span, ""),
             );
         }
-        match builtins::lookup(&name.name) {
+        match builtins::lookup(&name.name, self.modules[cx.module.0 as usize].standard) {
             Some(PreludeItem::Builtin(builtin)) => {
                 self.check_builtin(cx, builtin, name, args, expected, span)
             }
@@ -929,6 +970,31 @@ impl<'a> Checker<'a> {
                 for arg in args {
                     self.check_expr(cx, arg, None);
                 }
+                expr(ExprKind::Nothing, Type::Unknown, span)
+            }
+        }
+    }
+
+    /// The module an expression names, when it is an import alias not hidden
+    /// by a local variable.
+    fn module_alias(&self, cx: &FnCtx, target: &ast::Expr) -> Option<checker::ModuleId> {
+        match &target.kind {
+            ast::ExprKind::Name(alias) if cx.lookup(&alias.name).is_none() => {
+                self.import(cx.module, &alias.name)
+            }
+            _ => None,
+        }
+    }
+
+    /// The value of a module-level item used as an expression.
+    fn item_value(&mut self, item: Item, span: Span) -> hir::Expr {
+        match item {
+            Item::Constant(id) => {
+                let ty = self.constant_type(id);
+                expr(ExprKind::Constant(id), ty, span)
+            }
+            Item::Function(_) => {
+                self.unavailable(span, "function values", "M2");
                 expr(ExprKind::Nothing, Type::Unknown, span)
             }
         }

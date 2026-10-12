@@ -1,0 +1,11 @@
+# Text helpers that use another module
+geometry = import("modules/geometry.sayon")
+
+function shout(text: string) -> string
+    return text + "!"
+
+function repeat(text: string, times: integer) -> string
+    result = ""
+    for i in range(times)
+        result = result + text
+    return "{result} ({geometry.UNIT})"

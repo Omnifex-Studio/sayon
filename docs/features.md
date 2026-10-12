@@ -32,7 +32,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `error`/`raise`, `try`/`catch`/`finally` | experimental | M1 |
 | Ownership: moves, clones, borrows, loop borrows, mode inference | experimental | M1 |
 | `main` with integer exit status, scripts | experimental | M1 |
-| Static local modules and `import` | planned | M1 |
+| Static local modules and `import`, `private` | experimental | M1 |
 | Structures, enums, `match` with patterns and guards | planned | M2 |
 | Function values, closures, captured state | planned | M2 |
 | `try` expressions, `is error`, `Outcome<T>` | planned | M2 |

@@ -323,6 +323,23 @@ Error codes raised by the language and its built-in functions:
 
 `print` and `tostring` display values as follows. Floats always show a decimal point or an exponent (`3.0`, `0.1`, `1e20`, `inf`, `nan`), and integers never do. Strings appear as text at the top level and quoted inside collections, so collections look like the literals that build them: `[1, "text", true]` and `["name" = "Ada"]`.
 
+## Modules
+
+Each file is a module. A program imports another file by binding it to a name at the top of a file:
+
+```sayon
+geometry = import("modules/geometry.sayon")
+
+print(geometry.area(3, 4))
+print(geometry.UNIT)
+```
+
+- Import paths are relative to the program's root, the directory of the file you run, whichever file the import appears in. They use forward slashes, name a `.sayon` file, and cannot leave the root (`..` and absolute paths are rejected).
+- Spelling must match the file on disk exactly, on every system, so a program behaves the same on Windows and Linux.
+- `standard/...` paths name modules of the standard library.
+- A module's functions and constants are exported unless marked `private`. Imported modules can only define things: statements that would run on import are rejected.
+- Each module is loaded once, however many modules import it. Imports cannot form a cycle.
+
 ## Programs
 
 A file with top-level statements is a script: they run in order. A file with only definitions runs its `main` function, which takes no parameters and returns `nothing` or an `integer`. The integer becomes the exit status. Portable statuses are 0 to 255; other values exit with 255 after a warning.

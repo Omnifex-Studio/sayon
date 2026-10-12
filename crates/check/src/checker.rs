@@ -13,6 +13,21 @@ pub(crate) enum Item {
     Constant(ConstId),
 }
 
+/// A source file being checked. Each file is a module.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ModuleId(pub u32);
+
+pub(crate) struct ModuleInfo {
+    /// The import path or file name shown in messages.
+    pub name: String,
+    pub items: HashMap<String, Item>,
+    /// Import aliases and the modules they name.
+    pub imports: HashMap<String, (ModuleId, Span)>,
+    /// Standard library modules may use the host primitives.
+    pub standard: bool,
+    pub entry: bool,
+}
+
 /// A function signature. Inside a function's own strongly connected component
 /// the types may contain inference variables; afterwards generic parameters
 /// appear as `Type::Param`.
@@ -31,6 +46,7 @@ pub(crate) struct Signature {
 
 pub(crate) struct FunctionEntry<'a> {
     pub ast: Option<&'a ast::Function>,
+    pub module: ModuleId,
     pub name: String,
     pub span: Span,
     pub signature: Option<Signature>,
@@ -47,6 +63,7 @@ pub(crate) enum ConstState {
 
 pub(crate) struct ConstantEntry<'a> {
     pub decl: &'a ast::Declaration,
+    pub module: ModuleId,
     pub span: Span,
     pub ty: Option<Type>,
     pub state: ConstState,
@@ -90,6 +107,7 @@ impl Scope {
 
 /// State for the function (or constant initializer) being checked.
 pub(crate) struct FnCtx {
+    pub module: ModuleId,
     pub func: Option<FuncId>,
     pub locals: Vec<hir::Local>,
     pub scopes: Vec<Scope>,
@@ -102,8 +120,9 @@ pub(crate) struct FnCtx {
 }
 
 impl FnCtx {
-    pub fn new(func: Option<FuncId>, ret: Type, is_script: bool) -> FnCtx {
+    pub fn new(module: ModuleId, func: Option<FuncId>, ret: Type, is_script: bool) -> FnCtx {
         FnCtx {
+            module,
             func,
             locals: Vec::new(),
             scopes: vec![Scope::new()],
@@ -155,7 +174,8 @@ pub(crate) struct Checker<'a> {
     pub unifier: Unifier,
     pub var_spans: Vec<Span>,
     pub diagnostics: Diagnostics,
-    pub items: HashMap<String, Item>,
+    pub modules: Vec<ModuleInfo>,
+    pub entry_module: ModuleId,
     pub functions: Vec<FunctionEntry<'a>>,
     pub constants: Vec<ConstantEntry<'a>>,
     /// Names bound by top-level script statements, for a clearer error when a
@@ -179,7 +199,8 @@ impl<'a> Checker<'a> {
             unifier: Unifier::new(),
             var_spans: Vec::new(),
             diagnostics: Diagnostics::new(),
-            items: HashMap::new(),
+            modules: Vec::new(),
+            entry_module: ModuleId(0),
             functions: Vec::new(),
             constants: Vec::new(),
             script_names: HashSet::new(),
@@ -284,18 +305,88 @@ impl<'a> Checker<'a> {
 
     // ----- items --------------------------------------------------------------
 
-    /// Collects functions and constants from the module's top level and
-    /// returns the remaining script statements.
-    pub fn collect_items(&mut self, module: &'a ast::Module) -> Vec<&'a ast::Stmt> {
+    pub fn item(&self, module: ModuleId, name: &str) -> Option<Item> {
+        self.modules[module.0 as usize].items.get(name).copied()
+    }
+
+    pub fn import(&self, module: ModuleId, name: &str) -> Option<ModuleId> {
+        self.modules[module.0 as usize]
+            .imports
+            .get(name)
+            .map(|(target, _)| *target)
+    }
+
+    pub fn item_module(&self, item: Item) -> ModuleId {
+        match item {
+            Item::Function(id) => self.functions[id.0 as usize].module,
+            Item::Constant(id) => self.constants[id.0 as usize].module,
+        }
+    }
+
+    pub fn item_is_private(&self, item: Item) -> bool {
+        let visibility = match item {
+            Item::Function(id) => self.functions[id.0 as usize].ast.map(|f| f.visibility),
+            Item::Constant(id) => Some(self.constants[id.0 as usize].decl.visibility),
+        };
+        visibility == Some(ast::Visibility::Private)
+    }
+
+    /// Resolves `alias.member` from `module`, reporting missing and private members.
+    pub fn module_member(
+        &mut self,
+        module: ModuleId,
+        target: ModuleId,
+        member: &ast::Ident,
+    ) -> Option<Item> {
+        let found = self.item(target, &member.name);
+        let module_name = self.modules[target.0 as usize].name.clone();
+        match found {
+            Some(item) if self.item_is_private(item) && self.item_module(item) != module => {
+                self.error(
+                    Diagnostic::error(
+                        "E_PRIVATE",
+                        format!("`{}` is private to `{module_name}`", member.name),
+                    )
+                    .primary(member.span, "not exported")
+                    .help("remove `private` from its definition to export it"),
+                );
+                None
+            }
+            Some(item) => Some(item),
+            None => {
+                self.error(
+                    Diagnostic::error(
+                        "E_UNKNOWN_MEMBER",
+                        format!("`{module_name}` has no `{}`", member.name),
+                    )
+                    .primary(member.span, "not defined in that module"),
+                );
+                None
+            }
+        }
+    }
+
+    /// Collects functions and constants from a module's top level and returns
+    /// the remaining script statements. Only the entry module may have script
+    /// statements; imports were resolved by the loader.
+    pub fn collect_items(
+        &mut self,
+        module_id: ModuleId,
+        module: &'a ast::Module,
+    ) -> Vec<&'a ast::Stmt> {
         let mut script = Vec::new();
+        let entry = self.modules[module_id.0 as usize].entry;
         for stmt in &module.stmts {
             match &stmt.kind {
+                StmtKind::Assign { value, .. }
+                    if matches!(value.kind, ast::ExprKind::Import { .. }) => {}
                 StmtKind::Function(function) => {
                     let name = function.name.as_ref().expect("named function");
                     let id = FuncId(self.functions.len() as u32);
-                    if self.define_item(&name.name, name.span, Item::Function(id)) {
+                    if self.define_item(module_id, &name.name, name.span, Item::Function(id)) {
                         self.functions.push(FunctionEntry {
                             ast: Some(function),
+                            module: module_id,
                             name: name.name.clone(),
                             span: name.span,
                             signature: None,
@@ -306,9 +397,15 @@ impl<'a> Checker<'a> {
                 }
                 StmtKind::Declare(decl) if decl.kind == DeclKind::Constant => {
                     let id = ConstId(self.constants.len() as u32);
-                    if self.define_item(&decl.name.name, decl.name.span, Item::Constant(id)) {
+                    if self.define_item(
+                        module_id,
+                        &decl.name.name,
+                        decl.name.span,
+                        Item::Constant(id),
+                    ) {
                         self.constants.push(ConstantEntry {
                             decl,
+                            module: module_id,
                             span: decl.name.span,
                             ty: None,
                             state: ConstState::Unchecked,
@@ -316,17 +413,45 @@ impl<'a> Checker<'a> {
                         });
                     }
                 }
-                _ => {
+                _ if entry => {
                     collect_script_names(stmt, &mut self.script_names);
                     script.push(stmt);
+                }
+                _ => {
+                    let name = self.modules[module_id.0 as usize].name.clone();
+                    self.error(
+                        Diagnostic::error(
+                            "E_MODULE_STATEMENT",
+                            format!(
+                                "`{name}` is imported as a module, so it can only define things"
+                            ),
+                        )
+                        .primary(
+                            stmt.span,
+                            "a statement that would run when the module is imported",
+                        )
+                        .help("move this into a function, or declare a value with `constant`"),
+                    );
                 }
             }
         }
         script
     }
 
-    fn define_item(&mut self, name: &str, span: Span, item: Item) -> bool {
-        if let Some(existing) = self.items.get(name) {
+    fn define_item(&mut self, module: ModuleId, name: &str, span: Span, item: Item) -> bool {
+        if let Some((_, import_span)) = self.modules[module.0 as usize].imports.get(name) {
+            let import_span = *import_span;
+            self.error(
+                Diagnostic::error(
+                    "E_DUPLICATE_DEFINITION",
+                    format!("`{name}` is already an imported module"),
+                )
+                .primary(span, "defined here")
+                .secondary(import_span, "imported here"),
+            );
+            return false;
+        }
+        if let Some(existing) = self.modules[module.0 as usize].items.get(name) {
             let previous = match existing {
                 Item::Function(id) => self.functions[id.0 as usize].span,
                 Item::Constant(id) => self.constants[id.0 as usize].span,
@@ -341,7 +466,7 @@ impl<'a> Checker<'a> {
             );
             return false;
         }
-        if crate::builtins::lookup(name).is_some() {
+        if crate::builtins::lookup(name, false).is_some() {
             self.error(
                 Diagnostic::warning(
                     "W_SHADOWED_BUILTIN",
@@ -350,7 +475,9 @@ impl<'a> Checker<'a> {
                 .primary(span, ""),
             );
         }
-        self.items.insert(name.to_string(), item);
+        self.modules[module.0 as usize]
+            .items
+            .insert(name.to_string(), item);
         true
     }
 
@@ -366,6 +493,7 @@ impl<'a> Checker<'a> {
         let mut edges: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
         for (index, node) in nodes.iter().enumerate() {
             let mut names = Vec::new();
+            let module = self.item_module(*node);
             match node {
                 Item::Function(id) => {
                     if let Some(function) = self.functions[id.0 as usize].ast {
@@ -377,8 +505,15 @@ impl<'a> Checker<'a> {
                 }
             }
             for name in names {
-                if let Some(item) = self.items.get(&name) {
-                    let target = index_of[item];
+                // Qualified references are recorded as `alias.member`.
+                let found = match name.split_once('.') {
+                    Some((alias, member)) => self
+                        .import(module, alias)
+                        .and_then(|target| self.item(target, member)),
+                    None => self.item(module, &name),
+                };
+                if let Some(item) = found {
+                    let target = index_of[&item];
                     if !edges[index].contains(&target) {
                         edges[index].push(target);
                     }
@@ -1153,7 +1288,12 @@ pub(crate) fn collect_expr_names(expr: &ast::Expr, names: &mut Vec<String>) {
             collect_expr_names(target, names);
             collect_expr_names(index, names);
         }
-        Member { target, .. } => collect_expr_names(target, names),
+        Member { target, name } => {
+            if let Name(alias) = &target.kind {
+                names.push(format!("{}.{}", alias.name, name.name));
+            }
+            collect_expr_names(target, names)
+        }
         Unary { operand, .. } => collect_expr_names(operand, names),
         Binary { lhs, rhs, .. } => {
             collect_expr_names(lhs, names);

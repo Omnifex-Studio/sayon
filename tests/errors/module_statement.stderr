@@ -1,0 +1,9 @@
+error[E_MODULE_STATEMENT]: `modules/noisy.sayon` is imported as a module, so it can only define things
+  --> modules/noisy.sayon:2:1
+   |
+ 2 | print("imported!")
+   | ^^^^^^^^^^^^^^^^^^ a statement that would run when the module is imported
+   |
+   = help: move this into a function, or declare a value with `constant`
+
+1 error found; nothing was run

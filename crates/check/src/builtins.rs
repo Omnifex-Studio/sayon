@@ -12,7 +12,10 @@ pub enum PreludeItem {
     Conversion(Type),
 }
 
-pub fn lookup(name: &str) -> Option<PreludeItem> {
+/// Looks up a prelude function. `host` admits the primitives that only
+/// standard library modules may call.
+pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
+    let _ = host;
     let builtin = match name {
         "print" => Builtin::Print,
         "length" => Builtin::Length,

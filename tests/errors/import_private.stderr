@@ -1,0 +1,23 @@
+error[E_PRIVATE]: `secret` is private to `modules/shapes.sayon`
+  --> import_private.sayon:2:14
+   |
+ 2 | print(shapes.secret())
+   |              ^^^^^^ not exported
+   |
+   = help: remove `private` from its definition to export it
+
+error[E_UNKNOWN_MEMBER]: `modules/shapes.sayon` has no `missing`
+  --> import_private.sayon:3:14
+   |
+ 3 | print(shapes.missing)
+   |              ^^^^^^^ not defined in that module
+
+error[E_MODULE_VALUE]: `shapes` is a module, not a value
+  --> import_private.sayon:4:7
+   |
+ 4 | print(shapes)
+   |       ^^^^^^
+   |
+   = help: use one of its definitions, such as `shapes.name`
+
+3 errors found; nothing was run

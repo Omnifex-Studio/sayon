@@ -1,0 +1,14 @@
+# Geometry helpers, imported by modules.sayon and text_tools.sayon
+constant UNIT = "cm"
+
+function area(width, height)
+    return width * height
+
+function describe(sides: Array<integer>) -> string
+    return "{length(sides)} sides, perimeter {sum(sides)} {UNIT}"
+
+private function sum(values: Array<integer>) -> integer
+    total = 0
+    for value in values
+        total += value
+    return total

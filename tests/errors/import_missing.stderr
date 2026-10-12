@@ -1,0 +1,9 @@
+error[E_IMPORT_NOT_FOUND]: `modules/missing.sayon` was not found
+  --> import_missing.sayon:1:18
+   |
+ 1 | helpers = import("modules/missing.sayon")
+   |                  ^^^^^^^^^^^^^^^^^^^^^^^ no such file in the program's root directory
+   |
+   = help: import paths are relative to the program's root directory, the folder of the file you run
+
+1 error found; nothing was run

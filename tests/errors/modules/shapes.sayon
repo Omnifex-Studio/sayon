@@ -1,0 +1,6 @@
+# A module with a private helper
+function area(width: integer, height: integer) -> integer
+    return width * height
+
+private function secret() -> integer
+    return 42

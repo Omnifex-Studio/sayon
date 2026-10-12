@@ -16,6 +16,7 @@ sayon-check.workspace = true
 sayon-ir.workspace = true
 sayon-interp.workspace = true
 sayon-codegen.workspace = true
+sayon-driver.workspace = true
 
 [lints]
 workspace = true

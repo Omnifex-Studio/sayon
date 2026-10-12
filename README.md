@@ -32,9 +32,10 @@ Sayon is in early development and not ready for real programs. What works today:
 - A front end for the current language subset: lexer, parser, type inference, union narrowing, and ownership checking
 - An interpreter that runs checked programs, with checked integer arithmetic and cleanup on every exit path
 - A native backend: programs compile through LLVM to standalone Windows executables that need no runtime DLLs
+- Modules: programs can be split across files with `import`
 - The `sayon run`, `sayon run --native`, `sayon build`, and `sayon check` commands
 
-Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Modules, structures and enums, closures, and the standard library modules come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
+Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Structures and enums, closures, and the standard library modules come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
 
 ## Documentation
 
@@ -65,6 +66,7 @@ Native builds need [LLVM](https://releases.llvm.org)'s clang at build time (foun
 | `crates/check` | Name resolution, type inference, and ownership checking |
 | `crates/ir` | Control-flow IR with explicit moves, drops, and error edges |
 | `crates/interp` | The interpreter |
+| `crates/driver` | Loads a program's modules from disk and runs the compiler phases |
 | `crates/codegen` | Native code generation through LLVM IR |
 | `crates/runtime` | Runtime library linked into compiled programs |
 | `crates/cli` | The `sayon` command |

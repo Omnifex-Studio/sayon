@@ -15,6 +15,7 @@ version = "0.0.1"
 dependencies = [
  "sayon-check",
  "sayon-codegen",
+ "sayon-driver",
  "sayon-interp",
  "sayon-ir",
  "sayon-syntax",
@@ -22,6 +23,15 @@ dependencies = [
 
 [[package]]
 name = "sayon-codegen"
+version = "0.0.1"
+dependencies = [
+ "sayon-check",
+ "sayon-ir",
+ "sayon-syntax",
+]
+
+[[package]]
+name = "sayon-driver"
 version = "0.0.1"
 dependencies = [
  "sayon-check",

@@ -386,7 +386,17 @@ impl<'a> Checker<'a> {
                 span,
             ));
         }
-        if let Some(item) = self.items.get(&name.name) {
+        if self.import(cx.module, &name.name).is_some() {
+            self.error(
+                Diagnostic::error(
+                    "E_ASSIGN_CONSTANT",
+                    format!("`{}` names an imported module", name.name),
+                )
+                .primary(name.span, "cannot assign to a module"),
+            );
+            return None;
+        }
+        if let Some(item) = self.item(cx.module, &name.name) {
             let what = match item {
                 Item::Function(_) => "function",
                 Item::Constant(_) => "constant",
@@ -473,7 +483,7 @@ impl<'a> Checker<'a> {
         match &target.kind {
             ast::ExprKind::Name(name) => {
                 let Some(local) = cx.lookup(&name.name) else {
-                    if self.items.contains_key(&name.name) {
+                    if self.item(cx.module, &name.name).is_some() {
                         self.error(
                             Diagnostic::error(
                                 "E_ASSIGN_CONSTANT",

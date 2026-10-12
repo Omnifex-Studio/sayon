@@ -1,0 +1,5 @@
+# Imports cycle_b, which imports this module back
+other = import("modules/cycle_b.sayon")
+
+function a()
+    return 1

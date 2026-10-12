@@ -1,7 +1,7 @@
 //! The `sayon` command.
 
 use sayon_syntax::diagnostic::render;
-use sayon_syntax::{Diagnostic, Diagnostics, SourceMap, Span};
+use sayon_syntax::{Diagnostics, SourceMap};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -199,63 +199,45 @@ struct Compiled {
     module: sayon_ir::Module,
 }
 
-fn load(path: &Path, sources: &mut SourceMap) -> Result<sayon_syntax::FileId, u8> {
-    let bytes = match std::fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            let reason = match error.kind() {
-                std::io::ErrorKind::NotFound => "the file does not exist".to_string(),
-                std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
-                _ => error.to_string(),
-            };
-            eprintln!("error: cannot read `{}`: {reason}", path.display());
+/// The standard library directory: `SAYON_STDLIB`, then `stdlib` next to
+/// the executable or up to two levels above it (an installation's `bin`
+/// directory, or a development build in `target/<profile>`).
+fn stdlib_dir() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("SAYON_STDLIB") {
+        return Some(PathBuf::from(path));
+    }
+    let exe = std::env::current_exe().ok()?;
+    let mut dir = exe.parent()?.to_path_buf();
+    for _ in 0..3 {
+        let candidate = dir.join("stdlib");
+        if candidate.is_dir() {
+            return Some(candidate);
+        }
+        dir = dir.parent()?.to_path_buf();
+    }
+    None
+}
+
+/// Loads, checks, and lowers a program, printing any diagnostics.
+fn compile(path: &Path, options: &Options) -> Result<Compiled, u8> {
+    let driver_options = sayon_driver::Options {
+        stdlib: stdlib_dir(),
+    };
+    let output = match sayon_driver::compile(path, &driver_options) {
+        Ok(output) => output,
+        Err(sayon_driver::EntryError(message)) => {
+            eprintln!("error: {message}");
             return Err(status::INPUT);
         }
     };
-    let name = path.display().to_string();
-    match String::from_utf8(bytes) {
-        Ok(text) => Ok(sources.add(name, Some(path), text)),
-        Err(error) => {
-            let offset = error.utf8_error().valid_up_to();
-            let text = String::from_utf8_lossy(error.as_bytes()).into_owned();
-            let file = sources.add(name, Some(path), text);
-            let diagnostic =
-                Diagnostic::error("E_INVALID_UTF8", "source files must be valid UTF-8")
-                    .primary(
-                        Span::new(file, offset, offset + 1),
-                        format!("invalid byte at offset {offset}"),
-                    )
-                    .help("save the file with UTF-8 encoding");
-            eprintln!("{}", render(&diagnostic, sources, false));
-            Err(status::COMPILE_FAILED)
-        }
+    print_diagnostics(&output.diagnostics, &output.sources, options);
+    match output.module {
+        Some(module) if !output.diagnostics.has_errors() => Ok(Compiled {
+            sources: output.sources,
+            module,
+        }),
+        _ => Err(status::COMPILE_FAILED),
     }
-}
-
-/// Parses, checks, and lowers a program, printing any diagnostics.
-fn compile(path: &Path, options: &Options) -> Result<Compiled, u8> {
-    let mut sources = SourceMap::new();
-    let file = load(path, &mut sources)?;
-    let text = sources.get(file).text.clone();
-    let (program, mut diagnostics) = sayon_check::check_source(file, &text);
-    let module = match program {
-        Some(program) if !diagnostics.has_errors() => {
-            let lowered = sayon_ir::lower(&program);
-            diagnostics.extend(lowered.diagnostics);
-            lowered.module
-        }
-        _ => {
-            diagnostics.sort();
-            print_diagnostics(&diagnostics, &sources, options);
-            return Err(status::COMPILE_FAILED);
-        }
-    };
-    diagnostics.sort();
-    print_diagnostics(&diagnostics, &sources, options);
-    if diagnostics.has_errors() {
-        return Err(status::COMPILE_FAILED);
-    }
-    Ok(Compiled { sources, module })
 }
 
 fn check(path: &Path, options: &Options) -> u8 {

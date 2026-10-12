@@ -1,0 +1,13 @@
+error[E_IMPORT_CYCLE]: modules import each other in a cycle: modules/cycle_a.sayon -> modules/cycle_b.sayon -> modules/cycle_a.sayon
+  --> modules/cycle_b.sayon:2:1
+   |
+ 2 | first = import("modules/cycle_a.sayon")
+   | ^^^^^ this import completes the cycle
+  --> modules/cycle_a.sayon:2:1
+   |
+ 2 | other = import("modules/cycle_b.sayon")
+   | ----- imported here
+   |
+   = help: move what both modules need into a third module that neither imports
+
+1 error found; nothing was run

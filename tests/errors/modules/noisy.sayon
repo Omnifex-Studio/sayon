@@ -1,0 +1,5 @@
+# A module may only define things
+print("imported!")
+
+function hello()
+    print("hello")

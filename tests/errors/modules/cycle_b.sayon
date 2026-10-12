@@ -1,0 +1,5 @@
+# Imports cycle_a, closing the cycle
+first = import("modules/cycle_a.sayon")
+
+function b()
+    return 2

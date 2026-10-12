@@ -1,0 +1,15 @@
+error[E_IMPORT_CASE]: `modules/Shapes.sayon` does not match the file's spelling on disk
+  --> import_path.sayon:1:17
+   |
+ 1 | shapes = import("modules/Shapes.sayon")
+   |                 ^^^^^^^^^^^^^^^^^^^^^^ the file is spelled `modules/shapes.sayon`
+   |
+   = help: import spelling is case-sensitive on every system so programs move between them unchanged
+
+error[E_IMPORT_PATH]: import paths stay inside the program's root: no `..`, `.`, or absolute paths
+  --> import_path.sayon:2:17
+   |
+ 2 | escape = import("../programs/strings.sayon")
+   |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+2 errors found; nothing was run

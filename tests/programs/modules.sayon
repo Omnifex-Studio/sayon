@@ -1,0 +1,9 @@
+# Programs can be split into modules
+geometry = import("modules/geometry.sayon")
+text = import("modules/text_tools.sayon")
+
+print(geometry.area(3, 4), geometry.UNIT)
+print(geometry.area(1.5, 2.0))
+print(text.shout("hello"))
+print(text.repeat("ab", 3))
+print(geometry.describe([1, 2, 3]))

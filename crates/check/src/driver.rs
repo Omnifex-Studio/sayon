@@ -95,7 +95,8 @@ impl<'a> Checker<'a> {
         let first_var = self.unifier.var_count();
         let decl = self.constants[id.0 as usize].decl;
         self.constants[id.0 as usize].state = ConstState::InProgress;
-        let mut cx = FnCtx::new(None, Type::Nothing, false);
+        let module = self.constants[id.0 as usize].module;
+        let mut cx = FnCtx::new(module, None, Type::Nothing, false);
         let annotation = decl
             .ty
             .as_ref()
@@ -198,7 +199,8 @@ impl<'a> Checker<'a> {
             .signature
             .clone()
             .expect("signature");
-        let mut cx = FnCtx::new(Some(id), signature.ret.clone(), false);
+        let module = self.functions[id.0 as usize].module;
+        let mut cx = FnCtx::new(module, Some(id), signature.ret.clone(), false);
         cx.generics = ast
             .generics
             .iter()
@@ -280,7 +282,8 @@ impl<'a> Checker<'a> {
         let has_statements = script.iter().any(|stmt| {
             !matches!(stmt.kind, ast::StmtKind::Declare(ref decl) if decl.kind == ast::DeclKind::Constant)
         });
-        if !has_statements && let Some(Item::Function(main)) = self.items.get("main").copied() {
+        if !has_statements && let Some(Item::Function(main)) = self.item(self.entry_module, "main")
+        {
             self.validate_main(main);
             if let Some(function) = &mut self.functions[main.0 as usize].hir {
                 function.is_entry = true;
@@ -288,7 +291,7 @@ impl<'a> Checker<'a> {
             return main;
         }
         let first_var = self.unifier.var_count();
-        let mut cx = FnCtx::new(None, Type::Nothing, true);
+        let mut cx = FnCtx::new(self.entry_module, None, Type::Nothing, true);
         let stmts = self.check_stmts(&mut cx, script.iter().copied());
         self.solve_deferred(true);
         self.default_vars(first_var);
@@ -310,6 +313,7 @@ impl<'a> Checker<'a> {
         let id = FuncId(self.functions.len() as u32);
         self.functions.push(FunctionEntry {
             ast: None,
+            module: self.entry_module,
             name: function.name.clone(),
             span,
             signature: None,

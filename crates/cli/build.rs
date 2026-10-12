@@ -9,7 +9,11 @@ use std::process::Command;
 
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let icon = manifest_dir.join("..").join("..").join("assets").join("sayon.ico");
+    let icon = manifest_dir
+        .join("..")
+        .join("..")
+        .join("assets")
+        .join("sayon.ico");
     println!("cargo:rerun-if-changed={}", icon.display());
     println!("cargo:rerun-if-env-changed=SAYON_RC");
 
@@ -72,7 +76,9 @@ END
         Ok(status) if status.success() => {
             println!("cargo:rustc-link-arg-bins={}", res_path.display());
         }
-        _ => println!("cargo:warning=compiling the icon resource failed; sayon.exe will have no icon"),
+        _ => println!(
+            "cargo:warning=compiling the icon resource failed; sayon.exe will have no icon"
+        ),
     }
 }
 

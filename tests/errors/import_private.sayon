@@ -1,0 +1,4 @@
+shapes = import("modules/shapes.sayon")
+print(shapes.secret())
+print(shapes.missing)
+print(shapes)
