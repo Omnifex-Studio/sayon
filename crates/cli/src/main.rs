@@ -32,6 +32,7 @@ Usage:
     sayon build <file.sayon> [options]   Compile a native executable
     sayon check <file.sayon> [options]   Report problems without running anything
     sayon test [files...]                Run test blocks (default: every file under tests/)
+    sayon fmt [paths...] [--check]       Format source files (default: the current directory)
     sayon version                        Print the version
     sayon help                           Print this help
 
@@ -90,6 +91,20 @@ fn dispatch(args: &[String]) -> u8 {
         "version" | "--version" | "-V" => {
             println!("sayon {}", env!("CARGO_PKG_VERSION"));
             status::SUCCESS
+        }
+        "fmt" => {
+            let mut paths = Vec::new();
+            let mut check_only = false;
+            for arg in &args[1..] {
+                match arg.as_str() {
+                    "--check" => check_only = true,
+                    other if other.starts_with('-') => {
+                        return usage_error(&format!("unknown option `{other}`"));
+                    }
+                    other => paths.push(PathBuf::from(other)),
+                }
+            }
+            format_files(paths, check_only)
         }
         "test" => {
             let mut files = Vec::new();
@@ -575,6 +590,109 @@ fn test(mut files: Vec<PathBuf>, options: &Options) -> u8 {
         status::PROGRAM_FAILED
     } else if broken > 0 {
         status::COMPILE_FAILED
+    } else {
+        status::SUCCESS
+    }
+}
+
+/// Collects `.sayon` files under a directory, skipping build output and
+/// version control directories.
+fn source_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if path.is_dir() {
+            if !matches!(name.as_str(), "target" | ".git" | "node_modules")
+                && !name.starts_with('.')
+            {
+                source_files(&path, out);
+            }
+        } else if path.extension().is_some_and(|ext| ext == "sayon") {
+            out.push(path);
+        }
+    }
+}
+
+/// Formats files in place, or with `check_only` reports the files that are
+/// not formatted. Files with syntax errors are reported and left unchanged.
+fn format_files(paths: Vec<PathBuf>, check_only: bool) -> u8 {
+    let mut files = Vec::new();
+    let roots = if paths.is_empty() {
+        vec![PathBuf::from(".")]
+    } else {
+        paths
+    };
+    for root in roots {
+        if root.is_dir() {
+            source_files(&root, &mut files);
+        } else {
+            files.push(root);
+        }
+    }
+    let (mut changed, mut failed) = (0usize, 0usize);
+    for file in &files {
+        let text = match std::fs::read(file) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(_) => {
+                    eprintln!(
+                        "error: {} is not valid UTF-8; left unchanged",
+                        file.display()
+                    );
+                    failed += 1;
+                    continue;
+                }
+            },
+            Err(error) => {
+                eprintln!("error: cannot read `{}`: {error}", file.display());
+                failed += 1;
+                continue;
+            }
+        };
+        let mut sources = SourceMap::new();
+        let id = sources.add(file.display().to_string(), Some(file), text.clone());
+        match sayon_syntax::format::format_source(id, &text) {
+            Ok(formatted) => {
+                if formatted == text {
+                    continue;
+                }
+                changed += 1;
+                if check_only {
+                    println!("would reformat {}", file.display());
+                } else if let Err(error) = std::fs::write(file, formatted) {
+                    eprintln!("error: cannot write `{}`: {error}", file.display());
+                    failed += 1;
+                } else {
+                    println!("formatted {}", file.display());
+                }
+            }
+            Err(sayon_syntax::format::FormatError::Invalid(diagnostics)) => {
+                failed += 1;
+                for diagnostic in diagnostics.iter().filter(|d| d.is_error()) {
+                    eprintln!("{}", render(diagnostic, &sources, false));
+                }
+                eprintln!("{} has syntax errors; left unchanged", file.display());
+            }
+            Err(sayon_syntax::format::FormatError::Changed) => {
+                failed += 1;
+                eprintln!(
+                    "error: formatting {} would change its meaning; it was left unchanged (please report this)",
+                    file.display()
+                );
+            }
+        }
+    }
+    if failed > 0 {
+        status::COMPILE_FAILED
+    } else if check_only && changed > 0 {
+        status::PROGRAM_FAILED
     } else {
         status::SUCCESS
     }

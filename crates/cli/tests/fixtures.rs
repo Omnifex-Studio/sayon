@@ -262,6 +262,25 @@ fn test_runner_reports_results() {
     );
 }
 
+/// The Sayon sources in this repository are formatted, so formatting them
+/// again changes nothing.
+#[test]
+fn repository_sources_are_formatted() {
+    let root = tests_dir().join("..");
+    let outcome = sayon(
+        &root,
+        &[
+            "fmt",
+            "--check",
+            "tests/programs",
+            "tests/test_runner",
+            "stdlib",
+            "examples",
+        ],
+    );
+    assert_eq!(outcome.status, 0, "{}{}", outcome.stdout, outcome.stderr);
+}
+
 #[test]
 fn invalid_programs_report_their_recorded_diagnostics() {
     let dir = tests_dir().join("errors");

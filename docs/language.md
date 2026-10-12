@@ -381,6 +381,12 @@ test "adds integers"
 
 `sayon run` and `sayon check` check test blocks but do not run them, and test blocks in imported modules are ignored. Outside a test block, `test` is an ordinary name.
 
+## Formatting
+
+`sayon fmt` rewrites files in the canonical style: four-space indentation, single spaces around operators and after commas, no space inside brackets, one blank line at most between statements, LF line endings, and a final newline. Comments, blank-line separation, and the spelling of literals are kept. A statement written across several lines, or with a comment inside it, keeps its own layout and is only re-indented. Files with syntax errors are left unchanged, and the formatter refuses to write a result whose structure differs from the original.
+
+`sayon fmt --check` lists the files that are not formatted and exits with status 1 if there are any. With no paths, both forms cover every `.sayon` file under the current directory.
+
 ## Programs
 
 A file with top-level statements is a script: they run in order. A file with only definitions runs its `main` function, which takes no parameters and returns `nothing` or an `integer`. The integer becomes the exit status. Portable statuses are 0 to 255; other values exit with 255 after a warning.
