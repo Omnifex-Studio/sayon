@@ -36,6 +36,12 @@ Sayon is in early development and not ready for real programs. What works today:
 
 Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Modules, structures and enums, closures, and the standard library modules come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
 
+## Documentation
+
+- [The language](docs/language.md): a reference for everything implemented so far
+- [Feature ledger](docs/features.md): what exists, what is planned, and for which milestone
+- [Implementation records](docs/implementation.md): grammar, ownership rules, cleanup order, data layouts, and the error ABI
+
 ## Trying it
 
 The compiler is written in Rust. The toolchain version is pinned in `rust-toolchain.toml`, and `rustup` installs it automatically.
@@ -63,5 +69,6 @@ Native builds need [LLVM](https://releases.llvm.org)'s clang at build time (foun
 | `crates/runtime` | Runtime library linked into compiled programs |
 | `crates/cli` | The `sayon` command |
 | `tests` | Example programs and diagnostic snapshots |
+| `docs` | Language reference, feature ledger, and implementation records |
 | `editors/vscode` | VS Code extension: highlighting and the `.sayon` file icon |
 | `assets` | Logo and icons |

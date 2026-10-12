@@ -1,0 +1,168 @@
+# Implementation records
+
+These records describe how the current compiler implements the language contracts. They are updated when an implementation decision changes; a change to observable semantics needs a design amendment first.
+
+## Pipeline
+
+```text
+.sayon source
+  -> lexer (crates/syntax/src/lexer.rs): tokens marked with line starts and indentation
+  -> parser (parser.rs): AST with source spans, layout rules applied
+  -> checker (crates/check): names, type inference, union narrowing -> typed HIR
+  -> ownership (check/src/ownership.rs): copy/move/borrow decisions, parameter modes
+  -> lowering (crates/ir/src/lower.rs): monomorphic control-flow IR with drops and error edges
+       -> interpreter (crates/interp)
+       -> LLVM IR text (crates/codegen) -> clang -> executable linked with crates/runtime
+```
+
+Both execution modes run the same IR. The runtime's text rules (number formatting, quoting, number parsing, range length) are shared with the interpreter, and the test suite requires every example program to produce identical output, errors, and exit status in both modes.
+
+## Grammar
+
+Layout is described in [language.md](language.md#source-files): a statement ends at a line start outside delimiters, and a block is the run of lines indented deeper than its header, all at the indentation of the block's first line. `NEWLINE`, `INDENT`, and `DEDENT` below stand for those layout events; the lexer does not produce them as tokens.
+
+```ebnf
+module      = { statement } ;
+block       = NEWLINE INDENT statement { statement } DEDENT ;
+
+statement   = function | declaration | if | while | for | try
+            | "break" | "continue" | "return" [ expression ]
+            | type_decl | enum_decl | match
+            | expression [ ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" ) expression ] ;
+
+function    = [ "public" | "private" ] "function" NAME [ generics ]
+              "(" [ param { "," param } [ "," ] ] ")" [ "->" type ] block ;
+generics    = "<" NAME { "," NAME } ">" ;
+param       = [ "own" | "update" ] NAME [ ":" type ] [ "=" expression ] ;
+declaration = [ "public" | "private" ] ( "variable" | "constant" ) NAME [ ":" type ] "=" expression
+            | NAME ":" type "=" expression ;
+
+if          = "if" expression block { "else" "if" expression block } [ "else" block ] ;
+while       = "while" expression block ;
+for         = "for" NAME [ "," NAME ] "in" expression block ;
+try         = "try" block [ "catch" NAME block ] [ "finally" block ] ;   (* at least one clause *)
+
+type        = type_atom { "or" type_atom } ;
+type_atom   = NAME [ "<" type { "," type } ">" ] | "nothing" | "(" type ")" ;
+
+expression  = or ;
+or          = and { "or" and } ;
+and         = equality { "and" equality } ;
+equality    = ordering [ "is" "error" ] [ ( "==" | "!=" ) ordering ] ;     (* not chained *)
+ordering    = additive [ ( "<" | ">" | "<=" | ">=" ) additive ] ;          (* not chained *)
+additive    = multiplicative { ( "+" | "-" ) multiplicative } ;
+multiplicative = unary { ( "*" | "/" | "%" ) unary } ;
+unary       = ( "-" | "not" ) unary | postfix ;
+postfix     = primary { call | "[" expression "]" | "." NAME } ;
+call        = [ "<" type { "," type } ">" ] "(" [ expression { "," expression } [ "," ] ] ")" ;
+primary     = INTEGER | FLOAT | STRING | "true" | "false" | "nothing" | NAME
+            | "(" expression ")" | collection | "function" ... block
+            | "try" unary | "import" "(" STRING ")" ;
+collection  = "[" "]"
+            | "[" expression { "," expression } [ "," ] "]"
+            | "[" expression "=" expression { "," expression "=" expression } [ "," ] "]"
+            | "[" NAME "=" expression { "," NAME "=" expression } [ "," ] "]" ;
+```
+
+The type and enum declarations, `match`, function literals, `try` expressions, `is error`, and imports parse but are rejected by the checker until their milestones. The parser tests (`crates/syntax/src/parser.rs`) and the programs under `tests/` are the executable form of this grammar.
+
+## Ownership rules
+
+A value's type is Copy when it is a number, `boolean`, `nothing`, `Range`, or a union of Copy types. Every other value has exactly one owner. Generic type parameters are treated as owned, so a generic function is checked for the strictest instantiation.
+
+For each read of a local, the checker decides the use from the context:
+
+| Context | Owned value | Copy value |
+|---|---|---|
+| assignment source, `own` argument, returned value, collection element, `push` value | move | copy |
+| `update` argument, `push`/`pop` target, element assignment target | exclusive borrow | copy |
+| anything else (operands, read arguments, `print`, conditions) | shared borrow | copy |
+| `move(x)` | move | copy |
+
+The analysis tracks, along every control-flow path, whether each local holds a value. It reports:
+
+| Code | Rule |
+|---|---|
+| `E_MOVED_VALUE` | A local is used after a move on some path, including an earlier loop iteration. Assigning a new value restores it. Inside `try`, a move in the body is uncertain in `catch` and `finally`. |
+| `E_MOVE_BORROWED` | Moving a read or update parameter, or a loop variable that borrows an element. |
+| `E_MUTATE_BORROWED` | Changing a read parameter or a borrowed loop variable. |
+| `E_MUTATE_CONSTANT` | Changing a local or module constant. |
+| `E_MOVE_CONSTANT` | Moving a module constant. |
+| `E_MOVE_OUT_OF_ELEMENT` | Moving an owned element out of an array or dictionary. |
+| `E_BORROW_CONFLICT` | Moving, changing, or replacing a collection while a `for` loop reads it; or passing the same local to one call both exclusively and in any other way. |
+| `E_BORROWED_UNION` | A borrowed owned value used where a union is expected, which would need a copy. |
+
+Parameter modes are inferred for unannotated parameters as the least of read, update, and own that the body needs, iterated to a fixed point over mutually recursive functions. Annotated parameters keep their declared mode (default read), and a body that needs more is an error.
+
+## Cleanup and control flow
+
+Every block and every statement is a scope that lists the owned slots it must destroy. On each way out of a scope, the owned values it holds are destroyed in reverse declaration order, innermost scope first:
+
+| Exit | Order |
+|---|---|
+| end of block | the block's statement temporaries, then its locals |
+| `break`, `continue` | scopes inside the loop, innermost first, running each `finally` passed on the way |
+| `return` | the result moves into the return slot first; then all scopes, running each `finally`; then the return |
+| error | scopes up to the nearest handler; then the `catch` (which receives the error) or the `finally` |
+
+A `finally` is lowered as a separate copy on each path through it (normal end, error, `return`, `break`, `continue`). On the error path the pending error is held in a temporary while the `finally` runs, then propagation continues. If a `finally` fails while a `return` is pending, the return value is destroyed and the new error propagates.
+
+A moved-from place is empty, and destroying an empty place does nothing, so cleanup code destroys every owned slot in scope without per-path bookkeeping. In native code "empty" is all-zero bytes.
+
+## Representations
+
+| Type | Native layout | Size |
+|---|---|---|
+| integers | `i8`, `i16`, `i32`, `i64` | 1 to 8 |
+| `float`, `float32` | `double`, `float` | 8, 4 |
+| `boolean` | `i1` | 1 |
+| `nothing` | `i8` | 1 |
+| `string` | `{ ptr data, i64 length, i64 capacity }`, capacity 0 for static text | 24 |
+| `Array<T>` | `{ ptr data, i64 length, i64 capacity }`, elements contiguous | 24 |
+| `Range` | `{ i64 start, i64 end, i64 step }` | 24 |
+| `Dict<string, T>`, `Error` | pointer to a runtime object | 8 |
+| union | `{ i32 tag, [N x i64] payload }`, payload at offset 8 | 8 + 8N |
+
+Union tags are assigned per member type across the whole program (the module's union member table), so a value of a larger union is a valid value of every smaller union holding the same member. Narrowing and widening therefore never copy or re-tag. Tag zero means empty.
+
+## Calls and parameter passing
+
+Every compiled function has the signature `i32 f(ptr result, ptr error, i64 argument_count, parameters...)`. It returns 0 after writing its result through `result`, or 1 after storing an `Error` pointer through `error`. Callers always pass every parameter; a parameter the caller omitted is computed from its default in the callee's prologue, selected by `argument_count`.
+
+| Parameter | Passed as |
+|---|---|
+| Copy type, any mode | the value |
+| owned type, `own` | the value; the caller's place is cleared |
+| owned type, read or `update` | a pointer to the caller's place |
+
+## Recoverable errors
+
+An `Error` is a runtime object with a code, a message, and the source location of the operation that raised it. Each function has an error slot. A failing operation stores a new error there and continues at its error edge, which destroys the scopes being left and then jumps to the innermost handler or returns status 1. `catch` moves the error out of the slot into its binding.
+
+The program's entry runs the module constant initializers, then the entry function. An error escaping either is reported as `error: uncaught CODE: message` followed by `  --> file:line:column`, and the program exits with status 1 after releasing module constants.
+
+## Limits
+
+| Limit | Value |
+|---|---|
+| Interpreter call depth | 100,000 nested calls; exceeding it stops the program with status 3 |
+| Integer literals | must fit 64 bits, and their type |
+| Native stack | the operating system's default; overflowing it is not recoverable |
+
+Budgets for source size, generic expansion, and IR size are not enforced yet.
+
+## Toolchain
+
+| Component | Version | Notes |
+|---|---|---|
+| Rust | 1.98.1 | pinned in `rust-toolchain.toml` |
+| LLVM / clang | 23.1.3 | validated on Windows x64; found on `PATH`, in the default install location, or through `SAYON_CLANG` |
+| C runtime | static (`+crt-static`) on Windows | compiled programs import only system DLLs |
+
+Native builds currently target the host. The runtime library is found next to the `sayon` executable or in `../lib`, or through `SAYON_RUNTIME_LIB`.
+
+## Verification
+
+- `cargo test` runs the lexer, parser, checker, ownership, IR, runtime, and interpreter unit tests, then every program under `tests/programs` in both execution modes, comparing output, errors, and exit status with the recorded expectations, and every program under `tests/errors`, comparing its diagnostics.
+- Native runs set `SAYON_DEBUG_ALLOC`, and each program must report zero live runtime allocations at exit, including programs that end with an uncaught error.
+- Set `SAYON_BLESS=1` to record new expectations, and review the differences before committing them.
