@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.sayon text eol=lf diff=python
+*.png binary
+*.ico binary

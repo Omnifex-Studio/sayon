@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.98"
+repository = "https://github.com/Omnifex-Studio/sayon"
+publish = false
+
+[workspace.dependencies]
+sayon-syntax = { path = "crates/syntax" }
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[profile.release]
+debug = "line-tables-only"
