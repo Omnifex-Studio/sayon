@@ -1,0 +1,30 @@
+# Test blocks run with `sayon test`
+strings = import("standard/strings.sayon")
+
+function add(a, b)
+    return a + b
+
+function average(values: Array<integer>) -> integer
+    total = 0
+    for value in values
+        total += value
+    return total / length(values)
+
+test "adds integers"
+    assert(add(2, 3) == 5)
+    assert(add(-2, 2) == 0)
+
+test "joins text"
+    assert(add("con", "cat") == "concat")
+    assert(strings.upper("ok") == "OK")
+
+test "averages a list"
+    print("checking the average of three values")
+    assert(average([1, 2, 3]) == 2)
+
+test "reports a failed assertion"
+    print("this output appears because the test fails")
+    assert(add(2, 2) == 5, "2 + 2 should be 5")
+
+test "reports an error"
+    assert(average([]) == 0)

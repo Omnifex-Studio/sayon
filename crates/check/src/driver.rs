@@ -324,6 +324,42 @@ impl<'a> Checker<'a> {
         id
     }
 
+    /// Checks each test block as a function without parameters.
+    pub fn check_tests(&mut self) -> Vec<(String, FuncId)> {
+        let mut tests = Vec::new();
+        for (module, name, span, body) in std::mem::take(&mut self.test_blocks) {
+            let first_var = self.unifier.var_count();
+            let mut cx = FnCtx::new(module, None, Type::Nothing, false);
+            let block = self.check_block(&mut cx, body);
+            self.solve_deferred(true);
+            self.default_vars(first_var);
+            let mut function = hir::Function {
+                name: format!("test \"{name}\""),
+                span,
+                generic_count: 0,
+                params: Vec::new(),
+                ret: Type::Nothing,
+                locals: cx.locals,
+                body: block,
+                is_entry: false,
+            };
+            self.finalize_function(&mut function);
+            let id = FuncId(self.functions.len() as u32);
+            self.functions.push(FunctionEntry {
+                ast: None,
+                module,
+                name: function.name.clone(),
+                span,
+                signature: None,
+                generalized: true,
+                hir: Some(function),
+            });
+            self.scc_order.push(vec![id]);
+            tests.push((name, id));
+        }
+        tests
+    }
+
     fn validate_main(&mut self, main: FuncId) {
         let entry = &self.functions[main.0 as usize];
         let Some(function) = &entry.hir else { return };

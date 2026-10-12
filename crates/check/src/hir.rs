@@ -23,6 +23,8 @@ pub struct Program {
     /// Constants in initialization order.
     pub init_order: Vec<ConstId>,
     pub entry: FuncId,
+    /// Test blocks of the entry module, run by `sayon test`.
+    pub tests: Vec<(String, FuncId)>,
 }
 
 impl Program {

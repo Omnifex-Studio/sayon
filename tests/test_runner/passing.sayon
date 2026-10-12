@@ -1,0 +1,14 @@
+# A file whose tests all pass
+function square(x)
+    return x * x
+
+test "squares integers"
+    assert(square(4) == 16)
+
+test "squares floats"
+    assert(square(1.5) == 2.25)
+
+test "can return early"
+    if square(2) == 4
+        return
+    assert(false, "not reached")

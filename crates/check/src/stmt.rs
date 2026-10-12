@@ -249,6 +249,17 @@ impl<'a> Checker<'a> {
                 self.unavailable(span, "`match` statements", "M2");
                 return None;
             }
+            ast::StmtKind::Test { name_span, .. } => {
+                self.error(
+                    Diagnostic::error(
+                        "E_TEST_POSITION",
+                        "test blocks belong at the top level of a file",
+                    )
+                    .primary(*name_span, "")
+                    .help("move the test out of the block it is in"),
+                );
+                return None;
+            }
             ast::StmtKind::Unavailable { feature, milestone } => {
                 self.unavailable(span, feature, milestone);
                 return None;

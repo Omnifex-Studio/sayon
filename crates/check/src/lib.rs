@@ -75,6 +75,7 @@ pub fn check_program(modules: &[ModuleSource], entry: usize, span: Span) -> Chec
         checker.check_component(component, &mut init_order);
     }
     let entry = checker.check_entry(&script, span);
+    let tests = checker.check_tests();
 
     let mut diagnostics = std::mem::take(&mut checker.diagnostics);
     if diagnostics.has_errors() {
@@ -106,6 +107,7 @@ pub fn check_program(modules: &[ModuleSource], entry: usize, span: Span) -> Chec
         constants,
         init_order,
         entry,
+        tests,
     };
 
     let components = checker.scc_order.clone();

@@ -54,7 +54,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `sayon build`, `sayon run --native` on Windows x64 | experimental | M1 |
 | Diagnostics with stable codes and source excerpts | experimental | M1 |
 | VS Code syntax highlighting and file icon | experimental | M1 |
-| `sayon fmt`, `sayon test`, `sayon init`, `sayon doctor`, `sayon clean` | planned | M1 |
+| `sayon test` with `test` blocks (interpreter) | experimental | M1 |
+| `sayon fmt`, `sayon init`, `sayon doctor`, `sayon clean` | planned | M1 |
 | `sayon lint`, `sayon explain`, package installation and lock files | planned | M2 |
 | Registry commands: `publish`, `search`, `info`, `login`, `logout` | planned | M5 |
 | Language server | planned | before M6 |

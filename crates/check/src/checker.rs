@@ -186,6 +186,8 @@ pub(crate) struct Checker<'a> {
     pub current_component: Vec<FuncId>,
     pub reported_vars: HashSet<TyVar>,
     pub scc_order: Vec<Vec<FuncId>>,
+    /// Test blocks of the entry module: module, description, span, body.
+    pub test_blocks: Vec<(ModuleId, String, Span, &'a ast::Block)>,
 }
 
 pub struct CheckOutput {
@@ -208,6 +210,7 @@ impl<'a> Checker<'a> {
             current_component: Vec::new(),
             reported_vars: HashSet::new(),
             scc_order: Vec::new(),
+            test_blocks: Vec::new(),
         }
     }
 
@@ -380,6 +383,17 @@ impl<'a> Checker<'a> {
             match &stmt.kind {
                 StmtKind::Assign { value, .. }
                     if matches!(value.kind, ast::ExprKind::Import { .. }) => {}
+                // Only the tests of the file being tested run.
+                StmtKind::Test {
+                    name,
+                    name_span,
+                    body,
+                } => {
+                    if entry {
+                        self.test_blocks
+                            .push((module_id, name.clone(), *name_span, body));
+                    }
+                }
                 StmtKind::Function(function) => {
                     let name = function.name.as_ref().expect("named function");
                     let id = FuncId(self.functions.len() as u32);

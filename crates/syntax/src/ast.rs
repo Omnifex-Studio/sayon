@@ -192,6 +192,12 @@ pub enum StmtKind {
         scrutinee: Expr,
         arms: Vec<MatchArm>,
     },
+    /// `test "description"` followed by a block, run by `sayon test`.
+    Test {
+        name: String,
+        name_span: Span,
+        body: Block,
+    },
     /// Syntax recognised so it can be reported precisely, but not parsed further
     /// (for example `foreign` blocks before the systems milestone).
     Unavailable {

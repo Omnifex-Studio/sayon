@@ -34,9 +34,10 @@ Sayon is in early development and not ready for real programs. What works today:
 - A native backend: programs compile through LLVM to standalone Windows executables that need no runtime DLLs
 - Modules: programs can be split across files with `import`
 - Standard library modules for files, directories, standard input and output, program arguments, text, and math
-- The `sayon run`, `sayon run --native`, `sayon build`, and `sayon check` commands
+- `test` blocks and the `sayon test` runner
+- The `sayon run`, `sayon run --native`, `sayon build`, `sayon check`, and `sayon test` commands
 
-Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Structures and enums, closures, and the formatter and test runner come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
+Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Structures and enums, closures, and the formatter come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
 
 ## Documentation
 

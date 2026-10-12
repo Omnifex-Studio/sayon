@@ -15,6 +15,8 @@ use std::path::{Component, Path, PathBuf};
 pub struct Options {
     /// The standard library directory, if one was found.
     pub stdlib: Option<PathBuf>,
+    /// Also lower the entry module's test blocks.
+    pub tests: bool,
 }
 
 pub struct Output {
@@ -93,7 +95,11 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
     diagnostics.extend(checked.diagnostics);
     let module = match checked.program {
         Some(program) if !diagnostics.has_errors() => {
-            let lowered = sayon_ir::lower(&program);
+            let lowered = if options.tests {
+                sayon_ir::lower_with_tests(&program)
+            } else {
+                sayon_ir::lower(&program)
+            };
             diagnostics.extend(lowered.diagnostics);
             (!diagnostics.has_errors()).then_some(lowered.module)
         }

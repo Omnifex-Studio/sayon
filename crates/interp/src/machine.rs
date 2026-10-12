@@ -111,6 +111,18 @@ impl<'m> Machine<'m> {
         }
     }
 
+    /// Initializes globals and runs one test function.
+    pub fn run_test(&mut self, test: FunctionId) -> Result<(), RunError> {
+        let module = self.module;
+        for (global, initializer) in &module.initializers {
+            let value = self.call(*initializer)?;
+            self.globals[global.0 as usize] = Some(value);
+        }
+        let result = self.call(test).map(|_| ());
+        let _ = self.out.flush();
+        result
+    }
+
     fn call(&mut self, function: FunctionId) -> Result<Value, RunError> {
         let base = self.frames.len();
         self.push_frame(function, Vec::new())?;

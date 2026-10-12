@@ -1,0 +1,13 @@
+arithmetic.sayon
+  ok      adds integers
+  ok      joins text
+  ok      averages a list
+  FAILED  reports a failed assertion
+          AssertionError: 2 + 2 should be 5
+            --> arithmetic.sayon:27:5
+          output:
+            this output appears because the test fails
+  FAILED  reports an error
+          DivisionByZeroError: integer division by zero
+            --> arithmetic.sayon:11:12
+5 tests: 3 passed, 2 failed

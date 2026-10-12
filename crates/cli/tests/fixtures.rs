@@ -208,6 +208,60 @@ fn native_programs_match_the_interpreter() {
     );
 }
 
+/// Runs `sayon test` on each file under `tests/test_runner` and compares
+/// the report and exit status with `NAME.stdout` and `NAME.status`.
+#[test]
+fn test_runner_reports_results() {
+    let dir = tests_dir().join("test_runner");
+    let mut failures = Vec::new();
+    for source in sources(&dir) {
+        let name = source.file_name().unwrap().to_string_lossy().to_string();
+        let outcome = sayon(&dir, &["test", "--color", "never", &name]);
+        compare(
+            &mut failures,
+            &name,
+            &source.with_extension("stdout"),
+            &outcome.stdout,
+            true,
+        );
+        compare(
+            &mut failures,
+            &name,
+            &source.with_extension("stderr"),
+            &outcome.stderr,
+            false,
+        );
+        let status = if outcome.status == 0 {
+            String::new()
+        } else {
+            format!(
+                "{}
+",
+                outcome.status
+            )
+        };
+        compare(
+            &mut failures,
+            &name,
+            &source.with_extension("status"),
+            &status,
+            false,
+        );
+    }
+    assert!(
+        failures.is_empty(),
+        "{} fixture problem(s):
+
+{}",
+        failures.len(),
+        failures.join(
+            "
+
+"
+        )
+    );
+}
+
 #[test]
 fn invalid_programs_report_their_recorded_diagnostics() {
     let dir = tests_dir().join("errors");

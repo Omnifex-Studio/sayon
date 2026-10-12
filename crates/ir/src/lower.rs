@@ -19,6 +19,15 @@ pub struct LowerOutput {
 }
 
 pub fn lower(program: &hir::Program) -> LowerOutput {
+    lower_program(program, false)
+}
+
+/// Lowers a program together with its test blocks.
+pub fn lower_with_tests(program: &hir::Program) -> LowerOutput {
+    lower_program(program, true)
+}
+
+fn lower_program(program: &hir::Program, include_tests: bool) -> LowerOutput {
     let mut lowerer = Lowerer {
         program,
         instances: HashMap::new(),
@@ -54,6 +63,15 @@ pub fn lower(program: &hir::Program) -> LowerOutput {
         initializers.push((GlobalId(id.0), function_id));
     }
     let entry = lowerer.instance(program.entry, Vec::new());
+    let tests = if include_tests {
+        program
+            .tests
+            .iter()
+            .map(|(name, id)| (name.clone(), lowerer.instance(*id, Vec::new())))
+            .collect()
+    } else {
+        Vec::new()
+    };
     while let Some((func, args, id)) = lowerer.queue.pop() {
         let source = program.function(func);
         let name = instance_name(&source.name, &args);
@@ -72,6 +90,7 @@ pub fn lower(program: &hir::Program) -> LowerOutput {
         initializers,
         entry,
         union_members: lowerer.union_members,
+        tests,
     };
     LowerOutput {
         module,

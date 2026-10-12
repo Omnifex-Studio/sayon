@@ -448,6 +448,14 @@ impl<'t> Parser<'t> {
             {
                 StmtKind::Declare(self.parse_annotated_declaration()?)
             }
+            // `test "description"` is a test block; `test` is otherwise an ordinary name.
+            TokenKind::Identifier(word)
+                if word == "test"
+                    && matches!(self.peek_at(1).kind, TokenKind::String(_))
+                    && !self.peek_at(1).line_start =>
+            {
+                self.parse_test()?
+            }
             _ => self.parse_expression_statement()?,
         };
         let span = start.to(self.previous_span());
@@ -647,6 +655,37 @@ impl<'t> Parser<'t> {
             body,
             catch,
             finally,
+        })
+    }
+
+    fn parse_test(&mut self) -> Result<StmtKind> {
+        self.advance();
+        let token = self.advance();
+        let name_span = token.span;
+        let TokenKind::String(parts) = &token.kind else {
+            unreachable!("checked by the caller")
+        };
+        let mut name = String::new();
+        for part in parts {
+            match part {
+                StringPart::Text { text, .. } => name.push_str(text),
+                StringPart::Interpolation { .. } => {
+                    self.report(
+                        Diagnostic::error(
+                            "E_SYNTAX",
+                            "a test's description cannot use interpolation",
+                        )
+                        .primary(name_span, "write the description as plain text"),
+                    );
+                    return Err(());
+                }
+            }
+        }
+        let body = self.parse_block("the test description");
+        Ok(StmtKind::Test {
+            name,
+            name_span,
+            body,
         })
     }
 
@@ -1779,6 +1818,19 @@ mod tests {
         let codes: Vec<&str> = output.diagnostics.iter().map(|d| d.code).collect();
         assert_eq!(codes, vec!["E_SYNTAX", "E_SYNTAX"]);
         assert_eq!(output.module.stmts.len(), 1);
+    }
+
+    #[test]
+    fn test_blocks() {
+        let module =
+            parse_ok("test \"adds numbers\"\n    assert(1 + 1 == 2)\n\ntest = 5\nprint(test)\n");
+        assert_eq!(module.stmts.len(), 3);
+        let StmtKind::Test { name, body, .. } = &module.stmts[0].kind else {
+            panic!()
+        };
+        assert_eq!(name, "adds numbers");
+        assert_eq!(body.stmts.len(), 1);
+        assert!(matches!(module.stmts[1].kind, StmtKind::Assign { .. }));
     }
 
     #[test]

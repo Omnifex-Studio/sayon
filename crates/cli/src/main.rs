@@ -31,6 +31,7 @@ Usage:
     sayon run --native <file.sayon>      Compile to a native executable and run it
     sayon build <file.sayon> [options]   Compile a native executable
     sayon check <file.sayon> [options]   Report problems without running anything
+    sayon test [files...]                Run test blocks (default: every file under tests/)
     sayon version                        Print the version
     sayon help                           Print this help
 
@@ -89,6 +90,48 @@ fn dispatch(args: &[String]) -> u8 {
         "version" | "--version" | "-V" => {
             println!("sayon {}", env!("CARGO_PKG_VERSION"));
             status::SUCCESS
+        }
+        "test" => {
+            let mut files = Vec::new();
+            let mut color_choice = "auto".to_string();
+            let mut rest = args[1..].iter();
+            while let Some(arg) = rest.next() {
+                match arg.as_str() {
+                    "--color" => match rest.next() {
+                        Some(value) => color_choice = value.clone(),
+                        None => {
+                            return usage_error("--color needs a value: auto, always, or never");
+                        }
+                    },
+                    other if other.starts_with("--color=") => {
+                        color_choice = other["--color=".len()..].to_string()
+                    }
+                    other if other.starts_with('-') => {
+                        return usage_error(&format!("unknown option `{other}`"));
+                    }
+                    other => files.push(PathBuf::from(other)),
+                }
+            }
+            let color = match color_choice.as_str() {
+                "always" => true,
+                "never" => false,
+                "auto" => color_default(),
+                other => {
+                    return usage_error(&format!(
+                        "unknown color choice `{other}`; use auto, always, or never"
+                    ));
+                }
+            };
+            let options = Options {
+                color,
+                quiet: false,
+                native: false,
+                release: false,
+                emit_llvm: false,
+                output: None,
+                program_args: Vec::new(),
+            };
+            test(files, &options)
         }
         "run" | "check" | "build" => {
             let mut file = None;
@@ -227,8 +270,13 @@ fn stdlib_dir() -> Option<PathBuf> {
 
 /// Loads, checks, and lowers a program, printing any diagnostics.
 fn compile(path: &Path, options: &Options) -> Result<Compiled, u8> {
+    compile_program(path, options, false)
+}
+
+fn compile_program(path: &Path, options: &Options, tests: bool) -> Result<Compiled, u8> {
     let driver_options = sayon_driver::Options {
         stdlib: stdlib_dir(),
+        tests,
     };
     let output = match sayon_driver::compile(path, &driver_options) {
         Ok(output) => output,
@@ -427,5 +475,107 @@ fn run_native(path: &Path, options: &Options) -> u8 {
             eprintln!("error: could not start the compiled program: {error}");
             status::BUILD_FAILED
         }
+    }
+}
+
+/// Every `.sayon` file under a directory, in a stable order.
+fn sayon_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut paths: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            sayon_files(&path, out);
+        } else if path.extension().is_some_and(|ext| ext == "sayon") {
+            out.push(path);
+        }
+    }
+}
+
+/// Runs the test blocks of each file in the interpreter. Each test runs with
+/// freshly initialized constants, and its output is shown only if it fails.
+fn test(mut files: Vec<PathBuf>, options: &Options) -> u8 {
+    if files.is_empty() {
+        sayon_files(Path::new("tests"), &mut files);
+        if files.is_empty() {
+            eprintln!(
+                "error: no tests found; give test files or add .sayon files with test blocks under tests/"
+            );
+            return status::USAGE;
+        }
+    }
+    let (mut passed, mut failed, mut broken) = (0usize, 0usize, 0usize);
+    for file in &files {
+        let compiled = match compile_program(file, options, true) {
+            Ok(compiled) => compiled,
+            Err(_) => {
+                broken += 1;
+                continue;
+            }
+        };
+        if compiled.module.tests.is_empty() {
+            continue;
+        }
+        println!("{}", file.display());
+        for (name, function) in &compiled.module.tests {
+            let mut output = Vec::new();
+            let result =
+                sayon_interp::Machine::new(&compiled.module, &compiled.sources, &mut output)
+                    .run_test(*function);
+            match result {
+                Ok(()) => {
+                    passed += 1;
+                    println!("  ok      {name}");
+                }
+                Err(error) => {
+                    failed += 1;
+                    let label = if options.color {
+                        "\x1b[1;31mFAILED\x1b[0m"
+                    } else {
+                        "FAILED"
+                    };
+                    println!("  {label}  {name}");
+                    match error {
+                        sayon_interp::RunError::Uncaught(error) => {
+                            println!("          {}: {}", error.code, error.message);
+                            if let Some(location) = error.location {
+                                println!("            --> {location}");
+                            }
+                        }
+                        sayon_interp::RunError::Fatal(message) => {
+                            println!("          fatal: {message}")
+                        }
+                    }
+                    let captured = String::from_utf8_lossy(&output);
+                    if !captured.is_empty() {
+                        println!("          output:");
+                        for line in captured.lines() {
+                            println!("            {line}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let total = passed + failed;
+    let mut summary = format!(
+        "{total} test{}: {passed} passed, {failed} failed",
+        if total == 1 { "" } else { "s" }
+    );
+    if broken > 0 {
+        summary.push_str(&format!(
+            ", {broken} file{} did not compile",
+            if broken == 1 { "" } else { "s" }
+        ));
+    }
+    println!("{summary}");
+    if failed > 0 {
+        status::PROGRAM_FAILED
+    } else if broken > 0 {
+        status::COMPILE_FAILED
+    } else {
+        status::SUCCESS
     }
 }

@@ -34,6 +34,8 @@ pub struct Module {
     /// value of `A or B or C` is already a valid `A or B` when it holds an `A`
     /// or a `B`. Tag zero marks an empty place.
     pub union_members: Vec<Type>,
+    /// Test functions, when the program was lowered for testing.
+    pub tests: Vec<(String, FunctionId)>,
 }
 
 impl Module {

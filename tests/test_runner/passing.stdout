@@ -1,0 +1,5 @@
+passing.sayon
+  ok      squares integers
+  ok      squares floats
+  ok      can return early
+3 tests: 3 passed, 0 failed
