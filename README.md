@@ -35,7 +35,7 @@ Sayon is in early development and not ready for real programs. What works today:
 - Modules: programs can be split across files with `import`
 - Standard library modules for files, directories, standard input and output, program arguments, text, and math
 - `test` blocks and the `sayon test` runner, and the `sayon fmt` formatter
-- The `sayon run`, `sayon run --native`, `sayon build`, `sayon check`, `sayon test`, and `sayon fmt` commands
+- Projects with a `sayon.toml` manifest, and the `run`, `build`, `check`, `test`, `fmt`, `init`, `clean`, and `doctor` commands
 
 Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Structures and enums, closures, and project manifests come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
 
@@ -54,6 +54,16 @@ cargo build
 cargo run -p sayon-cli -- run tests/programs/functions.sayon
 cargo run -p sayon-cli -- build tests/programs/functions.sayon -o functions.exe
 cargo test
+```
+
+With `sayon` on your `PATH`, a project looks like this:
+
+```sh
+sayon init hello
+cd hello
+sayon run       # Hello, world!
+sayon test
+sayon build     # build/debug/hello
 ```
 
 Native builds need [LLVM](https://releases.llvm.org)'s clang at build time (found on `PATH`, in the default install location, or through `SAYON_CLANG`). The resulting executables have no such dependency.

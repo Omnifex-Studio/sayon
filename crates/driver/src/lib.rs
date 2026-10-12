@@ -6,6 +6,8 @@
 //! name an existing `.sayon` file with exactly the same spelling (also on
 //! case-insensitive file systems), and imports cannot form a cycle.
 
+pub mod manifest;
+
 use sayon_check::ModuleSource;
 use sayon_syntax::ast::{self, ExprKind, StmtKind};
 use sayon_syntax::{Diagnostic, Diagnostics, FileId, SourceMap, Span};
@@ -17,6 +19,9 @@ pub struct Options {
     pub stdlib: Option<PathBuf>,
     /// Also lower the entry module's test blocks.
     pub tests: bool,
+    /// The directory imports resolve from: a project's root. Defaults to
+    /// the entry file's directory.
+    pub root: Option<PathBuf>,
 }
 
 pub struct Output {
@@ -44,11 +49,14 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
     let mut diagnostics = Diagnostics::new();
     let text = read_entry(entry)?;
     let entry_name = entry.display().to_string();
-    let root = entry
-        .parent()
-        .map(Path::to_path_buf)
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| PathBuf::from("."));
+    let root = match &options.root {
+        Some(root) => root.clone(),
+        None => entry
+            .parent()
+            .map(Path::to_path_buf)
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from(".")),
+    };
 
     let mut loader = Loader {
         sources: &mut sources,
@@ -111,6 +119,30 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
         diagnostics,
         module,
     })
+}
+
+/// The nearest directory at or above `start` that holds a `sayon.toml`.
+pub fn find_project(start: &Path) -> Option<PathBuf> {
+    let mut dir = Some(start);
+    while let Some(current) = dir {
+        if current.join(manifest::FILE_NAME).is_file() {
+            return Some(current.to_path_buf());
+        }
+        dir = current.parent();
+    }
+    None
+}
+
+/// Reads and checks a project's manifest. On failure the diagnostics refer
+/// to the manifest file in `sources`.
+pub fn read_manifest(
+    root: &Path,
+    sources: &mut SourceMap,
+) -> Result<manifest::Manifest, Vec<Diagnostic>> {
+    let path = root.join(manifest::FILE_NAME);
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let file = sources.add(manifest::FILE_NAME, Some(&path), text.clone());
+    manifest::parse(file, &text)
 }
 
 fn read_entry(path: &Path) -> Result<Vec<u8>, EntryError> {

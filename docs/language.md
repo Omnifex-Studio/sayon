@@ -365,6 +365,25 @@ print(geometry.UNIT)
 - A module's functions and constants are exported unless marked `private`. Imported modules can only define things: statements that would run on import are rejected.
 - Each module is loaded once, however many modules import it. Imports cannot form a cycle.
 
+## Projects
+
+A single file runs on its own, with imports relative to its directory. A project groups files under a root directory that holds a `sayon.toml` manifest:
+
+```toml
+[package]
+name = "hello"                 # lowercase letters, digits, and underscores
+version = "0.1.0"              # major.minor.patch
+entry = "src/main.sayon"       # optional; this is the default
+authors = ["Ada"]              # optional
+description = "Says hello"     # optional
+```
+
+`sayon init hello` creates a project with a manifest, a program, a module with a test, and ignore rules. Inside a project (in its root or any directory below it), `sayon run`, `check`, `build`, and `test` need no file name: they use the manifest's entry file, and imports resolve from the project root. `sayon build` writes `build/debug/<name>` (`build/release/<name>` with `--release`), and `sayon clean` removes the `build` directory. Without file names, `sayon test` runs the tests in `src` and `tests`.
+
+Unknown or misspelled manifest keys are errors. Dependencies arrive with milestone M2.
+
+`sayon doctor` reports where the standard library, the runtime library, and clang were found.
+
 ## Tests
 
 A `test` block at the top level of a file describes a check:
