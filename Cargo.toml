@@ -11,6 +11,7 @@ publish = false
 
 [workspace.dependencies]
 sayon-syntax = { path = "crates/syntax" }
+sayon-check = { path = "crates/check" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
