@@ -9,12 +9,32 @@
 //!   error slot is a `*mut *mut SayonError`; a null pointer means empty.
 //! - Fallible functions return 0 on success and 1 after storing an error.
 //! - Integer type codes are the indexes of `text::INTEGER_TYPE_NAMES`.
+//!
+//! Every function here is called only by generated code that upholds these
+//! conventions, so the individual functions do not repeat them.
+
+#![allow(clippy::missing_safety_doc)]
 
 use crate::text;
 use std::alloc::{Layout, alloc, dealloc, realloc};
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char};
 use std::io::Write;
+use std::sync::atomic::{AtomicI64, Ordering};
+
+/// Heap objects the runtime has created and not yet released: owned string
+/// data, array storage, dictionaries, errors, and text builders. With
+/// `SAYON_DEBUG_ALLOC` set, a program reports the count when it exits; a
+/// correct program reports zero.
+static LIVE: AtomicI64 = AtomicI64::new(0);
+
+fn allocated() {
+    LIVE.fetch_add(1, Ordering::Relaxed);
+}
+
+fn released() {
+    LIVE.fetch_sub(1, Ordering::Relaxed);
+}
 
 #[repr(C)]
 pub struct SayonStr {
@@ -92,6 +112,7 @@ fn owned(text: String) -> SayonStr {
     let bytes = text.into_bytes().into_boxed_slice();
     let len = bytes.len() as i64;
     let ptr = Box::into_raw(bytes) as *const u8;
+    allocated();
     SayonStr { ptr, len, cap: len }
 }
 
@@ -105,12 +126,14 @@ unsafe fn set_error(
     unsafe {
         if !(*slot).is_null() {
             drop(Box::from_raw(*slot));
+            released();
         }
         let location = if location.is_null() {
             None
         } else {
             Some(c_str(location).to_string())
         };
+        allocated();
         *slot = Box::into_raw(Box::new(SayonError {
             code: code.to_string(),
             message,
@@ -147,6 +170,7 @@ pub unsafe extern "C" fn sayon_str_drop(s: *mut SayonStr) {
             let slice =
                 std::ptr::slice_from_raw_parts_mut(value.ptr as *mut u8, value.cap as usize);
             drop(Box::from_raw(slice));
+            released();
         }
         *value = SayonStr {
             ptr: std::ptr::null(),
@@ -211,6 +235,7 @@ pub unsafe extern "C" fn sayon_str_chars(s: *const SayonStr) -> i64 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn sayon_builder_new() -> *mut Builder {
+    allocated();
     Box::into_raw(Box::new(Builder(String::new())))
 }
 
@@ -309,6 +334,7 @@ pub unsafe extern "C" fn sayon_builder_finish(b: *mut Builder, out: *mut SayonSt
     // SAFETY: `b` came from `sayon_builder_new` and is not used again.
     unsafe {
         let builder = Box::from_raw(b);
+        released();
         *out = owned(builder.0);
     }
 }
@@ -363,6 +389,7 @@ pub unsafe extern "C" fn sayon_array_reserve(
         let capacity = needed.max(array.cap as usize * 2).max(4);
         let new_layout = array_layout(capacity, size);
         let pointer = if array.ptr.is_null() || array.cap == 0 {
+            allocated();
             alloc(new_layout)
         } else {
             realloc(
@@ -386,6 +413,7 @@ pub unsafe extern "C" fn sayon_array_free(a: *mut SayonArray, element_size: i64)
     unsafe {
         let array = &mut *a;
         if !array.ptr.is_null() && array.cap > 0 {
+            released();
             dealloc(
                 array.ptr,
                 array_layout(array.cap as usize, element_size.max(1) as usize),
@@ -431,6 +459,7 @@ pub unsafe extern "C" fn sayon_dict_new(out: *mut *mut SayonDict, value_size: i6
         value_size,
     };
     // SAFETY: `out` is writable.
+    allocated();
     unsafe { *out = Box::into_raw(Box::new(dict)) }
 }
 
@@ -540,6 +569,7 @@ pub unsafe extern "C" fn sayon_dict_drop(slot: *mut *mut SayonDict, drop_value: 
             }
         }
         let mut dict = Box::from_raw(d);
+        released();
         for key in &mut dict.keys {
             sayon_str_drop(key);
         }
@@ -669,6 +699,7 @@ pub unsafe extern "C" fn sayon_error_drop(slot: *mut *mut SayonError) {
     unsafe {
         if !(*slot).is_null() {
             drop(Box::from_raw(*slot));
+            released();
             *slot = std::ptr::null_mut();
         }
     }
@@ -679,6 +710,7 @@ pub unsafe extern "C" fn sayon_error_clone(src: *const *mut SayonError, dst: *mu
     // SAFETY: valid slots.
     unsafe {
         let error = &**src;
+        allocated();
         *dst = Box::into_raw(Box::new(SayonError {
             code: error.code.clone(),
             message: error.message.clone(),
@@ -722,6 +754,7 @@ pub unsafe extern "C" fn sayon_report_uncaught(e: *mut SayonError) -> i32 {
             return 1;
         }
         let error = Box::from_raw(e);
+        released();
         eprintln!("error: uncaught {}: {}", error.code, error.message);
         if let Some(location) = &error.location {
             eprintln!("  --> {location}");
@@ -963,4 +996,25 @@ pub unsafe extern "C" fn sayon_write_file(
 #[unsafe(no_mangle)]
 pub extern "C" fn sayon_runtime_finish() {
     let _ = std::io::stdout().flush();
+    if std::env::var_os("SAYON_DEBUG_ALLOC").is_some() {
+        eprintln!(
+            "sayon: allocations live at exit: {}",
+            LIVE.load(Ordering::Relaxed)
+        );
+    }
+}
+
+/// Maps the integer `main` returned to the process exit status. Portable
+/// statuses are 0 to 255; anything else exits with 255 after a warning.
+#[unsafe(no_mangle)]
+pub extern "C" fn sayon_exit_status(code: i64) -> i32 {
+    if (0..=255).contains(&code) {
+        code as i32
+    } else {
+        let _ = std::io::stdout().flush();
+        eprintln!(
+            "warning: `main` returned {code}; portable exit statuses are 0 to 255, so 255 is used"
+        );
+        255
+    }
 }

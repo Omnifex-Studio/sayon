@@ -46,12 +46,16 @@ struct Outcome {
 }
 
 fn sayon(dir: &Path, args: &[&str]) -> Outcome {
-    let output = Command::new(env!("CARGO_BIN_EXE_sayon"))
-        .args(args)
-        .current_dir(dir)
-        .env_remove("NO_COLOR")
-        .output()
-        .expect("run sayon");
+    sayon_with_env(dir, args, &[])
+}
+
+fn sayon_with_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Outcome {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_sayon"));
+    command.args(args).current_dir(dir).env_remove("NO_COLOR");
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let output = command.output().expect("run sayon");
     Outcome {
         stdout: String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
         stderr: String::from_utf8_lossy(&output.stderr).replace("\r\n", "\n"),
@@ -119,6 +123,86 @@ fn programs_produce_their_recorded_output() {
     assert!(
         failures.is_empty(),
         "{} fixture problem(s):\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
+
+/// Compiles every example natively and checks that it behaves exactly like
+/// the interpreter and releases every allocation it made, including on error
+/// paths. Needs clang; set `SAYON_SKIP_NATIVE=1` to skip explicitly on a
+/// machine without it (the skip is reported, never silent).
+#[test]
+fn native_programs_match_the_interpreter() {
+    if std::env::var_os("SAYON_SKIP_NATIVE").is_some() {
+        eprintln!("SKIPPED: native parity checks (SAYON_SKIP_NATIVE is set)");
+        return;
+    }
+    let dir = tests_dir().join("programs");
+    let mut failures = Vec::new();
+    for source in sources(&dir) {
+        let name = source.file_name().unwrap().to_string_lossy().to_string();
+        let mut outcome = sayon_with_env(
+            &dir,
+            &["run", "--native", "--color", "never", &name],
+            &[("SAYON_DEBUG_ALLOC", "1")],
+        );
+        const REPORT: &str = "sayon: allocations live at exit: ";
+        let mut stderr_lines: Vec<&str> = outcome.stderr.lines().collect();
+        match stderr_lines
+            .iter()
+            .position(|line| line.starts_with(REPORT))
+        {
+            Some(index) => {
+                let live = &stderr_lines[index][REPORT.len()..];
+                if live != "0" {
+                    failures.push(format!("{name}: {live} allocations were never released"));
+                }
+                stderr_lines.remove(index);
+            }
+            None => failures.push(format!("{name}: no allocation report\n{}", outcome.stderr)),
+        }
+        outcome.stderr = stderr_lines
+            .iter()
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let expected_stdout =
+            read_expectation(&source.with_extension("stdout")).unwrap_or_default();
+        let expected_stderr =
+            read_expectation(&source.with_extension("stderr")).unwrap_or_default();
+        let expected_status: i32 = read_expectation(&source.with_extension("status"))
+            .map(|text| text.trim().parse().expect("status"))
+            .unwrap_or(0);
+        // Status 4 means the build failed, unless the program itself returns 4.
+        if outcome.status == 4 && expected_status != 4 {
+            failures.push(format!(
+                "{name}: the native build failed:\n{}",
+                outcome.stderr
+            ));
+            continue;
+        }
+        if outcome.stdout != expected_stdout {
+            failures.push(format!(
+                "{name}: native output differs\n--- interpreter\n{expected_stdout}\n--- native\n{}",
+                outcome.stdout
+            ));
+        }
+        if outcome.stderr != expected_stderr {
+            failures.push(format!(
+                "{name}: native errors differ\n--- interpreter\n{expected_stderr}\n--- native\n{}",
+                outcome.stderr
+            ));
+        }
+        if outcome.status != expected_status {
+            failures.push(format!(
+                "{name}: native status {} differs from {expected_status}",
+                outcome.status
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} native parity problem(s):\n\n{}",
         failures.len(),
         failures.join("\n\n")
     );

@@ -17,6 +17,8 @@ mod status {
     pub const FATAL: u8 = 3;
     /// The command line was invalid.
     pub const USAGE: u8 = 64;
+    /// The native build could not run (toolchain missing or linking failed).
+    pub const BUILD_FAILED: u8 = 4;
     /// An input file could not be read.
     pub const INPUT: u8 = 66;
 }
@@ -26,6 +28,8 @@ Sayon: a readable language for scripts, applications, and systems programs
 
 Usage:
     sayon run <file.sayon> [options]     Check and run a program with the interpreter
+    sayon run --native <file.sayon>      Compile to a native executable and run it
+    sayon build <file.sayon> [options]   Compile a native executable
     sayon check <file.sayon> [options]   Report problems without running anything
     sayon version                        Print the version
     sayon help                           Print this help
@@ -33,12 +37,19 @@ Usage:
 Options:
     --color <auto|always|never>          Color diagnostics (default: auto)
     -q, --quiet                          Print only errors
+    -o, --output <path>                  Executable to write (build; default: next to the source)
+    --release                            Optimize the native code (build, run --native)
+    --emit-llvm                          Write the LLVM IR instead of an executable (build)
+
+Native builds use clang from LLVM. Set SAYON_CLANG to choose a clang
+executable and SAYON_RUNTIME_LIB to choose the runtime library.
 
 Exit status:
     0   success, or the value returned by `main`
     1   the program raised an error that nothing caught
     2   the source has errors, so nothing ran
     3   execution stopped abnormally (for example runaway recursion)
+    4   the native build failed (toolchain missing or linking failed)
     64  invalid command line
     66  an input file could not be read
 ";
@@ -46,6 +57,10 @@ Exit status:
 struct Options {
     color: bool,
     quiet: bool,
+    native: bool,
+    release: bool,
+    emit_llvm: bool,
+    output: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -73,14 +88,25 @@ fn dispatch(args: &[String]) -> u8 {
             println!("sayon {}", env!("CARGO_PKG_VERSION"));
             status::SUCCESS
         }
-        "run" | "check" => {
+        "run" | "check" | "build" => {
             let mut file = None;
             let mut color_choice = "auto".to_string();
             let mut quiet = false;
+            let mut native = false;
+            let mut release = false;
+            let mut emit_llvm = false;
+            let mut output = None;
             let mut rest = args[1..].iter();
             while let Some(arg) = rest.next() {
                 match arg.as_str() {
                     "-q" | "--quiet" => quiet = true,
+                    "--native" if command == "run" => native = true,
+                    "--release" if command != "check" => release = true,
+                    "--emit-llvm" if command == "build" => emit_llvm = true,
+                    "-o" | "--output" if command == "build" => match rest.next() {
+                        Some(value) => output = Some(PathBuf::from(value)),
+                        None => return usage_error("--output needs a path"),
+                    },
                     "--color" => match rest.next() {
                         Some(value) => color_choice = value.clone(),
                         None => {
@@ -122,11 +148,19 @@ fn dispatch(args: &[String]) -> u8 {
                     "`sayon {command}` needs a source file, for example `sayon {command} main.sayon`"
                 ));
             };
-            let options = Options { color, quiet };
-            if command == "run" {
-                run(&file, &options)
-            } else {
-                check(&file, &options)
+            let options = Options {
+                color,
+                quiet,
+                native,
+                release,
+                emit_llvm,
+                output,
+            };
+            match command.as_str() {
+                "run" if options.native => run_native(&file, &options),
+                "run" => run(&file, &options),
+                "build" => build(&file, &options),
+                _ => check(&file, &options),
             }
         }
         other => usage_error(&format!("unknown command `{other}`")),
@@ -272,6 +306,133 @@ fn run(path: &Path, options: &Options) -> u8 {
         Err(sayon_interp::RunError::Fatal(message)) => {
             eprintln!("fatal error: {message}");
             status::FATAL
+        }
+    }
+}
+
+/// Where native build intermediates go: a fresh directory under the system
+/// temporary directory, removed afterwards.
+struct WorkDir(PathBuf);
+
+impl WorkDir {
+    fn create() -> Result<WorkDir, String> {
+        let base = std::env::temp_dir();
+        let path = base.join(format!(
+            "sayon-build-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&path)
+            .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+        Ok(WorkDir(path))
+    }
+}
+
+impl Drop for WorkDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn executable_name(source: &Path) -> PathBuf {
+    let stem = source
+        .file_stem()
+        .map(|s| s.to_os_string())
+        .unwrap_or_else(|| "program".into());
+    let mut path = source.with_file_name(stem);
+    if cfg!(windows) {
+        path.set_extension("exe");
+    }
+    path
+}
+
+/// Compiles a checked program to a native executable at `output`.
+fn compile_native(compiled: &Compiled, output: &Path, release: bool) -> Result<(), String> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    let toolchain = sayon_codegen::Toolchain::locate(exe_dir.as_deref())?;
+    let work = WorkDir::create()?;
+    let ir_path = work.0.join("program.ll");
+    let ir = sayon_codegen::emit_llvm(&compiled.module, &compiled.sources);
+    std::fs::write(&ir_path, ir).map_err(|e| format!("cannot write {}: {e}", ir_path.display()))?;
+    sayon_codegen::link(&toolchain, &ir_path, output, release)
+}
+
+fn build(path: &Path, options: &Options) -> u8 {
+    let compiled = match compile(path, options) {
+        Ok(compiled) => compiled,
+        Err(code) => return code,
+    };
+    if options.emit_llvm {
+        let target = options
+            .output
+            .clone()
+            .unwrap_or_else(|| path.with_extension("ll"));
+        let ir = sayon_codegen::emit_llvm(&compiled.module, &compiled.sources);
+        return match std::fs::write(&target, ir) {
+            Ok(()) => {
+                if !options.quiet {
+                    eprintln!("wrote {}", target.display());
+                }
+                status::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("error: cannot write `{}`: {error}", target.display());
+                status::BUILD_FAILED
+            }
+        };
+    }
+    let output = options
+        .output
+        .clone()
+        .unwrap_or_else(|| executable_name(path));
+    match compile_native(&compiled, &output, options.release) {
+        Ok(()) => {
+            if !options.quiet {
+                eprintln!("built {}", output.display());
+            }
+            status::SUCCESS
+        }
+        Err(message) => {
+            eprintln!("error: {message}");
+            status::BUILD_FAILED
+        }
+    }
+}
+
+fn run_native(path: &Path, options: &Options) -> u8 {
+    let compiled = match compile(path, options) {
+        Ok(compiled) => compiled,
+        Err(code) => return code,
+    };
+    let work = match WorkDir::create() {
+        Ok(work) => work,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return status::BUILD_FAILED;
+        }
+    };
+    let executable = work.0.join(if cfg!(windows) {
+        "program.exe"
+    } else {
+        "program"
+    });
+    if let Err(message) = compile_native(&compiled, &executable, options.release) {
+        eprintln!("error: {message}");
+        return status::BUILD_FAILED;
+    }
+    match std::process::Command::new(&executable).status() {
+        Ok(exit) => exit
+            .code()
+            .map(|code| code.clamp(0, 255) as u8)
+            .unwrap_or(status::FATAL),
+        Err(error) => {
+            eprintln!("error: could not start the compiled program: {error}");
+            status::BUILD_FAILED
         }
     }
 }

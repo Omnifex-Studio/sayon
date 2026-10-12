@@ -15,6 +15,7 @@ sayon-syntax.workspace = true
 sayon-check.workspace = true
 sayon-ir.workspace = true
 sayon-interp.workspace = true
+sayon-codegen.workspace = true
 
 [lints]
 workspace = true

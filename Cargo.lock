@@ -14,7 +14,17 @@ name = "sayon-cli"
 version = "0.0.1"
 dependencies = [
  "sayon-check",
+ "sayon-codegen",
  "sayon-interp",
+ "sayon-ir",
+ "sayon-syntax",
+]
+
+[[package]]
+name = "sayon-codegen"
+version = "0.0.1"
+dependencies = [
+ "sayon-check",
  "sayon-ir",
  "sayon-syntax",
 ]

@@ -31,9 +31,10 @@ Sayon is in early development and not ready for real programs. What works today:
 
 - A front end for the current language subset: lexer, parser, type inference, union narrowing, and ownership checking
 - An interpreter that runs checked programs, with checked integer arithmetic and cleanup on every exit path
-- The `sayon run` and `sayon check` commands
+- A native backend: programs compile through LLVM to standalone Windows executables that need no runtime DLLs
+- The `sayon run`, `sayon run --native`, `sayon build`, and `sayon check` commands
 
-The native backend, modules, structures and enums, closures, and the standard library modules come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
+Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Modules, structures and enums, closures, and the standard library modules come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
 
 ## Trying it
 
@@ -42,8 +43,11 @@ The compiler is written in Rust. The toolchain version is pinned in `rust-toolch
 ```sh
 cargo build
 cargo run -p sayon-cli -- run tests/programs/functions.sayon
+cargo run -p sayon-cli -- build tests/programs/functions.sayon -o functions.exe
 cargo test
 ```
+
+Native builds need [LLVM](https://releases.llvm.org)'s clang at build time (found on `PATH`, in the default install location, or through `SAYON_CLANG`). The resulting executables have no such dependency.
 
 `tests/programs` holds runnable examples with their expected output, and `tests/errors` holds invalid programs with the diagnostics they produce.
 
@@ -55,6 +59,8 @@ cargo test
 | `crates/check` | Name resolution, type inference, and ownership checking |
 | `crates/ir` | Control-flow IR with explicit moves, drops, and error edges |
 | `crates/interp` | The interpreter |
+| `crates/codegen` | Native code generation through LLVM IR |
+| `crates/runtime` | Runtime library linked into compiled programs |
 | `crates/cli` | The `sayon` command |
 | `tests` | Example programs and diagnostic snapshots |
 | `assets` | Logo and icons |
