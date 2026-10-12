@@ -1,0 +1,15 @@
+[package]
+name = "sayon-interp"
+description = "Interpreter for the Sayon IR"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+sayon-syntax.workspace = true
+sayon-check.workspace = true
+sayon-ir.workspace = true
+
+[lints]
+workspace = true
