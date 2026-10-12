@@ -27,7 +27,10 @@ impl IntType {
     ];
 
     pub fn signed(self) -> bool {
-        matches!(self, IntType::I8 | IntType::I16 | IntType::I32 | IntType::I64)
+        matches!(
+            self,
+            IntType::I8 | IntType::I16 | IntType::I32 | IntType::I64
+        )
     }
 
     pub fn bits(self) -> u32 {
@@ -40,11 +43,19 @@ impl IntType {
     }
 
     pub fn min_value(self) -> i128 {
-        if self.signed() { -(1i128 << (self.bits() - 1)) } else { 0 }
+        if self.signed() {
+            -(1i128 << (self.bits() - 1))
+        } else {
+            0
+        }
     }
 
     pub fn max_value(self) -> i128 {
-        if self.signed() { (1i128 << (self.bits() - 1)) - 1 } else { (1i128 << self.bits()) - 1 }
+        if self.signed() {
+            (1i128 << (self.bits() - 1)) - 1
+        } else {
+            (1i128 << self.bits()) - 1
+        }
     }
 
     pub fn name(self) -> &'static str {
@@ -236,7 +247,10 @@ mod tests {
             Type::union([Type::INTEGER, Type::Nothing]),
             Type::INTEGER,
         ]);
-        assert_eq!(nested, Type::Union(vec![Type::INTEGER, Type::String, Type::Nothing]));
+        assert_eq!(
+            nested,
+            Type::Union(vec![Type::INTEGER, Type::String, Type::Nothing])
+        );
         assert_eq!(nested.to_string(), "integer or string or nothing");
         assert_eq!(Type::union([Type::Boolean, Type::Boolean]), Type::Boolean);
     }

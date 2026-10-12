@@ -7,7 +7,11 @@ use sayon_syntax::{FileId, SourceMap};
 
 fn errors(source: &str) -> Vec<&'static str> {
     let (_, diagnostics) = check_source(FileId(0), source);
-    diagnostics.iter().filter(|d| d.is_error()).map(|d| d.code).collect()
+    diagnostics
+        .iter()
+        .filter(|d| d.is_error())
+        .map(|d| d.code)
+        .collect()
 }
 
 #[track_caller]
@@ -16,7 +20,10 @@ fn ok(source: &str) -> sayon_check::hir::Program {
     if diagnostics.has_errors() || program.is_none() {
         let mut sources = SourceMap::new();
         sources.add("test.sayon", None, source.to_string());
-        let rendered: Vec<String> = diagnostics.iter().map(|d| render(d, &sources, false)).collect();
+        let rendered: Vec<String> = diagnostics
+            .iter()
+            .map(|d| render(d, &sources, false))
+            .collect();
         panic!("expected success, got:\n{}", rendered.join("\n"));
     }
     program.unwrap()
@@ -28,20 +35,29 @@ fn fails(source: &str, code: &str) {
     assert!(found.contains(&code), "expected {code}, got {found:?}");
 }
 
-fn function<'p>(program: &'p sayon_check::hir::Program, name: &str) -> &'p sayon_check::hir::Function {
-    program.functions.iter().find(|f| f.name == name).expect("function")
+fn function<'p>(
+    program: &'p sayon_check::hir::Program,
+    name: &str,
+) -> &'p sayon_check::hir::Function {
+    program
+        .functions
+        .iter()
+        .find(|f| f.name == name)
+        .expect("function")
 }
 
 #[test]
 fn literals_and_bindings() {
-    ok("count = 42\nmask = 0xFF\nratio = 3.14\npositive: unsigned = 255u\nenabled = true\nmissing = nothing\nnumbers = [1, 2, 3]\nprofile = [\"name\" = \"Alice\", \"city\" = \"Paris\"]\nconstant MAX_SIZE = 100\nvariable total = 0\n");
+    ok(
+        "count = 42\nmask = 0xFF\nratio = 3.14\npositive: unsigned = 255u\nenabled = true\nmissing = nothing\nnumbers = [1, 2, 3]\nprofile = [\"name\" = \"Alice\", \"city\" = \"Paris\"]\nconstant MAX_SIZE = 100\nvariable total = 0\n",
+    );
 }
 
 #[test]
 fn sized_literals_take_their_context() {
     ok("small: integer8 = -128\nbyte_value: byte = 255\n");
     fails("small: integer8 = 128\n", "E_LITERAL_RANGE");
-    fails("x: unsigned = -1\n", "E_UNSUPPORTED_OPERATION");
+    fails("x: unsigned = -1\n", "E_LITERAL_RANGE");
     fails("x: float = 1\n", "E_TYPE_MISMATCH");
 }
 
@@ -63,35 +79,65 @@ fn inferred_generic_functions() {
     assert_eq!(identity.params[0].mode, ParamMode::Own);
     let add = function(&program, "add");
     assert_eq!(add.generic_count, 1);
-    fails("function add(a, b)\n    return a + b\n\nprint(add(true, false))\n", "E_UNSUPPORTED_OPERATION");
+    fails(
+        "function add(a, b)\n    return a + b\n\nprint(add(true, false))\n",
+        "E_UNSUPPORTED_OPERATION",
+    );
 }
 
 #[test]
 fn explicit_generics() {
-    ok("function wrap<T>(own value: T) -> Array<T>\n    return [value]\n\nnumbers = wrap<integer>(42)\nwords = wrap(\"a\")\n");
-    fails("function bad<T>(a: T, b: T) -> T\n    return a + b\n", "E_UNSUPPORTED_OPERATION");
+    ok(
+        "function wrap<T>(own value: T) -> Array<T>\n    return [value]\n\nnumbers = wrap<integer>(42)\nwords = wrap(\"a\")\n",
+    );
+    fails(
+        "function bad<T>(a: T, b: T) -> T\n    return a + b\n",
+        "E_UNSUPPORTED_OPERATION",
+    );
 }
 
 #[test]
 fn recursion() {
-    ok("function factorial(n)\n    if n <= 1\n        return 1\n    return n * factorial(n - 1)\n\nprint(factorial(10))\n");
-    ok("function is_even(n: integer) -> boolean\n    if n == 0\n        return true\n    return is_odd(n - 1)\n\nfunction is_odd(n: integer) -> boolean\n    if n == 0\n        return false\n    return is_even(n - 1)\n\nprint(is_even(10))\n");
+    ok(
+        "function factorial(n)\n    if n <= 1\n        return 1\n    return n * factorial(n - 1)\n\nprint(factorial(10))\n",
+    );
+    ok(
+        "function is_even(n: integer) -> boolean\n    if n == 0\n        return true\n    return is_odd(n - 1)\n\nfunction is_odd(n: integer) -> boolean\n    if n == 0\n        return false\n    return is_even(n - 1)\n\nprint(is_even(10))\n",
+    );
 }
 
 #[test]
 fn missing_return() {
-    fails("function f(x: integer) -> integer\n    if x > 0\n        return 1\n", "E_MISSING_RETURN");
-    ok("function f(x: integer) -> integer\n    if x > 0\n        return 1\n    else\n        return 2\n");
-    ok("function f(x: integer) -> integer\n    if x > 0\n        return 1\n    error(\"negative\")\n");
+    fails(
+        "function f(x: integer) -> integer\n    if x > 0\n        return 1\n",
+        "E_MISSING_RETURN",
+    );
+    ok(
+        "function f(x: integer) -> integer\n    if x > 0\n        return 1\n    else\n        return 2\n",
+    );
+    ok(
+        "function f(x: integer) -> integer\n    if x > 0\n        return 1\n    error(\"negative\")\n",
+    );
 }
 
 #[test]
 fn unions_and_narrowing() {
-    ok("function find(id: integer) -> integer or nothing\n    if id == 1\n        return 10\n    return nothing\n\nresult = find(1)\nif result != nothing\n    print(result + 1)\n");
-    fails("function find(id: integer) -> integer or nothing\n    return nothing\n\nresult = find(1)\nprint(result + 1)\n", "E_TYPE_MISMATCH");
-    ok("function get() -> integer or string\n    return 1\n\nvalue = get()\nif typeof(value) == \"integer\"\n    print(value + 10)\nelse\n    print(value + \"text\")\n");
-    ok("function get() -> integer or nothing\n    return 1\n\nvalue = get()\nif value == nothing\n    error(\"missing\")\nprint(value * 2)\n");
-    ok("function get() -> integer or nothing\n    return 1\n\nvalue = get()\nif value != nothing and value > 3\n    print(value)\n");
+    ok(
+        "function find(id: integer) -> integer or nothing\n    if id == 1\n        return 10\n    return nothing\n\nresult = find(1)\nif result != nothing\n    print(result + 1)\n",
+    );
+    fails(
+        "function find(id: integer) -> integer or nothing\n    return nothing\n\nresult = find(1)\nprint(result + 1)\n",
+        "E_TYPE_MISMATCH",
+    );
+    ok(
+        "function get() -> integer or string\n    return 1\n\nvalue = get()\nif typeof(value) == \"integer\"\n    print(value + 10)\nelse\n    print(value + \"text\")\n",
+    );
+    ok(
+        "function get() -> integer or nothing\n    return 1\n\nvalue = get()\nif value == nothing\n    error(\"missing\")\nprint(value * 2)\n",
+    );
+    ok(
+        "function get() -> integer or nothing\n    return 1\n\nvalue = get()\nif value != nothing and value > 3\n    print(value)\n",
+    );
 }
 
 #[test]
@@ -110,7 +156,9 @@ fn narrowing_is_invalidated_by_assignment() {
 fn heterogeneous_arrays() {
     let program = ok("mixed = [1, \"text\", true]\n");
     let entry = &program.functions[program.entry.0 as usize];
-    let StmtKind::Let { value, .. } = &entry.body.stmts[0].kind else { panic!() };
+    let StmtKind::Let { value, .. } = &entry.body.stmts[0].kind else {
+        panic!()
+    };
     assert_eq!(value.ty.to_string(), "Array<integer or boolean or string>");
 }
 
@@ -130,14 +178,23 @@ fn empty_collections_need_a_type() {
 #[test]
 fn undefined_names_suggest_alternatives() {
     let (_, diagnostics) = check_source(FileId(0), "total = 1\nprint(totl)\n");
-    let diagnostic = diagnostics.iter().find(|d| d.code == "E_UNDEFINED_NAME").expect("error");
+    let diagnostic = diagnostics
+        .iter()
+        .find(|d| d.code == "E_UNDEFINED_NAME")
+        .expect("error");
     assert!(diagnostic.help.iter().any(|h| h.contains("total")));
 }
 
 #[test]
 fn functions_cannot_see_script_variables() {
-    let (_, diagnostics) = check_source(FileId(0), "name = \"x\"\nfunction greet()\n    print(name)\n");
-    let diagnostic = diagnostics.iter().find(|d| d.code == "E_UNDEFINED_NAME").expect("error");
+    let (_, diagnostics) = check_source(
+        FileId(0),
+        "name = \"x\"\nfunction greet()\n    print(name)\n",
+    );
+    let diagnostic = diagnostics
+        .iter()
+        .find(|d| d.code == "E_UNDEFINED_NAME")
+        .expect("error");
     assert!(!diagnostic.notes.is_empty());
     ok("constant NAME = \"x\"\nfunction greet()\n    print(NAME)\n\ngreet()\n");
 }
@@ -146,27 +203,39 @@ fn functions_cannot_see_script_variables() {
 fn scopes() {
     fails("if true\n    inner = 1\nprint(inner)\n", "E_UNDEFINED_NAME");
     ok("total = 0\nif true\n    total = 1\nprint(total)\n");
-    fails("variable x = 1\nvariable x = 2\n", "E_DUPLICATE_DECLARATION");
+    fails(
+        "variable x = 1\nvariable x = 2\n",
+        "E_DUPLICATE_DECLARATION",
+    );
     fails("constant LIMIT = 1\nLIMIT = 2\n", "E_ASSIGN_CONSTANT");
     fails("for i in range(3)\n    i = 2\n", "E_ASSIGN_CONSTANT");
 }
 
 #[test]
 fn loops() {
-    ok("for i in range(10)\n    print(i)\nfor name in [\"a\", \"b\"]\n    print(name)\nages = [\"a\" = 1]\nfor key in ages\n    print(key)\nfor key, value in ages\n    print(\"{key}: {value}\")\n");
+    ok(
+        "for i in range(10)\n    print(i)\nfor name in [\"a\", \"b\"]\n    print(name)\nages = [\"a\" = 1]\nfor key in ages\n    print(key)\nfor key, value in ages\n    print(\"{key}: {value}\")\n",
+    );
     fails("break\n", "E_OUTSIDE_LOOP");
     fails("for a, b in [1, 2]\n    print(a)\n", "E_LOOP_BINDINGS");
 }
 
 #[test]
 fn untyped_parameters_used_as_collections() {
-    ok("function total(values)\n    result = 0\n    for value in values\n        result = result + value\n    return result\n\nprint(total([1, 2, 3]))\n");
+    ok(
+        "function total(values)\n    result = 0\n    for value in values\n        result = result + value\n    return result\n\nprint(total([1, 2, 3]))\n",
+    );
 }
 
 #[test]
 fn errors_and_try() {
-    ok("function divide(a, b)\n    if b == 0\n        error(\"Division by zero\")\n    return a / b\n\ntry\n    value = divide(10, 0)\ncatch problem\n    print(\"Error: {problem}\")\n    print(problem.message)\nfinally\n    print(\"Operation finished\")\n");
-    fails("for i in range(2)\n    try\n        print(i)\n    finally\n        break\n", "E_FINALLY_TRANSFER");
+    ok(
+        "function divide(a, b)\n    if b == 0\n        error(\"Division by zero\")\n    return a / b\n\ntry\n    value = divide(10, 0)\ncatch problem\n    print(\"Error: {problem}\")\n    print(problem.message)\nfinally\n    print(\"Operation finished\")\n",
+    );
+    fails(
+        "for i in range(2)\n    try\n        print(i)\n    finally\n        break\n",
+        "E_FINALLY_TRANSFER",
+    );
 }
 
 #[test]
@@ -186,7 +255,11 @@ fn main_function_is_the_entry() {
 #[test]
 fn constants_are_initialized_in_dependency_order() {
     let program = ok("constant B = A + 1\nconstant A = 41\nprint(B)\n");
-    let order: Vec<&str> = program.init_order.iter().map(|id| program.constants[id.0 as usize].name.as_str()).collect();
+    let order: Vec<&str> = program
+        .init_order
+        .iter()
+        .map(|id| program.constants[id.0 as usize].name.as_str())
+        .collect();
     assert_eq!(order, vec!["A", "B"]);
     fails("constant A = A + 1\n", "E_INITIALIZATION_CYCLE");
 }
@@ -195,7 +268,10 @@ fn constants_are_initialized_in_dependency_order() {
 
 #[test]
 fn assignment_moves_owned_values() {
-    fails("first = [1, 2, 3]\nsecond = first\nprint(first)\n", "E_MOVED_VALUE");
+    fails(
+        "first = [1, 2, 3]\nsecond = first\nprint(first)\n",
+        "E_MOVED_VALUE",
+    );
     ok("first = [1, 2, 3]\nsecond = clone(first)\npush(second, 4)\nprint(first)\nprint(second)\n");
     ok("a = 1\nb = a\nprint(a)\n");
 }
@@ -204,7 +280,10 @@ fn assignment_moves_owned_values() {
 fn moved_value_diagnostic_names_both_sites() {
     let source = "numbers = [1, 2]\nother = numbers\nprint(numbers)\n";
     let (_, diagnostics) = check_source(FileId(0), source);
-    let diagnostic = diagnostics.iter().find(|d| d.code == "E_MOVED_VALUE").expect("error");
+    let diagnostic = diagnostics
+        .iter()
+        .find(|d| d.code == "E_MOVED_VALUE")
+        .expect("error");
     assert_eq!(diagnostic.labels.len(), 2);
     assert!(diagnostic.help[0].contains("other = clone(numbers)"));
 }
@@ -227,40 +306,86 @@ fn moves_inside_loops() {
 
 #[test]
 fn calls_borrow_by_default() {
-    let program = ok("function total(values: Array<integer>) -> integer\n    result = 0\n    for value in values\n        result = result + value\n    return result\n\nnumbers = [1, 2, 3]\nprint(total(numbers))\nprint(length(numbers))\n");
+    let program = ok(
+        "function total(values: Array<integer>) -> integer\n    result = 0\n    for value in values\n        result = result + value\n    return result\n\nnumbers = [1, 2, 3]\nprint(total(numbers))\nprint(length(numbers))\n",
+    );
     let entry = &program.functions[program.entry.0 as usize];
-    let StmtKind::Expr(print) = &entry.body.stmts[1].kind else { panic!() };
-    let ExprKind::Builtin { args, .. } = &print.kind else { panic!() };
-    let ExprKind::Call { args: call_args, .. } = &args[0].expr.kind else { panic!() };
-    assert!(matches!(call_args[0].expr.kind, ExprKind::Local { usage: Usage::Borrow, .. }));
+    let StmtKind::Expr(print) = &entry.body.stmts[1].kind else {
+        panic!()
+    };
+    let ExprKind::Builtin { args, .. } = &print.kind else {
+        panic!()
+    };
+    let ExprKind::Call {
+        args: call_args, ..
+    } = &args[0].expr.kind
+    else {
+        panic!()
+    };
+    assert!(matches!(
+        call_args[0].expr.kind,
+        ExprKind::Local {
+            usage: Usage::Borrow,
+            ..
+        }
+    ));
 }
 
 #[test]
 fn parameter_modes() {
-    fails("function f(values: Array<integer>)\n    push(values, 1)\n", "E_MUTATE_BORROWED");
-    ok("function f(update values: Array<integer>)\n    push(values, 1)\n\nnumbers = [1]\nf(numbers)\nprint(numbers)\n");
-    fails("function keep(values: Array<integer>) -> Array<integer>\n    return values\n", "E_MOVE_BORROWED");
+    fails(
+        "function f(values: Array<integer>)\n    push(values, 1)\n",
+        "E_MUTATE_BORROWED",
+    );
+    ok(
+        "function f(update values: Array<integer>)\n    push(values, 1)\n\nnumbers = [1]\nf(numbers)\nprint(numbers)\n",
+    );
+    fails(
+        "function keep(values: Array<integer>) -> Array<integer>\n    return values\n",
+        "E_MOVE_BORROWED",
+    );
     ok("function keep(own values: Array<integer>) -> Array<integer>\n    return values\n");
-    let program = ok("function add_one(values)\n    push(values, 1)\n\nlist = [0]\nadd_one(list)\nprint(list)\n");
-    assert_eq!(function(&program, "add_one").params[0].mode, ParamMode::Update);
+    let program = ok(
+        "function add_one(values)\n    push(values, 1)\n\nlist = [0]\nadd_one(list)\nprint(list)\n",
+    );
+    assert_eq!(
+        function(&program, "add_one").params[0].mode,
+        ParamMode::Update
+    );
 }
 
 #[test]
 fn transfer_to_owning_parameter() {
-    fails("function consume(own values: Array<integer>)\n    print(values)\n\nnumbers = [1]\nconsume(numbers)\nprint(numbers)\n", "E_MOVED_VALUE");
+    fails(
+        "function consume(own values: Array<integer>)\n    print(values)\n\nnumbers = [1]\nconsume(numbers)\nprint(numbers)\n",
+        "E_MOVED_VALUE",
+    );
 }
 
 #[test]
 fn loops_borrow_their_collection() {
-    fails("numbers = [1, 2]\nfor n in numbers\n    push(numbers, n)\n", "E_BORROW_CONFLICT");
-    fails("names = [\"a\"]\nfor name in names\n    other = name\n", "E_MOVE_BORROWED");
-    ok("names = [\"a\"]\ncopies: Array<string> = []\nfor name in names\n    push(copies, clone(name))\nprint(names)\n");
+    fails(
+        "numbers = [1, 2]\nfor n in numbers\n    push(numbers, n)\n",
+        "E_BORROW_CONFLICT",
+    );
+    fails(
+        "names = [\"a\"]\nfor name in names\n    other = name\n",
+        "E_MOVE_BORROWED",
+    );
+    ok(
+        "names = [\"a\"]\ncopies: Array<string> = []\nfor name in names\n    push(copies, clone(name))\nprint(names)\n",
+    );
 }
 
 #[test]
 fn elements_cannot_be_moved_out() {
-    fails("names = [\"a\"]\nfirst = names[0]\n", "E_MOVE_OUT_OF_ELEMENT");
-    ok("names = [\"a\"]\nfirst = clone(names[0])\nprint(names[0])\nnumbers = [1]\nn = numbers[0]\n");
+    fails(
+        "names = [\"a\"]\nfirst = names[0]\n",
+        "E_MOVE_OUT_OF_ELEMENT",
+    );
+    ok(
+        "names = [\"a\"]\nfirst = clone(names[0])\nprint(names[0])\nnumbers = [1]\nn = numbers[0]\n",
+    );
 }
 
 #[test]
@@ -268,14 +393,26 @@ fn conflicting_arguments() {
     fails("numbers = [1]\npush(numbers, numbers)\n", "E_TYPE_MISMATCH");
     fails("lists = [[1]]\npush(lists, lists)\n", "E_TYPE_MISMATCH");
     ok("numbers = [1]\npush(numbers, numbers[0])\n");
-    fails("function both(update a: Array<integer>, b: Array<integer>)\n    print(b)\n\nx = [1]\nboth(x, x)\n", "E_BORROW_CONFLICT");
+    fails(
+        "function both(update a: Array<integer>, b: Array<integer>)\n    print(b)\n\nx = [1]\nboth(x, x)\n",
+        "E_BORROW_CONFLICT",
+    );
 }
 
 #[test]
 fn constants_cannot_be_mutated_or_moved() {
-    fails("constant NAMES = [\"a\"]\nfunction f()\n    push(NAMES, \"b\")\n", "E_MUTATE_CONSTANT");
-    fails("constant NAMES = [\"a\"]\nfunction f()\n    taken = NAMES\n", "E_MOVE_CONSTANT");
-    fails("function f()\n    constant items = [1]\n    push(items, 2)\n", "E_MUTATE_CONSTANT");
+    fails(
+        "constant NAMES = [\"a\"]\nfunction f()\n    push(NAMES, \"b\")\n",
+        "E_MUTATE_CONSTANT",
+    );
+    fails(
+        "constant NAMES = [\"a\"]\nfunction f()\n    taken = NAMES\n",
+        "E_MOVE_CONSTANT",
+    );
+    fails(
+        "function f()\n    constant items = [1]\n    push(items, 2)\n",
+        "E_MUTATE_CONSTANT",
+    );
 }
 
 #[test]
@@ -285,12 +422,18 @@ fn explicit_move() {
 
 #[test]
 fn try_bodies_make_moves_uncertain() {
-    fails("function consume(own values: Array<integer>)\n    print(values)\n\nnumbers = [1]\ntry\n    consume(numbers)\ncatch problem\n    print(numbers)\n", "E_MOVED_VALUE");
+    fails(
+        "function consume(own values: Array<integer>)\n    print(values)\n\nnumbers = [1]\ntry\n    consume(numbers)\ncatch problem\n    print(numbers)\n",
+        "E_MOVED_VALUE",
+    );
 }
 
 #[test]
 fn narrowed_payload_moves_the_union() {
-    fails("function get() -> string or nothing\n    return \"x\"\n\nvalue = get()\nif value != nothing\n    other = value\n    print(value)\n", "E_MOVED_VALUE");
+    fails(
+        "function get() -> string or nothing\n    return \"x\"\n\nvalue = get()\nif value != nothing\n    other = value\n    print(value)\n",
+        "E_MOVED_VALUE",
+    );
 }
 
 #[test]

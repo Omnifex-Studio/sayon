@@ -50,15 +50,17 @@ fn join(a: &State, b: &State) -> State {
                     (Status::Init, Some(Status::Init)) => Status::Init,
                     (Status::Init, None) => continue,
                     (Status::Init, Some(Status::Moved(site) | Status::MaybeMoved(site)))
-                    | (Status::Moved(site) | Status::MaybeMoved(site), _) => Status::MaybeMoved(site.clone()),
+                    | (Status::Moved(site) | Status::MaybeMoved(site), _) => {
+                        Status::MaybeMoved(site.clone())
+                    }
                 };
                 out.insert(*local, merged);
             }
             for (local, right) in y {
-                if !x.contains_key(local) {
-                    if let Status::Moved(site) | Status::MaybeMoved(site) = right {
-                        out.insert(*local, Status::MaybeMoved(site.clone()));
-                    }
+                if !x.contains_key(local)
+                    && let Status::Moved(site) | Status::MaybeMoved(site) = right
+                {
+                    out.insert(*local, Status::MaybeMoved(site.clone()));
                 }
             }
             Some(out)
@@ -163,7 +165,9 @@ impl<'p> Analyzer<'p> {
 
     /// Upgrades an inferred parameter mode, or reports a violation of an explicit one.
     fn require_param_mode(&mut self, local: LocalId, needed: ParamMode, span: Span) -> bool {
-        let Some((mode, explicit)) = self.params.get(&local).copied() else { return true };
+        let Some((mode, explicit)) = self.params.get(&local).copied() else {
+            return true;
+        };
         let rank = |m: ParamMode| match m {
             ParamMode::Read => 0,
             ParamMode::Update => 1,
@@ -182,7 +186,10 @@ impl<'p> Analyzer<'p> {
         let (code, message, help) = match needed {
             ParamMode::Own => (
                 "E_MOVE_BORROWED",
-                format!("cannot transfer `{name}`: the parameter only borrows {}", Self::describe_value(&ty)),
+                format!(
+                    "cannot transfer `{name}`: the parameter only borrows {}",
+                    Self::describe_value(&ty)
+                ),
                 format!("declare it `own {name}: {ty}` to take ownership, or use clone({name})"),
             ),
             _ => (
@@ -232,32 +239,56 @@ impl<'p> Analyzer<'p> {
             ),
             _ => format!("write clone({name}) at the transfer if you need to keep using `{name}`"),
         };
-        let move_label = if maybe && !site.earlier_iteration { "transferred here on some paths" } else { "ownership transferred here" };
+        let move_label = if maybe && !site.earlier_iteration {
+            "transferred here on some paths"
+        } else {
+            "ownership transferred here"
+        };
         self.emit("E_MOVED_VALUE", span, || {
-            Diagnostic::error("E_MOVED_VALUE", message)
-                .secondary(site.span, move_label)
-                .primary(span, format!("`{name}` no longer owns {value}"))
-                .help(help)
+            let diagnostic = Diagnostic::error("E_MOVED_VALUE", message);
+            let diagnostic = if site.span == span {
+                diagnostic.primary(
+                    span,
+                    format!("transferred here, so the next iteration no longer owns {value}"),
+                )
+            } else {
+                diagnostic
+                    .secondary(site.span, move_label)
+                    .primary(span, format!("`{name}` no longer owns {value}"))
+            };
+            diagnostic.help(help)
         });
         false
     }
 
     fn loop_conflict(&mut self, local: LocalId, span: Span, action: &str) -> bool {
-        let Some(borrow) = self.loop_borrows.iter().find(|b| b.local == local) else { return true };
+        let Some(borrow) = self.loop_borrows.iter().find(|b| b.local == local) else {
+            return true;
+        };
         let loop_span = borrow.span;
         let name = self.local(local).name.clone();
         self.emit("E_BORROW_CONFLICT", span, || {
-            Diagnostic::error("E_BORROW_CONFLICT", format!("cannot {action} `{name}` while the loop is reading it"))
-                .primary(span, "")
-                .secondary(loop_span, format!("the loop reads `{name}` here until it finishes"))
-                .help("collect the changes in another collection and apply them after the loop")
+            Diagnostic::error(
+                "E_BORROW_CONFLICT",
+                format!("cannot {action} `{name}` while the loop is reading it"),
+            )
+            .primary(span, "")
+            .secondary(
+                loop_span,
+                format!("the loop reads `{name}` here until it finishes"),
+            )
+            .help("collect the changes in another collection and apply them after the loop")
         });
         false
     }
 
     fn mark_moved(&mut self, local: LocalId, span: Span, state: &mut State) {
         if let Some(map) = state {
-            let site = MoveSite { span, reason: self.reason.clone(), earlier_iteration: false };
+            let site = MoveSite {
+                span,
+                reason: self.reason.clone(),
+                earlier_iteration: false,
+            };
             map.insert(local, Status::Moved(site));
         }
         for region in &mut self.regions {
@@ -266,7 +297,15 @@ impl<'p> Analyzer<'p> {
     }
 
     /// Classifies and checks one read of a local.
-    fn use_local(&mut self, local: LocalId, usage: &mut Usage, copy: bool, ctx: Ctx, span: Span, state: &mut State) {
+    fn use_local(
+        &mut self,
+        local: LocalId,
+        usage: &mut Usage,
+        copy: bool,
+        ctx: Ctx,
+        span: Span,
+        state: &mut State,
+    ) {
         let explicit_move = *usage == Usage::Move;
         let decided = if copy {
             Usage::Copy
@@ -277,7 +316,11 @@ impl<'p> Analyzer<'p> {
         } else {
             Usage::Borrow
         };
-        *usage = if explicit_move && !copy { Usage::Move } else { decided };
+        *usage = if explicit_move && !copy {
+            Usage::Move
+        } else {
+            decided
+        };
 
         if !self.check_initialized(local, span, state) {
             return;
@@ -288,9 +331,14 @@ impl<'p> Analyzer<'p> {
                 if info.kind == LocalKind::LoopVariable && info.borrowed {
                     let name = info.name.clone();
                     self.emit("E_MOVE_BORROWED", span, || {
-                        Diagnostic::error("E_MOVE_BORROWED", format!("cannot transfer `{name}`: it borrows an element during the loop"))
-                            .primary(span, "")
-                            .help(format!("use clone({name}) to keep a copy of the element"))
+                        Diagnostic::error(
+                            "E_MOVE_BORROWED",
+                            format!(
+                                "cannot transfer `{name}`: it borrows an element during the loop"
+                            ),
+                        )
+                        .primary(span, "")
+                        .help(format!("use clone({name}) to keep a copy of the element"))
                     });
                     return;
                 }
@@ -313,19 +361,27 @@ impl<'p> Analyzer<'p> {
             LocalKind::Constant => {
                 let name = info.name.clone();
                 self.emit("E_MUTATE_CONSTANT", span, || {
-                    Diagnostic::error("E_MUTATE_CONSTANT", format!("`{name}` is a constant and cannot be changed"))
-                        .primary(span, "")
-                        .secondary(info.span, "declared as a constant here")
-                        .help(format!("declare it with `variable {name} = ...` to allow changes"))
+                    Diagnostic::error(
+                        "E_MUTATE_CONSTANT",
+                        format!("`{name}` is a constant and cannot be changed"),
+                    )
+                    .primary(span, "")
+                    .secondary(info.span, "declared as a constant here")
+                    .help(format!(
+                        "declare it with `variable {name} = ...` to allow changes"
+                    ))
                 });
                 return;
             }
             LocalKind::LoopVariable if info.borrowed => {
                 let name = info.name.clone();
                 self.emit("E_MUTATE_BORROWED", span, || {
-                    Diagnostic::error("E_MUTATE_BORROWED", format!("cannot change `{name}`: it borrows an element during the loop"))
-                        .primary(span, "")
-                        .help("loop over indexes with range(length(...)) to change elements in place")
+                    Diagnostic::error(
+                        "E_MUTATE_BORROWED",
+                        format!("cannot change `{name}`: it borrows an element during the loop"),
+                    )
+                    .primary(span, "")
+                    .help("loop over indexes with range(length(...)) to change elements in place")
                 });
                 return;
             }
@@ -367,16 +423,22 @@ impl<'p> Analyzer<'p> {
                 if ctx == Ctx::Update {
                     let name = self.constant_names[id.0 as usize].clone();
                     self.emit("E_MUTATE_CONSTANT", span, || {
-                        Diagnostic::error("E_MUTATE_CONSTANT", format!("the constant `{name}` cannot be changed"))
-                            .primary(span, "")
-                            .help(format!("copy it first: `items = clone({name})`"))
+                        Diagnostic::error(
+                            "E_MUTATE_CONSTANT",
+                            format!("the constant `{name}` cannot be changed"),
+                        )
+                        .primary(span, "")
+                        .help(format!("copy it first: `items = clone({name})`"))
                     });
                 } else if ctx == Ctx::Consume && !ty.is_copy() {
                     let name = self.constant_names[id.0 as usize].clone();
                     self.emit("E_MOVE_CONSTANT", span, || {
-                        Diagnostic::error("E_MOVE_CONSTANT", format!("cannot transfer the constant `{name}`"))
-                            .primary(span, "constants keep their value for the whole program")
-                            .help(format!("use clone({name}) for an independent copy"))
+                        Diagnostic::error(
+                            "E_MOVE_CONSTANT",
+                            format!("cannot transfer the constant `{name}`"),
+                        )
+                        .primary(span, "constants keep their value for the whole program")
+                        .help(format!("use clone({name}) for an independent copy"))
                     });
                 }
             }
@@ -417,13 +479,20 @@ impl<'p> Analyzer<'p> {
                 if ctx == Ctx::Consume && !ty.is_copy() {
                     let element = Analyzer::describe_value(&ty);
                     self.emit("E_MOVE_OUT_OF_ELEMENT", span, || {
-                        Diagnostic::error("E_MOVE_OUT_OF_ELEMENT", format!("cannot transfer {element} out of a collection element"))
-                            .primary(span, "this element stays owned by its collection")
-                            .help("use clone(...) for a copy, or pop(...) to remove the last element")
+                        Diagnostic::error(
+                            "E_MOVE_OUT_OF_ELEMENT",
+                            format!("cannot transfer {element} out of a collection element"),
+                        )
+                        .primary(span, "this element stays owned by its collection")
+                        .help("use clone(...) for a copy, or pop(...) to remove the last element")
                     });
                     self.expr(target, Ctx::Read, state);
                 } else {
-                    let target_ctx = if ctx == Ctx::Update { Ctx::Update } else { Ctx::Read };
+                    let target_ctx = if ctx == Ctx::Update {
+                        Ctx::Update
+                    } else {
+                        Ctx::Read
+                    };
                     self.expr(target, target_ctx, state);
                 }
             }
@@ -434,10 +503,27 @@ impl<'p> Analyzer<'p> {
                     }
                 }
             }
-            ExprKind::Inject(inner) => self.expr(inner, ctx, state),
-            ExprKind::IsMember { value, .. } | ExprKind::UnionTypeName(value) | ExprKind::ErrorField { value, .. } => {
-                self.expr(value, Ctx::Read, state)
+            ExprKind::Inject(inner) => {
+                let place =
+                    Self::root(inner).is_some() || matches!(inner.kind, ExprKind::Constant(_));
+                if ctx != Ctx::Consume && place && !inner.ty.is_copy() {
+                    let inner_ty = inner.ty.clone();
+                    self.emit("E_BORROWED_UNION", span, || {
+                        Diagnostic::error(
+                            "E_BORROWED_UNION",
+                            format!("this {inner_ty} would have to be copied to become a {ty}"),
+                        )
+                        .primary(span, "")
+                        .help("pass clone(...) for a copy, or move(...) to hand the value over")
+                    });
+                    self.expr(inner, Ctx::Read, state);
+                } else {
+                    self.expr(inner, ctx, state);
+                }
             }
+            ExprKind::IsMember { value, .. }
+            | ExprKind::UnionTypeName(value)
+            | ExprKind::ErrorField { value, .. } => self.expr(value, Ctx::Read, state),
             ExprKind::Integer(_)
             | ExprKind::Float(_)
             | ExprKind::Boolean(_)
@@ -484,10 +570,15 @@ impl<'p> Analyzer<'p> {
                 let (a, b) = (describe(*first), describe(*second));
                 let callee = callee.to_string();
                 self.emit("E_BORROW_CONFLICT", second_span, || {
-                    Diagnostic::error("E_BORROW_CONFLICT", format!("`{name}` is used twice in one call to `{callee}`"))
-                        .secondary(first_span, format!("{a} here"))
-                        .primary(second_span, format!("and {b} here"))
-                        .help(format!("`{callee}` needs exclusive access; pass a clone or split the call"))
+                    Diagnostic::error(
+                        "E_BORROW_CONFLICT",
+                        format!("`{name}` is used twice in one call to `{callee}`"),
+                    )
+                    .secondary(first_span, format!("{a} here"))
+                    .primary(second_span, format!("and {b} here"))
+                    .help(format!(
+                        "`{callee}` needs exclusive access; pass a clone or split the call"
+                    ))
                 });
             }
         }
@@ -581,13 +672,23 @@ impl<'p> Analyzer<'p> {
                 }
             }
             StmtKind::Expr(value) => {
-                let diverges = matches!(value.kind, ExprKind::Builtin { builtin: Builtin::Error | Builtin::Raise, .. });
+                let diverges = matches!(
+                    value.kind,
+                    ExprKind::Builtin {
+                        builtin: Builtin::Error | Builtin::Raise,
+                        ..
+                    }
+                );
                 self.expr(value, Ctx::Read, state);
                 if diverges {
                     *state = None;
                 }
             }
-            StmtKind::If { condition, then_block, else_block } => {
+            StmtKind::If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 self.expr(condition, Ctx::Read, state);
                 let mut then_state = state.clone();
                 self.block(then_block, &mut then_state);
@@ -605,7 +706,11 @@ impl<'p> Analyzer<'p> {
                     exit
                 });
             }
-            StmtKind::For { bindings, iterable, body } => {
+            StmtKind::For {
+                bindings,
+                iterable,
+                body,
+            } => {
                 self.expr(iterable, Ctx::Read, state);
                 let iterable_ty = iterable.ty.clone();
                 let collection = matches!(iterable_ty, Type::Array(_) | Type::Dict(..));
@@ -619,9 +724,16 @@ impl<'p> Analyzer<'p> {
                         self.locals[binding.0 as usize].borrowed = !element.is_copy();
                     }
                 }
-                let borrow = if collection { Self::root(iterable) } else { None };
+                let borrow = if collection {
+                    Self::root(iterable)
+                } else {
+                    None
+                };
                 if let Some(local) = borrow {
-                    self.loop_borrows.push(LoopBorrow { local, span: iterable.span });
+                    self.loop_borrows.push(LoopBorrow {
+                        local,
+                        span: iterable.span,
+                    });
                 }
                 let bindings = bindings.clone();
                 self.run_loop(state, Some(&bindings), |this, head| {
@@ -653,7 +765,11 @@ impl<'p> Analyzer<'p> {
                 }
                 *state = None;
             }
-            StmtKind::Try { body, catch, finally } => {
+            StmtKind::Try {
+                body,
+                catch,
+                finally,
+            } => {
                 let before = state.clone();
                 self.regions.push(HashSet::new());
                 let mut body_state = before.clone();
@@ -667,7 +783,9 @@ impl<'p> Analyzer<'p> {
                 let failure_state = before.map(|mut map| {
                     for local in &moved_in_body {
                         if let Some(site) = body_state.as_ref().and_then(|m| match m.get(local) {
-                            Some(Status::Moved(site) | Status::MaybeMoved(site)) => Some(site.clone()),
+                            Some(Status::Moved(site) | Status::MaybeMoved(site)) => {
+                                Some(site.clone())
+                            }
                             _ => None,
                         }) {
                             map.insert(*local, Status::MaybeMoved(site));
@@ -753,7 +871,10 @@ pub fn check_program(program: &mut Program, components: &[Vec<FuncId>]) -> Vec<D
         .collect();
     let constant_names: Vec<String> = program.constants.iter().map(|c| c.name.clone()).collect();
     for (index, function) in program.functions.iter().enumerate() {
-        modes.insert(FuncId(index as u32), function.params.iter().map(|p| p.mode).collect());
+        modes.insert(
+            FuncId(index as u32),
+            function.params.iter().map(|p| p.mode).collect(),
+        );
     }
     let mut diagnostics = Vec::new();
 
@@ -802,7 +923,11 @@ pub fn check_program(program: &mut Program, components: &[Vec<FuncId>]) -> Vec<D
             reason: MoveReason::Explicit,
         };
         let mut state: State = Some(HashMap::new());
-        analyzer.expr(&mut program.constants[index].value, Ctx::Consume, &mut state);
+        analyzer.expr(
+            &mut program.constants[index].value,
+            Ctx::Consume,
+            &mut state,
+        );
         diagnostics.append(&mut analyzer.diagnostics);
         program.constants[index].locals = locals;
     }
@@ -827,7 +952,11 @@ fn analyze(
         params.insert(param.local, (*mode, explicit));
         state_map.insert(param.local, Status::Init);
     }
-    let mut defaults: Vec<Option<Expr>> = function.params.iter_mut().map(|p| p.default.take()).collect();
+    let mut defaults: Vec<Option<Expr>> = function
+        .params
+        .iter_mut()
+        .map(|p| p.default.take())
+        .collect();
     let param_locals: Vec<LocalId> = function.params.iter().map(|p| p.local).collect();
 
     let mut analyzer = Analyzer {
@@ -850,8 +979,10 @@ fn analyze(
     }
     let mut state: State = Some(state_map);
     analyzer.block(&mut body, &mut state);
-    let inferred: Vec<ParamMode> =
-        param_locals.iter().map(|local| analyzer.params[local].0).collect();
+    let inferred: Vec<ParamMode> = param_locals
+        .iter()
+        .map(|local| analyzer.params[local].0)
+        .collect();
     let diagnostics = std::mem::take(&mut analyzer.diagnostics);
 
     let function = &mut program.functions[id.0 as usize];
@@ -877,8 +1008,14 @@ mod tests {
 
     #[test]
     fn join_marks_moves_as_maybe() {
-        let a: State = Some(HashMap::from([(LocalId(0), Status::Init), (LocalId(1), Status::Init)]));
-        let b: State = Some(HashMap::from([(LocalId(0), Status::Moved(site(1))), (LocalId(1), Status::Init)]));
+        let a: State = Some(HashMap::from([
+            (LocalId(0), Status::Init),
+            (LocalId(1), Status::Init),
+        ]));
+        let b: State = Some(HashMap::from([
+            (LocalId(0), Status::Moved(site(1))),
+            (LocalId(1), Status::Init),
+        ]));
         let joined = join(&a, &b).unwrap();
         assert!(matches!(joined[&LocalId(0)], Status::MaybeMoved(_)));
         assert_eq!(joined[&LocalId(1)], Status::Init);

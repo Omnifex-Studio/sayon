@@ -29,7 +29,11 @@ pub fn lex(file: FileId, source: &str) -> LexOutput {
         unterminated_line_end: None,
     };
     lexer.run();
-    LexOutput { tokens: lexer.tokens, comments: lexer.comments, diagnostics: lexer.diagnostics }
+    LexOutput {
+        tokens: lexer.tokens,
+        comments: lexer.comments,
+        diagnostics: lexer.diagnostics,
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -64,7 +68,8 @@ impl<'a> Lexer<'a> {
 
     fn error(&mut self, code: &'static str, message: impl Into<String>, start: usize, end: usize) {
         let span = self.span(start, end.max(start));
-        self.diagnostics.push(Diagnostic::error(code, message).primary(span, ""));
+        self.diagnostics
+            .push(Diagnostic::error(code, message).primary(span, ""));
     }
 
     fn peek_byte(&self) -> Option<u8> {
@@ -81,7 +86,10 @@ impl<'a> Lexer<'a> {
 
     /// Byte offset of the line terminator at or after `from`, or the end of input.
     fn line_end(&self, from: usize) -> usize {
-        self.src[from..].find(['\n', '\r']).map(|i| from + i).unwrap_or(self.src.len())
+        self.src[from..]
+            .find(['\n', '\r'])
+            .map(|i| from + i)
+            .unwrap_or(self.src.len())
     }
 
     fn run(&mut self) {
@@ -161,7 +169,12 @@ impl<'a> Lexer<'a> {
             match self.scan(false) {
                 Scan::Token(kind, start) => {
                     let span = self.span(start, self.pos);
-                    self.tokens.push(Token { kind, span, line_start: first, indent });
+                    self.tokens.push(Token {
+                        kind,
+                        span,
+                        line_start: first,
+                        indent,
+                    });
                     first = false;
                 }
                 Scan::EndOfLine => break,
@@ -179,7 +192,13 @@ impl<'a> Lexer<'a> {
         self.consume_newline();
     }
 
-    fn check_indentation(&mut self, spaces: u32, tabs: u32, line_begin: usize, content_start: usize) {
+    fn check_indentation(
+        &mut self,
+        spaces: u32,
+        tabs: u32,
+        line_begin: usize,
+        content_start: usize,
+    ) {
         if spaces == 0 && tabs == 0 {
             return;
         }
@@ -195,7 +214,11 @@ impl<'a> Lexer<'a> {
             );
             return;
         }
-        let style = if tabs > 0 { IndentChar::Tab } else { IndentChar::Space };
+        let style = if tabs > 0 {
+            IndentChar::Tab
+        } else {
+            IndentChar::Space
+        };
         match self.indent_style {
             None => self.indent_style = Some((style, span)),
             Some((established, first_span)) if established != style => {
@@ -209,7 +232,10 @@ impl<'a> Lexer<'a> {
                         format!("this file indents with {used}, but this line uses {other}"),
                     )
                     .primary(span, format!("indented with {other}"))
-                    .secondary(first_span, format!("the file's first indentation uses {used}"))
+                    .secondary(
+                        first_span,
+                        format!("the file's first indentation uses {used}"),
+                    )
                     .help("use one indentation character throughout a file"),
                 );
             }
@@ -228,7 +254,9 @@ impl<'a> Lexer<'a> {
             if self.src[start..end].trim_matches([' ', '\t']) == "##" {
                 self.comments.push(Comment {
                     span: self.span(content_start, end),
-                    text: self.src[body_start..start].trim_end_matches(['\n', '\r']).to_string(),
+                    text: self.src[body_start..start]
+                        .trim_end_matches(['\n', '\r'])
+                        .to_string(),
                     block: true,
                     own_line: true,
                 });
@@ -241,9 +269,12 @@ impl<'a> Lexer<'a> {
         }
         let _ = line_begin;
         self.diagnostics.push(
-            Diagnostic::error("E_UNTERMINATED_COMMENT", "this block comment is never closed")
-                .primary(opening, "block comment opened here")
-                .help("close it with a line containing only `##`"),
+            Diagnostic::error(
+                "E_UNTERMINATED_COMMENT",
+                "this block comment is never closed",
+            )
+            .primary(opening, "block comment opened here")
+            .help("close it with a line containing only `##`"),
         );
     }
 
@@ -253,7 +284,9 @@ impl<'a> Lexer<'a> {
                 self.pos += 1;
             }
             let start = self.pos;
-            let Some(c) = self.peek_char() else { return Scan::EndOfLine };
+            let Some(c) = self.peek_char() else {
+                return Scan::EndOfLine;
+            };
             let single = |kind: TokenKind, lexer: &mut Lexer<'a>| {
                 lexer.pos += 1;
                 Scan::Token(kind, start)
@@ -320,17 +353,28 @@ impl<'a> Lexer<'a> {
                         self.pos += 2;
                         Scan::Token(TokenKind::NotEqual, start)
                     } else {
-                        self.unexpected(start, c, "use `not` for logical negation");
-                        continue;
+                        // Reported, then read as `not` so parsing continues.
+                        self.replaced_operator(start, 1, "!", "not");
+                        Scan::Token(TokenKind::Keyword(Keyword::Not), start)
                     }
                 }
-                '&' => {
-                    self.unexpected(start, c, "use `and` to combine conditions");
-                    continue;
-                }
-                '|' => {
-                    self.unexpected(start, c, "use `or` to combine conditions");
-                    continue;
+                '&' | '|' => {
+                    let doubled = self.byte_at(1) == Some(c as u8);
+                    let (symbol, word, keyword) = match (c, doubled) {
+                        ('&', true) => ("&&", "and", Keyword::And),
+                        ('|', true) => ("||", "or", Keyword::Or),
+                        _ => {
+                            let help = if c == '&' {
+                                "use `and` to combine conditions"
+                            } else {
+                                "use `or` to combine conditions"
+                            };
+                            self.unexpected(start, c, help);
+                            continue;
+                        }
+                    };
+                    self.replaced_operator(start, 2, symbol, word);
+                    Scan::Token(TokenKind::Keyword(keyword), start)
                 }
                 ';' => {
                     self.unexpected(start, c, "statements end at line breaks; remove the `;`");
@@ -362,17 +406,36 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    fn replaced_operator(&mut self, start: usize, length: usize, symbol: &str, word: &str) {
+        self.pos = start + length;
+        self.diagnostics.push(
+            Diagnostic::error(
+                "E_UNEXPECTED_CHARACTER",
+                format!("`{symbol}` is not a Sayon operator"),
+            )
+            .primary(self.span(start, self.pos), format!("write `{word}`"))
+            .help("logic in Sayon uses the words `and`, `or`, and `not`"),
+        );
+    }
+
     fn unexpected(&mut self, start: usize, c: char, help: &str) {
         self.pos += c.len_utf8();
-        let shown = if c.is_control() { format!("{:?}", c) } else { format!("`{c}`") };
-        let mut diagnostic =
-            Diagnostic::error("E_UNEXPECTED_CHARACTER", format!("unexpected character {shown}"))
-                .primary(self.span(start, self.pos), "");
+        let shown = if c.is_control() {
+            format!("{:?}", c)
+        } else {
+            format!("`{c}`")
+        };
+        let mut diagnostic = Diagnostic::error(
+            "E_UNEXPECTED_CHARACTER",
+            format!("unexpected character {shown}"),
+        )
+        .primary(self.span(start, self.pos), "");
         if !help.is_empty() {
             diagnostic = diagnostic.help(help);
         } else if !c.is_ascii() {
-            diagnostic = diagnostic
-                .help("identifiers use ASCII letters, digits and underscores; Unicode belongs in strings");
+            diagnostic = diagnostic.help(
+                "identifiers use ASCII letters, digits and underscores; Unicode belongs in strings",
+            );
         }
         self.diagnostics.push(diagnostic);
     }
@@ -386,7 +449,7 @@ impl<'a> Lexer<'a> {
             }
         }
         let text = &self.src[start..self.pos];
-        let kind = match Keyword::from_str(text) {
+        let kind = match Keyword::lookup(text) {
             Some(keyword) => TokenKind::Keyword(keyword),
             None => TokenKind::Identifier(text.to_string()),
         };
@@ -441,11 +504,19 @@ impl<'a> Lexer<'a> {
             let unsigned = self.unsigned_suffix(start);
             match cleaned {
                 Some(digits) if digits.is_empty() => {
-                    self.error("E_INVALID_NUMBER", "expected digits after the number prefix", start, self.pos);
+                    self.error(
+                        "E_INVALID_NUMBER",
+                        "expected digits after the number prefix",
+                        start,
+                        self.pos,
+                    );
                     TokenKind::Integer { value: 0, unsigned }
                 }
                 Some(digits) => match u128::from_str_radix(&digits, radix) {
-                    Ok(value) => TokenKind::Integer { value: self.check_range(value, start), unsigned },
+                    Ok(value) => TokenKind::Integer {
+                        value: self.check_range(value, start),
+                        unsigned,
+                    },
                     Err(_) => {
                         let name = match radix {
                             16 => "hexadecimal",
@@ -467,7 +538,8 @@ impl<'a> Lexer<'a> {
             let (int_start, int_end) = self.take_digits(|b| b.is_ascii_digit());
             let mut is_float = false;
             let mut fraction = None;
-            if self.peek_byte() == Some(b'.') && self.byte_at(1).is_some_and(|b| b.is_ascii_digit()) {
+            if self.peek_byte() == Some(b'.') && self.byte_at(1).is_some_and(|b| b.is_ascii_digit())
+            {
                 self.pos += 1;
                 fraction = Some(self.take_digits(|b| b.is_ascii_digit()));
                 is_float = true;
@@ -498,7 +570,11 @@ impl<'a> Lexer<'a> {
                     );
                 }
                 self.reject_suffix(start);
-                match (integer, fraction.unwrap_or(Some(String::new())), exponent_digits.unwrap_or(Some(String::new()))) {
+                match (
+                    integer,
+                    fraction.unwrap_or(Some(String::new())),
+                    exponent_digits.unwrap_or(Some(String::new())),
+                ) {
                     (Some(int), Some(frac), Some(_)) => {
                         let mut text = int;
                         if !frac.is_empty() {
@@ -528,7 +604,10 @@ impl<'a> Lexer<'a> {
                 let unsigned = self.unsigned_suffix(start);
                 match integer {
                     Some(digits) => match digits.parse::<u128>() {
-                        Ok(value) => TokenKind::Integer { value: self.check_range(value, start), unsigned },
+                        Ok(value) => TokenKind::Integer {
+                            value: self.check_range(value, start),
+                            unsigned,
+                        },
                         Err(_) => {
                             self.error(
                                 "E_LITERAL_RANGE",
@@ -562,7 +641,9 @@ impl<'a> Lexer<'a> {
 
     fn unsigned_suffix(&mut self, start: usize) -> bool {
         let unsigned = self.peek_byte() == Some(b'u')
-            && !self.byte_at(1).is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_');
+            && !self
+                .byte_at(1)
+                .is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_');
         if unsigned {
             self.pos += 1;
         }
@@ -581,15 +662,19 @@ impl<'a> Lexer<'a> {
         }
         if self.pos > suffix_start {
             let suffix = &self.src[suffix_start..self.pos];
-            let help = if suffix.starts_with(['X', 'B', 'O']) && &self.src[start..suffix_start] == "0" {
-                "number prefixes are lowercase: 0x, 0b, 0o"
-            } else {
-                "only the `u` suffix is accepted, for unsigned integers"
-            };
+            let help =
+                if suffix.starts_with(['X', 'B', 'O']) && &self.src[start..suffix_start] == "0" {
+                    "number prefixes are lowercase: 0x, 0b, 0o"
+                } else {
+                    "only the `u` suffix is accepted, for unsigned integers"
+                };
             self.diagnostics.push(
-                Diagnostic::error("E_INVALID_NUMBER", format!("invalid number suffix `{suffix}`"))
-                    .primary(self.span(suffix_start, self.pos), "")
-                    .help(help),
+                Diagnostic::error(
+                    "E_INVALID_NUMBER",
+                    format!("invalid number suffix `{suffix}`"),
+                )
+                .primary(self.span(suffix_start, self.pos), "")
+                .help(help),
             );
         }
     }
@@ -643,9 +728,12 @@ impl<'a> Lexer<'a> {
                     let span = self.span(open, self.pos);
                     if tokens.is_empty() {
                         self.diagnostics.push(
-                            Diagnostic::error("E_EMPTY_INTERPOLATION", "empty interpolation in string")
-                                .primary(span, "")
-                                .help("write `{{` and `}}` for literal braces"),
+                            Diagnostic::error(
+                                "E_EMPTY_INTERPOLATION",
+                                "empty interpolation in string",
+                            )
+                            .primary(span, "")
+                            .help("write `{{` and `}}` for literal braces"),
                         );
                     } else {
                         parts.push(StringPart::Interpolation { tokens, span });
@@ -676,7 +764,10 @@ impl<'a> Lexer<'a> {
 
     fn flush_text(&self, parts: &mut Vec<StringPart>, text: &mut String, start: usize, end: usize) {
         if !text.is_empty() {
-            parts.push(StringPart::Text { text: std::mem::take(text), span: self.span(start, end) });
+            parts.push(StringPart::Text {
+                text: std::mem::take(text),
+                span: self.span(start, end),
+            });
         }
     }
 
@@ -749,9 +840,12 @@ impl<'a> Lexer<'a> {
         }
         self.pos += c.len_utf8();
         self.diagnostics.push(
-            Diagnostic::error("E_INVALID_ESCAPE", format!("unknown escape sequence `\\{c}`"))
-                .primary(self.span(start, self.pos), "")
-                .help("valid escapes are \\\" \\\\ \\n \\r \\t \\0 and \\u{HEX}"),
+            Diagnostic::error(
+                "E_INVALID_ESCAPE",
+                format!("unknown escape sequence `\\{c}`"),
+            )
+            .primary(self.span(start, self.pos), "")
+            .help("valid escapes are \\\" \\\\ \\n \\r \\t \\0 and \\u{HEX}"),
         );
     }
 }
@@ -762,12 +856,20 @@ mod tests {
 
     fn kinds(source: &str) -> Vec<TokenKind> {
         let output = lex(FileId(0), source);
-        assert!(output.diagnostics.is_empty(), "unexpected diagnostics: {:?}", output.diagnostics);
+        assert!(
+            output.diagnostics.is_empty(),
+            "unexpected diagnostics: {:?}",
+            output.diagnostics
+        );
         output.tokens.into_iter().map(|t| t.kind).collect()
     }
 
     fn errors(source: &str) -> Vec<&'static str> {
-        lex(FileId(0), source).diagnostics.into_iter().map(|d| d.code).collect()
+        lex(FileId(0), source)
+            .diagnostics
+            .into_iter()
+            .map(|d| d.code)
+            .collect()
     }
 
     fn ident(name: &str) -> TokenKind {
@@ -775,12 +877,15 @@ mod tests {
     }
 
     fn int(value: u64) -> TokenKind {
-        TokenKind::Integer { value, unsigned: false }
+        TokenKind::Integer {
+            value,
+            unsigned: false,
+        }
     }
 
     #[test]
     fn numbers_in_every_base() {
-        let tokens = kinds("42 0xFF 0b1010 0o755 1_000_000 3.14 255u 1e3 2.5e-2");
+        let tokens = kinds("42 0xFF 0b1010 0o755 1_000_000 3.25 255u 1e3 2.5e-2");
         assert_eq!(
             tokens,
             vec![
@@ -789,8 +894,11 @@ mod tests {
                 int(10),
                 int(493),
                 int(1_000_000),
-                TokenKind::Float(3.14),
-                TokenKind::Integer { value: 255, unsigned: true },
+                TokenKind::Float(3.25),
+                TokenKind::Integer {
+                    value: 255,
+                    unsigned: true
+                },
                 TokenKind::Float(1000.0),
                 TokenKind::Float(0.025),
                 TokenKind::EndOfFile,
@@ -813,7 +921,10 @@ mod tests {
 
     #[test]
     fn member_access_on_integer_is_not_a_float() {
-        assert_eq!(kinds("1.x"), vec![int(1), TokenKind::Dot, ident("x"), TokenKind::EndOfFile]);
+        assert_eq!(
+            kinds("1.x"),
+            vec![int(1), TokenKind::Dot, ident("x"), TokenKind::EndOfFile]
+        );
     }
 
     #[test]
@@ -846,7 +957,8 @@ mod tests {
 
     #[test]
     fn rejected_symbols_explain_alternatives() {
-        assert_eq!(errors("a && b"), vec!["E_UNEXPECTED_CHARACTER", "E_UNEXPECTED_CHARACTER"]);
+        assert_eq!(errors("a && b"), vec!["E_UNEXPECTED_CHARACTER"]);
+        assert_eq!(errors("a & b"), vec!["E_UNEXPECTED_CHARACTER"]);
         assert_eq!(errors("x = 1;"), vec!["E_UNEXPECTED_CHARACTER"]);
         assert_eq!(errors("!x"), vec!["E_UNEXPECTED_CHARACTER"]);
         assert_eq!(errors("café = 1"), vec!["E_UNEXPECTED_CHARACTER"]);
@@ -855,9 +967,15 @@ mod tests {
     #[test]
     fn line_starts_and_indentation() {
         let output = lex(FileId(0), "if x\n    y\n\n    # comment\n\tz\n");
-        let starts: Vec<(bool, u32)> =
-            output.tokens.iter().map(|t| (t.line_start, t.indent)).collect();
-        assert_eq!(starts, vec![(true, 0), (false, 0), (true, 4), (true, 4), (true, 0)]);
+        let starts: Vec<(bool, u32)> = output
+            .tokens
+            .iter()
+            .map(|t| (t.line_start, t.indent))
+            .collect();
+        assert_eq!(
+            starts,
+            vec![(true, 0), (false, 0), (true, 4), (true, 4), (true, 0)]
+        );
         assert_eq!(output.diagnostics.len(), 1);
         assert_eq!(output.diagnostics[0].code, "E_MIXED_INDENTATION");
     }
@@ -877,14 +995,23 @@ mod tests {
 
     #[test]
     fn comments_are_collected() {
-        let output = lex(FileId(0), "# line\nx = 1  # trailing\n##\nblock\n  text\n##\ny");
+        let output = lex(
+            FileId(0),
+            "# line\nx = 1  # trailing\n##\nblock\n  text\n##\ny",
+        );
         assert!(output.diagnostics.is_empty());
         let texts: Vec<&str> = output.comments.iter().map(|c| c.text.as_str()).collect();
         assert_eq!(texts, vec!["# line", "# trailing", "block\n  text"]);
         let names: Vec<TokenKind> = output.tokens.iter().map(|t| t.kind.clone()).collect();
         assert_eq!(
             names,
-            vec![ident("x"), TokenKind::Assign, int(1), ident("y"), TokenKind::EndOfFile]
+            vec![
+                ident("x"),
+                TokenKind::Assign,
+                int(1),
+                ident("y"),
+                TokenKind::EndOfFile
+            ]
         );
     }
 
@@ -949,9 +1076,13 @@ mod tests {
     fn nested_strings_inside_interpolation() {
         let parts = string_parts(r#""a {greet("b {c}")} d""#);
         assert_eq!(parts.len(), 3);
-        let StringPart::Interpolation { tokens, .. } = &parts[1] else { panic!() };
+        let StringPart::Interpolation { tokens, .. } = &parts[1] else {
+            panic!()
+        };
         assert_eq!(tokens.len(), 4);
-        let TokenKind::String(inner) = &tokens[2].kind else { panic!("expected nested string") };
+        let TokenKind::String(inner) = &tokens[2].kind else {
+            panic!("expected nested string")
+        };
         assert_eq!(inner.len(), 2);
     }
 

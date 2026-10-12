@@ -134,29 +134,70 @@ pub enum PatternKind {
     Literal(Expr),
     /// A binding or a payload-free variant, decided during checking.
     Name(Ident),
-    Variant { name: Ident, args: Vec<Pattern> },
+    Variant {
+        name: Ident,
+        args: Vec<Pattern>,
+    },
 }
 
 #[derive(Clone, Debug)]
 pub enum StmtKind {
     Expr(Expr),
-    Assign { target: Expr, value: Expr },
-    CompoundAssign { target: Expr, op: BinaryOp, op_span: Span, value: Expr },
+    Assign {
+        target: Expr,
+        value: Expr,
+    },
+    CompoundAssign {
+        target: Expr,
+        op: BinaryOp,
+        op_span: Span,
+        value: Expr,
+    },
     Declare(Declaration),
-    If { branches: Vec<IfBranch>, else_body: Option<Block> },
-    While { condition: Expr, body: Block },
-    For { bindings: Vec<Ident>, iterable: Expr, body: Block },
+    If {
+        branches: Vec<IfBranch>,
+        else_body: Option<Block>,
+    },
+    While {
+        condition: Expr,
+        body: Block,
+    },
+    For {
+        bindings: Vec<Ident>,
+        iterable: Expr,
+        body: Block,
+    },
     Break,
     Continue,
     Return(Option<Expr>),
     Function(Box<Function>),
-    Try { body: Block, catch: Option<CatchClause>, finally: Option<Block> },
-    TypeDecl { visibility: Visibility, name: Ident, generics: Vec<Ident>, fields: Vec<Field> },
-    EnumDecl { visibility: Visibility, name: Ident, generics: Vec<Ident>, variants: Vec<Variant> },
-    Match { scrutinee: Expr, arms: Vec<MatchArm> },
+    Try {
+        body: Block,
+        catch: Option<CatchClause>,
+        finally: Option<Block>,
+    },
+    TypeDecl {
+        visibility: Visibility,
+        name: Ident,
+        generics: Vec<Ident>,
+        fields: Vec<Field>,
+    },
+    EnumDecl {
+        visibility: Visibility,
+        name: Ident,
+        generics: Vec<Ident>,
+        variants: Vec<Variant>,
+    },
+    Match {
+        scrutinee: Expr,
+        arms: Vec<MatchArm>,
+    },
     /// Syntax recognised so it can be reported precisely, but not parsed further
     /// (for example `foreign` blocks before the systems milestone).
-    Unavailable { feature: &'static str, milestone: &'static str },
+    Unavailable {
+        feature: &'static str,
+        milestone: &'static str,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -229,7 +270,10 @@ pub struct Expr {
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
-    Integer { value: u64, unsigned: bool },
+    Integer {
+        value: u64,
+        unsigned: bool,
+    },
     Float(f64),
     String(Vec<StringSegment>),
     Boolean(bool),
@@ -241,17 +285,37 @@ pub enum ExprKind {
     Dict(Vec<(Expr, Expr)>),
     /// `[field = value, ...]`
     Record(Vec<(Ident, Expr)>),
-    Call { callee: Box<Expr>, generic_args: Vec<TypeExpr>, args: Vec<Expr> },
-    Index { target: Box<Expr>, index: Box<Expr> },
-    Member { target: Box<Expr>, name: Ident },
-    Unary { op: UnaryOp, operand: Box<Expr> },
-    Binary { op: BinaryOp, lhs: Box<Expr>, rhs: Box<Expr> },
+    Call {
+        callee: Box<Expr>,
+        generic_args: Vec<TypeExpr>,
+        args: Vec<Expr>,
+    },
+    Index {
+        target: Box<Expr>,
+        index: Box<Expr>,
+    },
+    Member {
+        target: Box<Expr>,
+        name: Ident,
+    },
+    Unary {
+        op: UnaryOp,
+        operand: Box<Expr>,
+    },
+    Binary {
+        op: BinaryOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
     /// `value is error`
     IsError(Box<Expr>),
     /// `try expression`
     TryExpr(Box<Expr>),
     Function(Box<Function>),
-    Import { path: String, path_span: Span },
+    Import {
+        path: String,
+        path_span: Span,
+    },
     /// Placeholder produced after a syntax error.
     Error,
 }

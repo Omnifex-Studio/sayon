@@ -32,7 +32,10 @@ pub fn check_module(module: &ast::Module, span: Span) -> CheckOutput {
     let mut diagnostics = std::mem::take(&mut checker.diagnostics);
     if diagnostics.has_errors() {
         diagnostics.sort();
-        return CheckOutput { program: None, diagnostics };
+        return CheckOutput {
+            program: None,
+            diagnostics,
+        };
     }
 
     let functions = checker
@@ -51,14 +54,22 @@ pub fn check_module(module: &ast::Module, span: Span) -> CheckOutput {
             locals: Vec::new(),
         })
         .collect();
-    let mut program = hir::Program { functions, constants, init_order, entry };
+    let mut program = hir::Program {
+        functions,
+        constants,
+        init_order,
+        entry,
+    };
 
     let components = checker.scc_order.clone();
     let ownership = ownership::check_program(&mut program, &components);
     let has_errors = ownership.iter().any(|d| d.is_error());
     diagnostics.extend(ownership);
     diagnostics.sort();
-    CheckOutput { program: if has_errors { None } else { Some(program) }, diagnostics }
+    CheckOutput {
+        program: if has_errors { None } else { Some(program) },
+        diagnostics,
+    }
 }
 
 /// Convenience used by tests and tools: parse and check one source text.

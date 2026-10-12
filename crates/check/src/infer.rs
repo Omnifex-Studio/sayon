@@ -86,7 +86,9 @@ impl Traits {
     }
 
     fn each(self) -> impl Iterator<Item = Traits> {
-        (0..7).map(|bit| Traits(1 << bit)).filter(move |t| self.contains(*t))
+        (0..7)
+            .map(|bit| Traits(1 << bit))
+            .filter(move |t| self.contains(*t))
     }
 
     pub fn describe(self) -> &'static str {
@@ -111,11 +113,17 @@ pub struct Bounds {
 
 impl Bounds {
     pub fn literal(kind: LiteralKind) -> Bounds {
-        Bounds { literal: Some(kind), traits: Traits::NONE }
+        Bounds {
+            literal: Some(kind),
+            traits: Traits::NONE,
+        }
     }
 
     pub fn traits(traits: Traits) -> Bounds {
-        Bounds { literal: None, traits }
+        Bounds {
+            literal: None,
+            traits,
+        }
     }
 }
 
@@ -124,9 +132,15 @@ pub enum UnifyError {
     Mismatch(Type, Type),
     Infinite,
     /// The type does not support an operation required of it.
-    Unsupported { ty: Type, traits: Traits },
+    Unsupported {
+        ty: Type,
+        traits: Traits,
+    },
     /// A literal cannot have this type.
-    Literal { ty: Type, kind: LiteralKind },
+    Literal {
+        ty: Type,
+        kind: LiteralKind,
+    },
     LiteralConflict,
 }
 
@@ -173,7 +187,10 @@ impl Unifier {
 
     pub fn fresh_bounded(&mut self, bounds: Bounds) -> Type {
         let var = TyVar(self.vars.len() as u32);
-        self.vars.push(VarState { binding: None, bounds });
+        self.vars.push(VarState {
+            binding: None,
+            bounds,
+        });
         Type::Var(var)
     }
 
@@ -203,6 +220,26 @@ impl Unifier {
         }
     }
 
+    /// Like `resolve`, but shows unresolved literal variables as the type they
+    /// would default to, for diagnostics.
+    pub fn resolve_for_display(&self, ty: &Type) -> Type {
+        match self.shallow(ty) {
+            Type::Var(var) => match self.vars[var.0 as usize].bounds.literal {
+                Some(kind) => kind.default_type(),
+                None => Type::Var(var),
+            },
+            Type::Array(element) => Type::array(self.resolve_for_display(&element)),
+            Type::Dict(key, value) => Type::dict(
+                self.resolve_for_display(&key),
+                self.resolve_for_display(&value),
+            ),
+            Type::Union(members) => {
+                Type::union(members.iter().map(|m| self.resolve_for_display(m)))
+            }
+            other => other,
+        }
+    }
+
     /// Binds a variable without checks; used for defaulting and generalization.
     pub fn force_bind(&mut self, var: TyVar, ty: Type) {
         self.vars[var.0 as usize].binding = Some(ty);
@@ -216,17 +253,20 @@ impl Unifier {
                     (Some(a), Some(b)) => Some(a.merge(b).ok_or(UnifyError::LiteralConflict)?),
                     (a, b) => a.or(b),
                 };
-                state.bounds = Bounds { literal, traits: state.bounds.traits.union(bounds.traits) };
+                state.bounds = Bounds {
+                    literal,
+                    traits: state.bounds.traits.union(bounds.traits),
+                };
                 if let Some(literal) = literal {
                     check_literal_traits(literal, state.bounds.traits, &Type::Var(var))?;
                 }
                 Ok(())
             }
             concrete => {
-                if let Some(kind) = bounds.literal {
-                    if !kind.accepts(&concrete) {
-                        return Err(UnifyError::Literal { ty: concrete, kind });
-                    }
+                if let Some(kind) = bounds.literal
+                    && !kind.accepts(&concrete)
+                {
+                    return Err(UnifyError::Literal { ty: concrete, kind });
                 }
                 for one in bounds.traits.each() {
                     self.require_trait(&concrete, one)?;
@@ -248,7 +288,9 @@ impl Unifier {
             Traits::ADD => ty.is_numeric() || ty == Type::String,
             Traits::ARITHMETIC | Traits::NUMERIC => ty.is_numeric(),
             Traits::ORDER => ty.is_numeric() || ty == Type::String,
-            Traits::NEGATE => matches!(ty, Type::Float(_)) || matches!(ty, Type::Int(i) if i.signed()),
+            Traits::NEGATE => {
+                matches!(ty, Type::Float(_)) || matches!(ty, Type::Int(i) if i.signed())
+            }
             Traits::LENGTH => matches!(ty, Type::String | Type::Array(_) | Type::Dict(..)),
             Traits::EQUALITY => match &ty {
                 Type::Array(element) => return self.require_trait(element, Traits::EQUALITY),
@@ -264,7 +306,11 @@ impl Unifier {
             },
             _ => true,
         };
-        if ok { Ok(()) } else { Err(UnifyError::Unsupported { ty, traits: one }) }
+        if ok {
+            Ok(())
+        } else {
+            Err(UnifyError::Unsupported { ty, traits: one })
+        }
     }
 
     fn occurs(&self, var: TyVar, ty: &Type) -> bool {
@@ -278,10 +324,10 @@ impl Unifier {
     }
 
     fn bind(&mut self, var: TyVar, ty: Type) -> Result<(), UnifyError> {
-        if let Type::Var(other) = ty {
-            if other == var {
-                return Ok(());
-            }
+        if let Type::Var(other) = ty
+            && other == var
+        {
+            return Ok(());
         }
         if self.occurs(var, &ty) {
             return Err(UnifyError::Infinite);
@@ -303,9 +349,10 @@ impl Unifier {
             (Type::Var(x), _) => self.bind(*x, b.clone()),
             (_, Type::Var(y)) => self.bind(*y, a.clone()),
             (Type::Array(x), Type::Array(y)) => self.unify(x, y).map_err(|_| self.mismatch(&a, &b)),
-            (Type::Dict(k1, v1), Type::Dict(k2, v2)) => {
-                self.unify(k1, k2).and_then(|_| self.unify(v1, v2)).map_err(|_| self.mismatch(&a, &b))
-            }
+            (Type::Dict(k1, v1), Type::Dict(k2, v2)) => self
+                .unify(k1, k2)
+                .and_then(|_| self.unify(v1, v2))
+                .map_err(|_| self.mismatch(&a, &b)),
             (Type::Union(xs), Type::Union(ys)) => {
                 if xs.len() != ys.len() {
                     return Err(self.mismatch(&a, &b));
@@ -323,7 +370,7 @@ impl Unifier {
     }
 
     fn mismatch(&self, a: &Type, b: &Type) -> UnifyError {
-        UnifyError::Mismatch(self.resolve(a), self.resolve(b))
+        UnifyError::Mismatch(self.resolve_for_display(a), self.resolve_for_display(b))
     }
 
     /// Applies literal defaults to an unresolved variable. Returns false when
@@ -368,7 +415,10 @@ impl Unifier {
 fn check_literal_traits(literal: LiteralKind, traits: Traits, ty: &Type) -> Result<(), UnifyError> {
     // An unsigned literal cannot be negated.
     if literal == LiteralKind::Unsigned && traits.contains(Traits::NEGATE) {
-        return Err(UnifyError::Unsupported { ty: ty.clone(), traits: Traits::NEGATE });
+        return Err(UnifyError::Unsupported {
+            ty: ty.clone(),
+            traits: Traits::NEGATE,
+        });
     }
     Ok(())
 }
@@ -431,11 +481,16 @@ mod tests {
         let mut unifier = Unifier::new();
         let a = unifier.fresh_bounded(Bounds::literal(LiteralKind::Integer));
         let b = unifier.fresh_bounded(Bounds::literal(LiteralKind::Float));
-        assert!(matches!(unifier.unify(&a, &b), Err(UnifyError::LiteralConflict)));
+        assert!(matches!(
+            unifier.unify(&a, &b),
+            Err(UnifyError::LiteralConflict)
+        ));
         let c = unifier.fresh_bounded(Bounds::traits(Traits::ARITHMETIC));
         let d = unifier.fresh_bounded(Bounds::literal(LiteralKind::Integer));
         unifier.unify(&c, &d).unwrap();
-        let Type::Var(var) = unifier.shallow(&c) else { panic!() };
+        let Type::Var(var) = unifier.shallow(&c) else {
+            panic!()
+        };
         assert_eq!(unifier.bounds(var).literal, Some(LiteralKind::Integer));
         assert!(unifier.bounds(var).traits.contains(Traits::ARITHMETIC));
     }
@@ -444,7 +499,10 @@ mod tests {
     fn occurs_check() {
         let mut unifier = Unifier::new();
         let a = unifier.fresh();
-        assert!(matches!(unifier.unify(&a, &Type::array(a.clone())), Err(UnifyError::Infinite)));
+        assert!(matches!(
+            unifier.unify(&a, &Type::array(a.clone())),
+            Err(UnifyError::Infinite)
+        ));
     }
 
     #[test]

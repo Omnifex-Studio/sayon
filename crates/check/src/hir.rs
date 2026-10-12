@@ -4,8 +4,8 @@
 //! instantiates them per concrete argument list.
 
 use crate::types::Type;
-use sayon_syntax::ast::{BinaryOp, ParamMode, UnaryOp};
 use sayon_syntax::Span;
+use sayon_syntax::ast::{BinaryOp, ParamMode, UnaryOp};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FuncId(pub u32);
@@ -110,21 +110,46 @@ pub struct Stmt {
 #[derive(Debug)]
 pub enum StmtKind {
     /// Introduces and initializes a local.
-    Let { local: LocalId, value: Expr },
+    Let {
+        local: LocalId,
+        value: Expr,
+    },
     /// Replaces the value stored in a place, destroying the old value.
-    Assign { place: Place, value: Expr },
+    Assign {
+        place: Place,
+        value: Expr,
+    },
     /// `place op= value`, evaluating the place once.
-    CompoundAssign { place: Place, op: BinaryOp, value: Expr },
+    CompoundAssign {
+        place: Place,
+        op: BinaryOp,
+        value: Expr,
+    },
     Expr(Expr),
-    If { condition: Expr, then_block: Block, else_block: Option<Block> },
-    While { condition: Expr, body: Block },
+    If {
+        condition: Expr,
+        then_block: Block,
+        else_block: Option<Block>,
+    },
+    While {
+        condition: Expr,
+        body: Block,
+    },
     /// Iterates a range, an array, or a dictionary (keys, or keys and values),
     /// according to the iterable's type.
-    For { bindings: Vec<LocalId>, iterable: Expr, body: Block },
+    For {
+        bindings: Vec<LocalId>,
+        iterable: Expr,
+        body: Block,
+    },
     Break,
     Continue,
     Return(Option<Expr>),
-    Try { body: Block, catch: Option<(LocalId, Block)>, finally: Option<Block> },
+    Try {
+        body: Block,
+        catch: Option<(LocalId, Block)>,
+        finally: Option<Block>,
+    },
     /// A nested lexical scope.
     Block(Block),
 }
@@ -133,7 +158,11 @@ pub enum StmtKind {
 pub enum Place {
     Local(LocalId),
     /// `target[index]` on an array or dictionary.
-    Index { target: Box<Place>, target_ty: Type, index: Box<Expr> },
+    Index {
+        target: Box<Place>,
+        target_ty: Type,
+        index: Box<Expr>,
+    },
 }
 
 impl Place {
@@ -227,27 +256,53 @@ pub enum ExprKind {
     Boolean(bool),
     String(String),
     Nothing,
-    Local { local: LocalId, usage: Usage },
+    Local {
+        local: LocalId,
+        usage: Usage,
+    },
     Constant(ConstId),
-    Call { function: FuncId, type_args: Vec<Type>, args: Vec<Arg> },
-    Builtin { builtin: Builtin, args: Vec<Arg> },
-    Binary { op: BinaryOp, lhs: Box<Expr>, rhs: Box<Expr> },
-    Unary { op: UnaryOp, operand: Box<Expr> },
+    Call {
+        function: FuncId,
+        type_args: Vec<Type>,
+        args: Vec<Arg>,
+    },
+    Builtin {
+        builtin: Builtin,
+        args: Vec<Arg>,
+    },
+    Binary {
+        op: BinaryOp,
+        lhs: Box<Expr>,
+        rhs: Box<Expr>,
+    },
+    Unary {
+        op: UnaryOp,
+        operand: Box<Expr>,
+    },
     Array(Vec<Expr>),
     Dict(Vec<(Expr, Expr)>),
     /// Reads `target[index]`.
-    Index { target: Box<Expr>, index: Box<Expr> },
+    Index {
+        target: Box<Expr>,
+        index: Box<Expr>,
+    },
     Interpolate(Vec<Segment>),
     /// Wraps a value as a member of the union type in `ty`.
     Inject(Box<Expr>),
     /// Reads the payload of a union known (by narrowing) to hold `ty`.
     Narrow(Box<Expr>),
     /// Tests whether a union currently holds `member`.
-    IsMember { value: Box<Expr>, member: Type },
+    IsMember {
+        value: Box<Expr>,
+        member: Type,
+    },
     /// `typeof` of a union value, decided at run time.
     UnionTypeName(Box<Expr>),
     /// A field of an Error value, such as `problem.message`.
-    ErrorField { value: Box<Expr>, field: ErrorField },
+    ErrorField {
+        value: Box<Expr>,
+        field: ErrorField,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,7 +338,11 @@ pub fn visit_stmt_mut(stmt: &mut Stmt, f: &mut dyn FnMut(&mut Expr)) {
             visit_place_mut(place, f);
             visit_expr_mut(value, f);
         }
-        StmtKind::If { condition, then_block, else_block } => {
+        StmtKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
             visit_expr_mut(condition, f);
             visit_block_mut(then_block, f);
             if let Some(block) = else_block {
@@ -303,7 +362,11 @@ pub fn visit_stmt_mut(stmt: &mut Stmt, f: &mut dyn FnMut(&mut Expr)) {
                 visit_expr_mut(value, f);
             }
         }
-        StmtKind::Try { body, catch, finally } => {
+        StmtKind::Try {
+            body,
+            catch,
+            finally,
+        } => {
             visit_block_mut(body, f);
             if let Some((_, block)) = catch {
                 visit_block_mut(block, f);

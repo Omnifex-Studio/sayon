@@ -17,10 +17,17 @@ impl<'a> Checker<'a> {
         cx.scopes.push(Scope::new());
         let stmts = self.check_stmts(cx, block.stmts.iter());
         let scope = cx.scopes.pop().expect("scope");
-        hir::Block { stmts, locals: scope.declared }
+        hir::Block {
+            stmts,
+            locals: scope.declared,
+        }
     }
 
-    pub fn check_stmts<'s>(&mut self, cx: &mut FnCtx, stmts: impl Iterator<Item = &'s ast::Stmt>) -> Vec<hir::Stmt> {
+    pub fn check_stmts<'s>(
+        &mut self,
+        cx: &mut FnCtx,
+        stmts: impl Iterator<Item = &'s ast::Stmt>,
+    ) -> Vec<hir::Stmt> {
         let mut out = Vec::new();
         for stmt in stmts {
             if let Some(checked) = self.check_stmt(cx, stmt) {
@@ -34,16 +41,36 @@ impl<'a> Checker<'a> {
         let span = ast.span;
         let kind = match &ast.kind {
             ast::StmtKind::Expr(value) => StmtKind::Expr(self.check_expr(cx, value, None)),
-            ast::StmtKind::Assign { target, value } => return self.check_assign(cx, target, value, span),
-            ast::StmtKind::CompoundAssign { target, op, op_span, value } => {
+            ast::StmtKind::Assign { target, value } => {
+                return self.check_assign(cx, target, value, span);
+            }
+            ast::StmtKind::CompoundAssign {
+                target,
+                op,
+                op_span,
+                value,
+            } => {
                 let (place, ty) = self.check_place(cx, target)?;
-                let value = self.check_expr_as(cx, value, &ty, &format!("`{}=` needs matching types", op.symbol()));
-                let traits = if *op == BinaryOp::Add { Traits::ADD } else { Traits::ARITHMETIC };
+                let value = self.check_expr_as(
+                    cx,
+                    value,
+                    &ty,
+                    &format!("`{}=` needs matching types", op.symbol()),
+                );
+                let traits = if *op == BinaryOp::Add {
+                    Traits::ADD
+                } else {
+                    Traits::ARITHMETIC
+                };
                 self.require_traits(&ty, traits, *op_span, "unsupported operation");
                 if let Place::Local(local) = place {
                     cx.invalidate_narrowing(local);
                 }
-                StmtKind::CompoundAssign { place, op: *op, value }
+                StmtKind::CompoundAssign {
+                    place,
+                    op: *op,
+                    value,
+                }
             }
             ast::StmtKind::Declare(decl) => {
                 if decl.kind == DeclKind::Constant && cx.is_script && cx.scopes.len() == 1 {
@@ -52,9 +79,17 @@ impl<'a> Checker<'a> {
                 }
                 return self.check_declaration(cx, decl, span);
             }
-            ast::StmtKind::If { branches, else_body } => self.check_if(cx, branches, else_body.as_ref(), 0),
+            ast::StmtKind::If {
+                branches,
+                else_body,
+            } => self.check_if(cx, branches, else_body.as_ref(), 0),
             ast::StmtKind::While { condition, body } => {
-                let condition_hir = self.check_expr_as(cx, condition, &Type::Boolean, "`while` conditions are booleans");
+                let condition_hir = self.check_expr_as(
+                    cx,
+                    condition,
+                    &Type::Boolean,
+                    "`while` conditions are booleans",
+                );
                 let facts = self.condition_facts(cx, condition);
                 self.drop_narrowing_for_loop(cx, body);
                 cx.scopes.push(Scope::new());
@@ -65,11 +100,19 @@ impl<'a> Checker<'a> {
                 let body = self.check_block(cx, body);
                 cx.loop_depth -= 1;
                 cx.scopes.pop();
-                StmtKind::While { condition: condition_hir, body }
+                StmtKind::While {
+                    condition: condition_hir,
+                    body,
+                }
             }
-            ast::StmtKind::For { bindings, iterable, body } => {
+            ast::StmtKind::For {
+                bindings,
+                iterable,
+                body,
+            } => {
                 let iterable_hir = self.check_expr(cx, iterable, None);
-                let item_types: Vec<Type> = bindings.iter().map(|b| self.fresh_var(b.span)).collect();
+                let item_types: Vec<Type> =
+                    bindings.iter().map(|b| self.fresh_var(b.span)).collect();
                 match self.unifier.shallow(&iterable_hir.ty) {
                     Type::Var(_) => self.deferred.push(Deferred::Iterate {
                         iterable: iterable_hir.ty.clone(),
@@ -82,33 +125,60 @@ impl<'a> Checker<'a> {
                 cx.scopes.push(Scope::new());
                 let mut locals = Vec::new();
                 for (binding, ty) in bindings.iter().zip(item_types) {
-                    if locals.iter().any(|l: &hir::LocalId| cx.locals[l.0 as usize].name == binding.name) {
+                    if locals
+                        .iter()
+                        .any(|l: &hir::LocalId| cx.locals[l.0 as usize].name == binding.name)
+                    {
                         self.error(
-                            Diagnostic::error("E_DUPLICATE_DECLARATION", format!("`{}` is bound twice", binding.name))
-                                .primary(binding.span, ""),
+                            Diagnostic::error(
+                                "E_DUPLICATE_DECLARATION",
+                                format!("`{}` is bound twice", binding.name),
+                            )
+                            .primary(binding.span, ""),
                         );
                     }
-                    locals.push(cx.declare(&binding.name, ty, binding.span, LocalKind::LoopVariable));
+                    locals.push(cx.declare(
+                        &binding.name,
+                        ty,
+                        binding.span,
+                        LocalKind::LoopVariable,
+                    ));
                 }
                 cx.loop_depth += 1;
                 let body = self.check_block(cx, body);
                 cx.loop_depth -= 1;
                 cx.scopes.pop();
-                StmtKind::For { bindings: locals, iterable: iterable_hir, body }
+                StmtKind::For {
+                    bindings: locals,
+                    iterable: iterable_hir,
+                    body,
+                }
             }
             ast::StmtKind::Break | ast::StmtKind::Continue => {
-                let word = if matches!(ast.kind, ast::StmtKind::Break) { "break" } else { "continue" };
+                let word = if matches!(ast.kind, ast::StmtKind::Break) {
+                    "break"
+                } else {
+                    "continue"
+                };
                 if cx.loop_depth == 0 {
                     self.error(
-                        Diagnostic::error("E_OUTSIDE_LOOP", format!("`{word}` outside of a loop")).primary(span, ""),
+                        Diagnostic::error("E_OUTSIDE_LOOP", format!("`{word}` outside of a loop"))
+                            .primary(span, ""),
                     );
                     return None;
                 }
-                if cx.finally_loop_depth.is_some_and(|depth| cx.loop_depth <= depth) {
+                if cx
+                    .finally_loop_depth
+                    .is_some_and(|depth| cx.loop_depth <= depth)
+                {
                     self.finally_transfer(span, word);
                     return None;
                 }
-                if word == "break" { StmtKind::Break } else { StmtKind::Continue }
+                if word == "break" {
+                    StmtKind::Break
+                } else {
+                    StmtKind::Continue
+                }
             }
             ast::StmtKind::Return(value) => {
                 if cx.is_script {
@@ -137,11 +207,20 @@ impl<'a> Checker<'a> {
                 self.unavailable(function.header_span, "nested functions", "M2");
                 return None;
             }
-            ast::StmtKind::Try { body, catch, finally } => {
+            ast::StmtKind::Try {
+                body,
+                catch,
+                finally,
+            } => {
                 let body = self.check_block(cx, body);
                 let catch = catch.as_ref().map(|clause| {
                     cx.scopes.push(Scope::new());
-                    let local = cx.declare(&clause.binding.name, Type::Error, clause.binding.span, LocalKind::CaughtError);
+                    let local = cx.declare(
+                        &clause.binding.name,
+                        Type::Error,
+                        clause.binding.span,
+                        LocalKind::CaughtError,
+                    );
                     let block = self.check_block(cx, &clause.body);
                     cx.scopes.pop();
                     (local, block)
@@ -152,7 +231,11 @@ impl<'a> Checker<'a> {
                     cx.finally_loop_depth = saved;
                     checked
                 });
-                StmtKind::Try { body, catch, finally }
+                StmtKind::Try {
+                    body,
+                    catch,
+                    finally,
+                }
             }
             ast::StmtKind::TypeDecl { name, .. } => {
                 self.unavailable(name.span, "structure types", "M2");
@@ -176,9 +259,12 @@ impl<'a> Checker<'a> {
 
     fn finally_transfer(&mut self, span: Span, word: &str) {
         self.error(
-            Diagnostic::error("E_FINALLY_TRANSFER", format!("`{word}` cannot leave a `finally` block"))
-                .primary(span, "")
-                .note("a finally block always runs to its end so that cleanup completes"),
+            Diagnostic::error(
+                "E_FINALLY_TRANSFER",
+                format!("`{word}` cannot leave a `finally` block"),
+            )
+            .primary(span, "")
+            .note("a finally block always runs to its end so that cleanup completes"),
         );
     }
 
@@ -200,12 +286,21 @@ impl<'a> Checker<'a> {
         index: usize,
     ) -> StmtKind {
         let branch = &branches[index];
-        let condition = self.check_expr_as(cx, &branch.condition, &Type::Boolean, "`if` conditions are booleans");
+        let condition = self.check_expr_as(
+            cx,
+            &branch.condition,
+            &Type::Boolean,
+            "`if` conditions are booleans",
+        );
         let facts = self.condition_facts(cx, &branch.condition);
 
         cx.scopes.push(Scope::new());
         for (local, ty) in &facts.when_true {
-            cx.scopes.last_mut().unwrap().narrowed.insert(*local, ty.clone());
+            cx.scopes
+                .last_mut()
+                .unwrap()
+                .narrowed
+                .insert(*local, ty.clone());
         }
         let then_block = self.check_block(cx, &branch.body);
         cx.scopes.pop();
@@ -214,12 +309,19 @@ impl<'a> Checker<'a> {
         let else_block = if has_else {
             cx.scopes.push(Scope::new());
             for (local, ty) in &facts.when_false {
-                cx.scopes.last_mut().unwrap().narrowed.insert(*local, ty.clone());
+                cx.scopes
+                    .last_mut()
+                    .unwrap()
+                    .narrowed
+                    .insert(*local, ty.clone());
             }
             let block = if index + 1 < branches.len() {
                 let span = branches[index + 1].condition.span;
                 let nested = self.check_if(cx, branches, else_body, index + 1);
-                hir::Block { stmts: vec![stmt(nested, span)], locals: Vec::new() }
+                hir::Block {
+                    stmts: vec![stmt(nested, span)],
+                    locals: Vec::new(),
+                }
             } else {
                 self.check_block(cx, else_body.expect("else block"))
             };
@@ -241,10 +343,20 @@ impl<'a> Checker<'a> {
                 cx.scopes.last_mut().unwrap().narrowed.insert(local, ty);
             }
         }
-        StmtKind::If { condition, then_block, else_block }
+        StmtKind::If {
+            condition,
+            then_block,
+            else_block,
+        }
     }
 
-    fn check_assign(&mut self, cx: &mut FnCtx, target: &ast::Expr, value: &ast::Expr, span: Span) -> Option<hir::Stmt> {
+    fn check_assign(
+        &mut self,
+        cx: &mut FnCtx,
+        target: &ast::Expr,
+        value: &ast::Expr,
+        span: Span,
+    ) -> Option<hir::Stmt> {
         let ast::ExprKind::Name(name) = &target.kind else {
             let (place, ty) = self.check_place(cx, target)?;
             let value = self.check_expr_as(cx, value, &ty, "assigned value");
@@ -259,9 +371,20 @@ impl<'a> Checker<'a> {
                 return None;
             }
             let declared = cx.locals[local.0 as usize].ty.clone();
-            let value = self.check_expr_as(cx, value, &declared, &format!("`{}` holds {}", name.name, self.unifier.resolve(&declared)));
+            let value = self.check_expr_as(
+                cx,
+                value,
+                &declared,
+                &format!("`{}` holds {}", name.name, self.unifier.resolve(&declared)),
+            );
             cx.invalidate_narrowing(local);
-            return Some(stmt(StmtKind::Assign { place: Place::Local(local), value }, span));
+            return Some(stmt(
+                StmtKind::Assign {
+                    place: Place::Local(local),
+                    value,
+                },
+                span,
+            ));
         }
         if let Some(item) = self.items.get(&name.name) {
             let what = match item {
@@ -269,8 +392,11 @@ impl<'a> Checker<'a> {
                 Item::Constant(_) => "constant",
             };
             self.error(
-                Diagnostic::error("E_ASSIGN_CONSTANT", format!("cannot assign to the {what} `{}`", name.name))
-                    .primary(name.span, ""),
+                Diagnostic::error(
+                    "E_ASSIGN_CONSTANT",
+                    format!("cannot assign to the {what} `{}`", name.name),
+                )
+                .primary(name.span, ""),
             );
             return None;
         }
@@ -285,7 +411,9 @@ impl<'a> Checker<'a> {
         let info = &cx.locals[local.0 as usize];
         let message = match info.kind {
             LocalKind::Constant => format!("`{}` is a constant and cannot change", info.name),
-            LocalKind::LoopVariable => format!("the loop variable `{}` cannot be reassigned", info.name),
+            LocalKind::LoopVariable => {
+                format!("the loop variable `{}` cannot be reassigned", info.name)
+            }
             _ => return true,
         };
         let declared = info.span;
@@ -297,15 +425,23 @@ impl<'a> Checker<'a> {
         false
     }
 
-    fn check_declaration(&mut self, cx: &mut FnCtx, decl: &ast::Declaration, span: Span) -> Option<hir::Stmt> {
+    fn check_declaration(
+        &mut self,
+        cx: &mut FnCtx,
+        decl: &ast::Declaration,
+        span: Span,
+    ) -> Option<hir::Stmt> {
         let scope = cx.scopes.last().expect("scope");
         if let Some(existing) = scope.names.get(&decl.name.name) {
             let previous = cx.locals[existing.0 as usize].span;
             self.error(
-                Diagnostic::error("E_DUPLICATE_DECLARATION", format!("`{}` is already declared in this scope", decl.name.name))
-                    .primary(decl.name.span, "declared again here")
-                    .secondary(previous, "first declared here")
-                    .help("assign without `variable` to update it, or choose another name"),
+                Diagnostic::error(
+                    "E_DUPLICATE_DECLARATION",
+                    format!("`{}` is already declared in this scope", decl.name.name),
+                )
+                .primary(decl.name.span, "declared again here")
+                .secondary(previous, "first declared here")
+                .help("assign without `variable` to update it, or choose another name"),
             );
             return None;
         }
@@ -314,11 +450,20 @@ impl<'a> Checker<'a> {
             self.resolve_type(ty, &generics)
         });
         let value = match &annotation {
-            Some(ty) => self.check_expr_as(cx, &decl.value, ty, &format!("`{}` is declared as {ty}", decl.name.name)),
+            Some(ty) => self.check_expr_as(
+                cx,
+                &decl.value,
+                ty,
+                &format!("`{}` is declared as {ty}", decl.name.name),
+            ),
             None => self.check_expr(cx, &decl.value, None),
         };
         let ty = annotation.unwrap_or_else(|| value.ty.clone());
-        let kind = if decl.kind == DeclKind::Constant { LocalKind::Constant } else { LocalKind::Variable };
+        let kind = if decl.kind == DeclKind::Constant {
+            LocalKind::Constant
+        } else {
+            LocalKind::Variable
+        };
         let local = cx.declare(&decl.name.name, ty, decl.name.span, kind);
         Some(stmt(StmtKind::Let { local, value }, span))
     }
@@ -330,8 +475,11 @@ impl<'a> Checker<'a> {
                 let Some(local) = cx.lookup(&name.name) else {
                     if self.items.contains_key(&name.name) {
                         self.error(
-                            Diagnostic::error("E_ASSIGN_CONSTANT", format!("cannot change `{}`", name.name))
-                                .primary(name.span, "module constants and functions are fixed"),
+                            Diagnostic::error(
+                                "E_ASSIGN_CONSTANT",
+                                format!("cannot change `{}`", name.name),
+                            )
+                            .primary(name.span, "module constants and functions are fixed"),
                         );
                     } else {
                         self.undefined_name(cx, name);
@@ -343,13 +491,20 @@ impl<'a> Checker<'a> {
                 }
                 Some((Place::Local(local), cx.locals[local.0 as usize].ty.clone()))
             }
-            ast::ExprKind::Index { target: base, index } => {
+            ast::ExprKind::Index {
+                target: base,
+                index,
+            } => {
                 let (place, base_ty) = self.check_place(cx, base)?;
                 let index_hir = self.check_expr(cx, index, None);
                 let element = self.index_type(&base_ty, &index_hir, target.span);
                 let index_hir = self.coerce_index(index_hir, &base_ty);
                 Some((
-                    Place::Index { target: Box::new(place), target_ty: base_ty, index: Box::new(index_hir) },
+                    Place::Index {
+                        target: Box::new(place),
+                        target_ty: base_ty,
+                        index: Box::new(index_hir),
+                    },
                     element,
                 ))
             }

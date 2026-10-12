@@ -16,17 +16,29 @@ pub struct Span {
 
 impl Span {
     pub fn new(file: FileId, start: usize, end: usize) -> Span {
-        Span { file, start: start as u32, end: end as u32 }
+        Span {
+            file,
+            start: start as u32,
+            end: end as u32,
+        }
     }
 
     /// The smallest span covering both `self` and `other`.
     pub fn to(self, other: Span) -> Span {
         debug_assert_eq!(self.file, other.file);
-        Span { file: self.file, start: self.start.min(other.start), end: self.end.max(other.end) }
+        Span {
+            file: self.file,
+            start: self.start.min(other.start),
+            end: self.end.max(other.end),
+        }
     }
 
     pub fn empty_at_end(self) -> Span {
-        Span { file: self.file, start: self.end, end: self.end }
+        Span {
+            file: self.file,
+            start: self.end,
+            end: self.end,
+        }
     }
 
     pub fn len(self) -> u32 {
@@ -62,7 +74,13 @@ impl SourceFile {
                 line_starts.push(index as u32 + 1);
             }
         }
-        SourceFile { id, name, path, text, line_starts }
+        SourceFile {
+            id,
+            name,
+            path,
+            text,
+            line_starts,
+        }
     }
 
     /// Zero-based line index containing the byte offset.
@@ -97,7 +115,11 @@ impl SourceFile {
         let line = self.line_index(offset);
         let start = self.line_starts[line] as usize;
         let end = (offset as usize).min(self.text.len());
-        let column = self.text.get(start..end).map(|s| s.chars().count()).unwrap_or(0);
+        let column = self
+            .text
+            .get(start..end)
+            .map(|s| s.chars().count())
+            .unwrap_or(0);
         (line + 1, column + 1)
     }
 
@@ -118,7 +140,12 @@ impl SourceMap {
 
     pub fn add(&mut self, name: impl Into<String>, path: Option<&Path>, text: String) -> FileId {
         let id = FileId(self.files.len() as u32);
-        self.files.push(SourceFile::new(id, name.into(), path.map(Path::to_path_buf), text));
+        self.files.push(SourceFile::new(
+            id,
+            name.into(),
+            path.map(Path::to_path_buf),
+            text,
+        ));
         id
     }
 
@@ -131,7 +158,10 @@ impl SourceMap {
     }
 
     pub fn find_by_path(&self, path: &Path) -> Option<FileId> {
-        self.files.iter().find(|file| file.path.as_deref() == Some(path)).map(|file| file.id)
+        self.files
+            .iter()
+            .find(|file| file.path.as_deref() == Some(path))
+            .map(|file| file.id)
     }
 }
 

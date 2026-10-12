@@ -42,7 +42,7 @@ pub enum Keyword {
 }
 
 impl Keyword {
-    pub fn from_str(text: &str) -> Option<Keyword> {
+    pub fn lookup(text: &str) -> Option<Keyword> {
         use Keyword::*;
         Some(match text {
             "and" => And,
@@ -126,9 +126,15 @@ impl Keyword {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum StringPart {
-    Text { text: String, span: Span },
+    Text {
+        text: String,
+        span: Span,
+    },
     /// Tokens of an interpolated expression, without the surrounding braces.
-    Interpolation { tokens: Vec<Token>, span: Span },
+    Interpolation {
+        tokens: Vec<Token>,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

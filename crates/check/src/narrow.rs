@@ -18,7 +18,10 @@ pub(crate) struct Facts {
 
 impl Facts {
     fn swap(self) -> Facts {
-        Facts { when_true: self.when_false, when_false: self.when_true }
+        Facts {
+            when_true: self.when_false,
+            when_false: self.when_true,
+        }
     }
 }
 
@@ -37,42 +40,79 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn facts_with(&mut self, cx: &FnCtx, condition: &ast::Expr, overlay: &HashMap<LocalId, Type>) -> Facts {
+    fn facts_with(
+        &mut self,
+        cx: &FnCtx,
+        condition: &ast::Expr,
+        overlay: &HashMap<LocalId, Type>,
+    ) -> Facts {
         match &condition.kind {
-            ast::ExprKind::Unary { op: UnaryOp::Not, operand } => self.facts_with(cx, operand, overlay).swap(),
-            ast::ExprKind::Binary { op: BinaryOp::And, lhs, rhs } => {
+            ast::ExprKind::Unary {
+                op: UnaryOp::Not,
+                operand,
+            } => self.facts_with(cx, operand, overlay).swap(),
+            ast::ExprKind::Binary {
+                op: BinaryOp::And,
+                lhs,
+                rhs,
+            } => {
                 let left = self.facts_with(cx, lhs, overlay);
                 let mut inner = overlay.clone();
                 inner.extend(left.when_true.iter().cloned());
                 let right = self.facts_with(cx, rhs, &inner);
                 let mut when_true = left.when_true;
                 when_true.extend(right.when_true);
-                Facts { when_true, when_false: Vec::new() }
+                Facts {
+                    when_true,
+                    when_false: Vec::new(),
+                }
             }
-            ast::ExprKind::Binary { op: BinaryOp::Or, lhs, rhs } => {
+            ast::ExprKind::Binary {
+                op: BinaryOp::Or,
+                lhs,
+                rhs,
+            } => {
                 let left = self.facts_with(cx, lhs, overlay);
                 let mut inner = overlay.clone();
                 inner.extend(left.when_false.iter().cloned());
                 let right = self.facts_with(cx, rhs, &inner);
                 let mut when_false = left.when_false;
                 when_false.extend(right.when_false);
-                Facts { when_true: Vec::new(), when_false }
+                Facts {
+                    when_true: Vec::new(),
+                    when_false,
+                }
             }
-            ast::ExprKind::Binary { op: op @ (BinaryOp::Equal | BinaryOp::NotEqual), lhs, rhs } => {
+            ast::ExprKind::Binary {
+                op: op @ (BinaryOp::Equal | BinaryOp::NotEqual),
+                lhs,
+                rhs,
+            } => {
                 let facts = self
                     .nothing_test(cx, lhs, rhs, overlay)
                     .or_else(|| self.nothing_test(cx, rhs, lhs, overlay))
                     .or_else(|| self.typeof_test(cx, lhs, rhs, overlay))
                     .or_else(|| self.typeof_test(cx, rhs, lhs, overlay))
                     .unwrap_or_default();
-                if *op == BinaryOp::NotEqual { facts.swap() } else { facts }
+                if *op == BinaryOp::NotEqual {
+                    facts.swap()
+                } else {
+                    facts
+                }
             }
             _ => Facts::default(),
         }
     }
 
-    fn union_local(&self, cx: &FnCtx, expr: &ast::Expr, overlay: &HashMap<LocalId, Type>) -> Option<(LocalId, Vec<Type>)> {
-        let ast::ExprKind::Name(name) = &expr.kind else { return None };
+    fn union_local(
+        &self,
+        cx: &FnCtx,
+        expr: &ast::Expr,
+        overlay: &HashMap<LocalId, Type>,
+    ) -> Option<(LocalId, Vec<Type>)> {
+        let ast::ExprKind::Name(name) = &expr.kind else {
+            return None;
+        };
         let local = cx.lookup(&name.name)?;
         match self.current_type(cx, local, overlay) {
             Type::Union(members) => Some((local, members)),
@@ -81,7 +121,13 @@ impl<'a> Checker<'a> {
     }
 
     /// Facts for `value == nothing`.
-    fn nothing_test(&self, cx: &FnCtx, value: &ast::Expr, other: &ast::Expr, overlay: &HashMap<LocalId, Type>) -> Option<Facts> {
+    fn nothing_test(
+        &self,
+        cx: &FnCtx,
+        value: &ast::Expr,
+        other: &ast::Expr,
+        overlay: &HashMap<LocalId, Type>,
+    ) -> Option<Facts> {
         if !matches!(other.kind, ast::ExprKind::Nothing) {
             return None;
         }
@@ -89,23 +135,62 @@ impl<'a> Checker<'a> {
         if !members.contains(&Type::Nothing) {
             return None;
         }
-        let rest = Type::union(members.iter().filter(|m| **m != Type::Nothing).cloned().collect::<Vec<_>>());
-        Some(Facts { when_true: vec![(local, Type::Nothing)], when_false: vec![(local, rest)] })
+        let rest = Type::union(
+            members
+                .iter()
+                .filter(|m| **m != Type::Nothing)
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        Some(Facts {
+            when_true: vec![(local, Type::Nothing)],
+            when_false: vec![(local, rest)],
+        })
     }
 
     /// Facts for `typeof(value) == "name"`.
-    fn typeof_test(&self, cx: &FnCtx, call: &ast::Expr, other: &ast::Expr, overlay: &HashMap<LocalId, Type>) -> Option<Facts> {
-        let ast::ExprKind::Call { callee, args, .. } = &call.kind else { return None };
-        let ast::ExprKind::Name(name) = &callee.kind else { return None };
-        if name.name != "typeof" || args.len() != 1 || cx.lookup("typeof").is_some() || self.items.contains_key("typeof") {
+    fn typeof_test(
+        &self,
+        cx: &FnCtx,
+        call: &ast::Expr,
+        other: &ast::Expr,
+        overlay: &HashMap<LocalId, Type>,
+    ) -> Option<Facts> {
+        let ast::ExprKind::Call { callee, args, .. } = &call.kind else {
+            return None;
+        };
+        let ast::ExprKind::Name(name) = &callee.kind else {
+            return None;
+        };
+        if name.name != "typeof"
+            || args.len() != 1
+            || cx.lookup("typeof").is_some()
+            || self.items.contains_key("typeof")
+        {
             return None;
         }
-        let ast::ExprKind::String(segments) = &other.kind else { return None };
-        let [ast::StringSegment::Text(type_name)] = segments.as_slice() else { return None };
+        let ast::ExprKind::String(segments) = &other.kind else {
+            return None;
+        };
+        let [ast::StringSegment::Text(type_name)] = segments.as_slice() else {
+            return None;
+        };
         let (local, members) = self.union_local(cx, &args[0], overlay)?;
-        let member = members.iter().find(|m| m.type_name() == *type_name)?.clone();
-        let rest = Type::union(members.iter().filter(|m| **m != member).cloned().collect::<Vec<_>>());
-        Some(Facts { when_true: vec![(local, member)], when_false: vec![(local, rest)] })
+        let member = members
+            .iter()
+            .find(|m| m.type_name() == *type_name)?
+            .clone();
+        let rest = Type::union(
+            members
+                .iter()
+                .filter(|m| **m != member)
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+        Some(Facts {
+            when_true: vec![(local, member)],
+            when_false: vec![(local, rest)],
+        })
     }
 }
 
@@ -120,11 +205,22 @@ pub(crate) fn stmt_exits(stmt: &hir::Stmt) -> bool {
         Return(_) | Break | Continue => true,
         Expr(expr) => matches!(
             expr.kind,
-            hir::ExprKind::Builtin { builtin: hir::Builtin::Error | hir::Builtin::Raise, .. }
+            hir::ExprKind::Builtin {
+                builtin: hir::Builtin::Error | hir::Builtin::Raise,
+                ..
+            }
         ),
-        If { then_block, else_block: Some(else_block), .. } => block_exits(then_block) && block_exits(else_block),
+        If {
+            then_block,
+            else_block: Some(else_block),
+            ..
+        } => block_exits(then_block) && block_exits(else_block),
         Block(block) => block_exits(block),
-        Try { body, catch, finally } => {
+        Try {
+            body,
+            catch,
+            finally,
+        } => {
             if finally.as_ref().is_some_and(block_exits) {
                 return true;
             }
@@ -145,10 +241,20 @@ fn breaks_out(block: &hir::Block) -> bool {
     use hir::StmtKind::*;
     block.stmts.iter().any(|stmt| match &stmt.kind {
         Break => true,
-        If { then_block, else_block, .. } => breaks_out(then_block) || else_block.as_ref().is_some_and(breaks_out),
+        If {
+            then_block,
+            else_block,
+            ..
+        } => breaks_out(then_block) || else_block.as_ref().is_some_and(breaks_out),
         Block(block) => breaks_out(block),
-        Try { body, catch, finally } => {
-            breaks_out(body) || catch.as_ref().is_some_and(|(_, b)| breaks_out(b)) || finally.as_ref().is_some_and(breaks_out)
+        Try {
+            body,
+            catch,
+            finally,
+        } => {
+            breaks_out(body)
+                || catch.as_ref().is_some_and(|(_, b)| breaks_out(b))
+                || finally.as_ref().is_some_and(breaks_out)
         }
         _ => false,
     })
@@ -163,7 +269,10 @@ pub(crate) fn assigned_names(block: &ast::Block, out: &mut Vec<String>) {
                     out.push(name.name.clone());
                 }
             }
-            ast::StmtKind::If { branches, else_body } => {
+            ast::StmtKind::If {
+                branches,
+                else_body,
+            } => {
                 for branch in branches {
                     assigned_names(&branch.body, out);
                 }
@@ -171,8 +280,14 @@ pub(crate) fn assigned_names(block: &ast::Block, out: &mut Vec<String>) {
                     assigned_names(block, out);
                 }
             }
-            ast::StmtKind::While { body, .. } | ast::StmtKind::For { body, .. } => assigned_names(body, out),
-            ast::StmtKind::Try { body, catch, finally } => {
+            ast::StmtKind::While { body, .. } | ast::StmtKind::For { body, .. } => {
+                assigned_names(body, out)
+            }
+            ast::StmtKind::Try {
+                body,
+                catch,
+                finally,
+            } => {
                 assigned_names(body, out);
                 if let Some(catch) = catch {
                     assigned_names(&catch.body, out);

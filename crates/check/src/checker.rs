@@ -56,9 +56,18 @@ pub(crate) struct ConstantEntry<'a> {
 /// A constraint whose shape depends on a type that may not be known yet.
 pub(crate) enum Deferred {
     /// `container[index]` producing `result`.
-    Index { container: Type, index: Type, result: Type, span: Span },
+    Index {
+        container: Type,
+        index: Type,
+        result: Type,
+        span: Span,
+    },
     /// `for item in iterable` (or `for key, value in iterable`).
-    Iterate { iterable: Type, items: Vec<Type>, span: Span },
+    Iterate {
+        iterable: Type,
+        items: Vec<Type>,
+        span: Span,
+    },
     /// `[]` must become an array or a dictionary.
     EmptyCollection { ty: Type, span: Span },
 }
@@ -71,7 +80,11 @@ pub(crate) struct Scope {
 
 impl Scope {
     pub fn new() -> Scope {
-        Scope { names: HashMap::new(), declared: Vec::new(), narrowed: HashMap::new() }
+        Scope {
+            names: HashMap::new(),
+            declared: Vec::new(),
+            narrowed: HashMap::new(),
+        }
     }
 }
 
@@ -103,16 +116,28 @@ impl FnCtx {
     }
 
     pub fn lookup(&self, name: &str) -> Option<LocalId> {
-        self.scopes.iter().rev().find_map(|scope| scope.names.get(name).copied())
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.names.get(name).copied())
     }
 
     pub fn narrowed_type(&self, local: LocalId) -> Option<&Type> {
-        self.scopes.iter().rev().find_map(|scope| scope.narrowed.get(&local))
+        self.scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.narrowed.get(&local))
     }
 
     pub fn declare(&mut self, name: &str, ty: Type, span: Span, kind: LocalKind) -> LocalId {
         let id = LocalId(self.locals.len() as u32);
-        self.locals.push(hir::Local { name: name.to_string(), ty, span, kind, borrowed: false });
+        self.locals.push(hir::Local {
+            name: name.to_string(),
+            ty,
+            span,
+            kind,
+            borrowed: false,
+        });
         let scope = self.scopes.last_mut().expect("scope");
         scope.names.insert(name.to_string(), id);
         scope.declared.push(id);
@@ -175,10 +200,15 @@ impl<'a> Checker<'a> {
         self.error(
             Diagnostic::error(
                 "E_UNAVAILABLE",
-                format!("{feature} {} not available yet", if feature.ends_with('s') { "are" } else { "is" }),
+                format!(
+                    "{feature} {} not available yet",
+                    if feature.ends_with('s') { "are" } else { "is" }
+                ),
             )
             .primary(span, format!("planned for milestone {milestone}"))
-            .note(format!("this release does not implement {feature}; it is scheduled for {milestone}")),
+            .note(format!(
+                "this release does not implement {feature}; it is scheduled for {milestone}"
+            )),
         );
     }
 
@@ -220,7 +250,19 @@ impl<'a> Checker<'a> {
                 };
                 ("E_TYPE_MISMATCH", error.describe(), help)
             }
-            UnifyError::Unsupported { .. } => ("E_UNSUPPORTED_OPERATION", error.describe(), None),
+            UnifyError::Unsupported { ty, .. } => {
+                let help = match ty {
+                    Type::Union(members) if members.contains(&Type::Nothing) => Some(
+                        "the value might be nothing; check first, for example `if value != nothing`".to_string(),
+                    ),
+                    Type::Union(_) => Some(
+                        "check which kind of value it holds first, for example `if typeof(value) == \"integer\"`"
+                            .to_string(),
+                    ),
+                    _ => None,
+                };
+                ("E_UNSUPPORTED_OPERATION", error.describe(), help)
+            }
             UnifyError::Infinite => ("E_TYPE_MISMATCH", error.describe(), None),
         };
         let mut diagnostic = Diagnostic::error(code, message).primary(span, context.to_string());
@@ -290,16 +332,22 @@ impl<'a> Checker<'a> {
                 Item::Constant(id) => self.constants[id.0 as usize].span,
             };
             self.error(
-                Diagnostic::error("E_DUPLICATE_DEFINITION", format!("`{name}` is defined more than once"))
-                    .primary(span, "redefined here")
-                    .secondary(previous, "first defined here"),
+                Diagnostic::error(
+                    "E_DUPLICATE_DEFINITION",
+                    format!("`{name}` is defined more than once"),
+                )
+                .primary(span, "redefined here")
+                .secondary(previous, "first defined here"),
             );
             return false;
         }
         if crate::builtins::lookup(name).is_some() {
             self.error(
-                Diagnostic::warning("W_SHADOWED_BUILTIN", format!("`{name}` hides the built-in function of the same name"))
-                    .primary(span, ""),
+                Diagnostic::warning(
+                    "W_SHADOWED_BUILTIN",
+                    format!("`{name}` hides the built-in function of the same name"),
+                )
+                .primary(span, ""),
             );
         }
         self.items.insert(name.to_string(), item);
@@ -312,7 +360,8 @@ impl<'a> Checker<'a> {
         let mut nodes: Vec<Item> = Vec::new();
         nodes.extend((0..self.functions.len()).map(|i| Item::Function(FuncId(i as u32))));
         nodes.extend((0..self.constants.len()).map(|i| Item::Constant(ConstId(i as u32))));
-        let index_of: HashMap<Item, usize> = nodes.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+        let index_of: HashMap<Item, usize> =
+            nodes.iter().enumerate().map(|(i, n)| (*n, i)).collect();
 
         let mut edges: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
         for (index, node) in nodes.iter().enumerate() {
@@ -323,7 +372,9 @@ impl<'a> Checker<'a> {
                         collect_function_names(function, &mut names);
                     }
                 }
-                Item::Constant(id) => collect_expr_names(&self.constants[id.0 as usize].decl.value, &mut names),
+                Item::Constant(id) => {
+                    collect_expr_names(&self.constants[id.0 as usize].decl.value, &mut names)
+                }
             }
             for name in names {
                 if let Some(item) = self.items.get(&name) {
@@ -336,7 +387,10 @@ impl<'a> Checker<'a> {
         }
 
         let components = tarjan(&edges);
-        components.into_iter().map(|c| c.into_iter().map(|i| nodes[i]).collect()).collect()
+        components
+            .into_iter()
+            .map(|c| c.into_iter().map(|i| nodes[i]).collect())
+            .collect()
     }
 
     // ----- type annotations -----------------------------------------------------
@@ -344,16 +398,24 @@ impl<'a> Checker<'a> {
     pub fn resolve_type(&mut self, ty: &ast::TypeExpr, generics: &HashMap<String, u32>) -> Type {
         match &ty.kind {
             ast::TypeExprKind::Error => Type::Unknown,
-            ast::TypeExprKind::Union(members) => {
-                Type::union(members.iter().map(|m| self.resolve_type(m, generics)).collect::<Vec<_>>())
-            }
+            ast::TypeExprKind::Union(members) => Type::union(
+                members
+                    .iter()
+                    .map(|m| self.resolve_type(m, generics))
+                    .collect::<Vec<_>>(),
+            ),
             ast::TypeExprKind::Named { name, args } => {
                 let arity = |checker: &mut Checker, expected: usize| {
                     if args.len() != expected {
                         checker.error(
                             Diagnostic::error(
                                 "E_TYPE_ARGUMENTS",
-                                format!("`{}` takes {expected} type argument{}, found {}", name.name, if expected == 1 { "" } else { "s" }, args.len()),
+                                format!(
+                                    "`{}` takes {expected} type argument{}, found {}",
+                                    name.name,
+                                    if expected == 1 { "" } else { "s" },
+                                    args.len()
+                                ),
                             )
                             .primary(ty.span, ""),
                         );
@@ -396,13 +458,20 @@ impl<'a> Checker<'a> {
                         let value = self.resolve_type(&args[1], generics);
                         if key != Type::String && key != Type::Unknown {
                             self.error(
-                                Diagnostic::error("E_UNAVAILABLE", "dictionary keys are strings in this release")
-                                    .primary(args[0].span, "other key types are planned for milestone M2"),
+                                Diagnostic::error(
+                                    "E_UNAVAILABLE",
+                                    "dictionary keys are strings in this release",
+                                )
+                                .primary(
+                                    args[0].span,
+                                    "other key types are planned for milestone M2",
+                                ),
                             );
                         }
                         Type::dict(key, value)
                     }
-                    "File" | "Path" | "Outcome" | "List" | "Map" | "Set" | "Queue" | "Stack" | "Channel" => {
+                    "File" | "Path" | "Outcome" | "List" | "Map" | "Set" | "Queue" | "Stack"
+                    | "Channel" => {
                         self.unavailable(ty.span, &format!("the `{}` type", name.name), "M2");
                         Type::Unknown
                     }
@@ -429,8 +498,12 @@ impl<'a> Checker<'a> {
     /// being inferred.
     pub fn initial_signature(&mut self, id: FuncId) -> Signature {
         let function = self.functions[id.0 as usize].ast.expect("function source");
-        let generics: HashMap<String, u32> =
-            function.generics.iter().enumerate().map(|(i, g)| (g.name.clone(), i as u32)).collect();
+        let generics: HashMap<String, u32> = function
+            .generics
+            .iter()
+            .enumerate()
+            .map(|(i, g)| (g.name.clone(), i as u32))
+            .collect();
         let mut params = Vec::new();
         let mut explicit_modes = Vec::new();
         let mut required = 0;
@@ -446,8 +519,11 @@ impl<'a> Checker<'a> {
                 seen_default = true;
             } else if seen_default {
                 self.error(
-                    Diagnostic::error("E_DEFAULT_ORDER", "parameters without defaults must come before parameters with defaults")
-                        .primary(param.span, ""),
+                    Diagnostic::error(
+                        "E_DEFAULT_ORDER",
+                        "parameters without defaults must come before parameters with defaults",
+                    )
+                    .primary(param.span, ""),
                 );
             } else {
                 required += 1;
@@ -459,7 +535,11 @@ impl<'a> Checker<'a> {
         };
         Signature {
             params,
-            param_names: function.params.iter().map(|p| p.name.name.clone()).collect(),
+            param_names: function
+                .params
+                .iter()
+                .map(|p| p.name.name.clone())
+                .collect(),
             explicit_modes,
             required,
             ret,
@@ -478,7 +558,10 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> (Signature, Vec<Type>, Vec<Type>, Type) {
         let entry = &self.functions[id.0 as usize];
-        let signature = entry.signature.clone().expect("signature available before use");
+        let signature = entry
+            .signature
+            .clone()
+            .expect("signature available before use");
         if !entry.generalized {
             // A recursive call inside the component being inferred; type
             // arguments are filled in once the component is generalized.
@@ -502,7 +585,11 @@ impl<'a> Checker<'a> {
                             "`{}` takes {} type argument{}, found {}",
                             self.functions[id.0 as usize].name,
                             signature.explicit_generics,
-                            if signature.explicit_generics == 1 { "" } else { "s" },
+                            if signature.explicit_generics == 1 {
+                                ""
+                            } else {
+                                "s"
+                            },
                             explicit.len()
                         ),
                     )
@@ -514,7 +601,11 @@ impl<'a> Checker<'a> {
                 }
             }
         }
-        let params = signature.params.iter().map(|p| p.substitute(&type_args)).collect();
+        let params = signature
+            .params
+            .iter()
+            .map(|p| p.substitute(&type_args))
+            .collect();
         let ret = signature.ret.substitute(&type_args);
         (signature, params, type_args, ret)
     }
@@ -546,7 +637,9 @@ impl<'a> Checker<'a> {
             let mut defaulted = false;
             for constraint in &pending {
                 match constraint {
-                    Deferred::Iterate { iterable, items, .. } => {
+                    Deferred::Iterate {
+                        iterable, items, ..
+                    } => {
                         if let Type::Var(_) = self.unifier.shallow(iterable) {
                             let shape = match items.as_slice() {
                                 [element] => Type::array(element.clone()),
@@ -556,7 +649,12 @@ impl<'a> Checker<'a> {
                             defaulted |= self.unifier.unify(iterable, &shape).is_ok();
                         }
                     }
-                    Deferred::Index { container, index, result, .. } => {
+                    Deferred::Index {
+                        container,
+                        index,
+                        result,
+                        ..
+                    } => {
                         if let Type::Var(_) = self.unifier.shallow(container) {
                             let shape = if self.unifier.resolve(index) == Type::String {
                                 Type::dict(Type::String, result.clone())
@@ -594,7 +692,9 @@ impl<'a> Checker<'a> {
                     ),
                 };
                 self.error(
-                    Diagnostic::error("E_AMBIGUOUS_TYPE", message).primary(span, "").help(help),
+                    Diagnostic::error("E_AMBIGUOUS_TYPE", message)
+                        .primary(span, "")
+                        .help(help),
                 );
             }
         }
@@ -602,27 +702,34 @@ impl<'a> Checker<'a> {
 
     fn try_apply(&mut self, constraint: &Deferred) -> bool {
         match constraint {
-            Deferred::Index { container, index, result, span } => {
-                match self.unifier.shallow(container) {
-                    Type::Array(element) => {
-                        self.unify_at(&Type::INTEGER, index, *span, "array indexes are integers");
-                        self.unify_at(result, &element, *span, "");
-                        true
-                    }
-                    Type::Dict(key, value) => {
-                        self.unify_at(&key, index, *span, "dictionary key");
-                        self.unify_at(result, &value, *span, "");
-                        true
-                    }
-                    Type::Var(_) => false,
-                    Type::Unknown => true,
-                    other => {
-                        self.not_indexable(&other, *span);
-                        true
-                    }
+            Deferred::Index {
+                container,
+                index,
+                result,
+                span,
+            } => match self.unifier.shallow(container) {
+                Type::Array(element) => {
+                    self.unify_at(&Type::INTEGER, index, *span, "array indexes are integers");
+                    self.unify_at(result, &element, *span, "");
+                    true
                 }
-            }
-            Deferred::Iterate { iterable, items, span } => match self.unifier.shallow(iterable) {
+                Type::Dict(key, value) => {
+                    self.unify_at(&key, index, *span, "dictionary key");
+                    self.unify_at(result, &value, *span, "");
+                    true
+                }
+                Type::Var(_) => false,
+                Type::Unknown => true,
+                other => {
+                    self.not_indexable(&other, *span);
+                    true
+                }
+            },
+            Deferred::Iterate {
+                iterable,
+                items,
+                span,
+            } => match self.unifier.shallow(iterable) {
                 Type::Var(_) => false,
                 other => {
                     self.apply_iteration(&other, items, *span);
@@ -691,17 +798,21 @@ impl<'a> Checker<'a> {
 
     /// Generalizes the signature of a single-function component.
     pub fn generalize(&mut self, id: FuncId) {
-        let mut signature = self.functions[id.0 as usize].signature.clone().expect("signature");
+        let mut signature = self.functions[id.0 as usize]
+            .signature
+            .clone()
+            .expect("signature");
         let mut free = Vec::new();
         for param in &signature.params {
             self.unifier.free_vars(param, &mut free);
         }
         // A result type that nothing constrains (a function that only fails)
         // is `nothing` rather than a type parameter callers cannot determine.
-        if let Type::Var(var) = self.unifier.shallow(&signature.ret) {
-            if !free.contains(&var) && self.unifier.bounds(var) == Bounds::default() {
-                self.unifier.force_bind(var, Type::Nothing);
-            }
+        if let Type::Var(var) = self.unifier.shallow(&signature.ret)
+            && !free.contains(&var)
+            && self.unifier.bounds(var) == Bounds::default()
+        {
+            self.unifier.force_bind(var, Type::Nothing);
         }
         self.unifier.free_vars(&signature.ret, &mut free);
         for var in free {
@@ -710,7 +821,11 @@ impl<'a> Checker<'a> {
             signature.bounds.push(self.unifier.bounds(var));
             self.unifier.force_bind(var, Type::Param(index));
         }
-        signature.params = signature.params.iter().map(|p| self.unifier.resolve(p)).collect();
+        signature.params = signature
+            .params
+            .iter()
+            .map(|p| self.unifier.resolve(p))
+            .collect();
         signature.ret = self.unifier.resolve(&signature.ret);
         let entry = &mut self.functions[id.0 as usize];
         entry.signature = Some(signature);
@@ -769,7 +884,12 @@ impl<'a> Checker<'a> {
     }
 
     fn finalize_place(&mut self, place: &mut hir::Place) {
-        if let hir::Place::Index { target, target_ty, index } = place {
+        if let hir::Place::Index {
+            target,
+            target_ty,
+            index,
+        } = place
+        {
             self.finalize_place(target);
             *target_ty = self.finalize_type(target_ty);
             self.finalize_expr(index);
@@ -784,7 +904,11 @@ impl<'a> Checker<'a> {
                 self.finalize_place(place);
                 self.finalize_expr(value);
             }
-            If { condition, then_block, else_block } => {
+            If {
+                condition,
+                then_block,
+                else_block,
+            } => {
                 self.finalize_expr(condition);
                 self.finalize_block(then_block);
                 if let Some(block) = else_block {
@@ -804,7 +928,11 @@ impl<'a> Checker<'a> {
                     self.finalize_expr(value);
                 }
             }
-            Try { body, catch, finally } => {
+            Try {
+                body,
+                catch,
+                finally,
+            } => {
                 self.finalize_block(body);
                 if let Some((_, block)) = catch {
                     self.finalize_block(block);
@@ -823,17 +951,30 @@ impl<'a> Checker<'a> {
         use hir::ExprKind::*;
         match &mut expr.kind {
             Integer(value) => {
-                if let Type::Int(int) = &expr.ty {
-                    if *value < int.min_value() || *value > int.max_value() {
-                        self.error(
-                            Diagnostic::error("E_LITERAL_RANGE", format!("{value} does not fit in {}", int.name()))
-                                .primary(expr.span, format!("{} holds {} to {}", int.name(), int.min_value(), int.max_value())),
-                        );
-                    }
+                if let Type::Int(int) = &expr.ty
+                    && (*value < int.min_value() || *value > int.max_value())
+                {
+                    self.error(
+                        Diagnostic::error(
+                            "E_LITERAL_RANGE",
+                            format!("{value} does not fit in {}", int.name()),
+                        )
+                        .primary(
+                            expr.span,
+                            format!(
+                                "{} holds {} to {}",
+                                int.name(),
+                                int.min_value(),
+                                int.max_value()
+                            ),
+                        ),
+                    );
                 }
             }
             Float(_) | Boolean(_) | String(_) | Nothing | Local { .. } | Constant(_) => {}
-            Call { type_args, args, .. } => {
+            Call {
+                type_args, args, ..
+            } => {
                 for ty in type_args.iter_mut() {
                     *ty = self.finalize_type(ty);
                 }
@@ -885,14 +1026,19 @@ impl<'a> Checker<'a> {
 
 fn conversion_help(expected: &Type, found: &Type) -> Option<String> {
     match (expected, found) {
-        (Type::Float(f), Type::Int(_)) => Some(format!("convert explicitly with {}(...)", f.name())),
-        (Type::Int(i), Type::Float(_)) | (Type::Int(i), Type::Int(_)) => {
-            Some(format!("convert explicitly with {}(...); conversions are checked", i.name()))
+        (Type::Float(f), Type::Int(_)) => {
+            Some(format!("convert explicitly with {}(...)", f.name()))
         }
+        (Type::Int(i), Type::Float(_)) | (Type::Int(i), Type::Int(_)) => Some(format!(
+            "convert explicitly with {}(...); conversions are checked",
+            i.name()
+        )),
         (Type::String, Type::Int(_) | Type::Float(_) | Type::Boolean) => {
             Some("convert with tostring(...) or use interpolation \"{value}\"".to_string())
         }
-        (Type::Int(_) | Type::Float(_), Type::String) => Some("parse text with tonumber(...)".to_string()),
+        (Type::Int(_) | Type::Float(_), Type::String) => {
+            Some("parse text with tonumber(...)".to_string())
+        }
         _ => None,
     }
 }
@@ -934,7 +1080,10 @@ fn collect_stmt_names(stmt: &ast::Stmt, names: &mut Vec<String>) {
             collect_expr_names(value, names);
         }
         StmtKind::Declare(decl) => collect_expr_names(&decl.value, names),
-        StmtKind::If { branches, else_body } => {
+        StmtKind::If {
+            branches,
+            else_body,
+        } => {
             for branch in branches {
                 collect_expr_names(&branch.condition, names);
                 collect_block_names(&branch.body, names);
@@ -951,7 +1100,11 @@ fn collect_stmt_names(stmt: &ast::Stmt, names: &mut Vec<String>) {
             collect_expr_names(iterable, names);
             collect_block_names(body, names);
         }
-        StmtKind::Try { body, catch, finally } => {
+        StmtKind::Try {
+            body,
+            catch,
+            finally,
+        } => {
             collect_block_names(body, names);
             if let Some(catch) = catch {
                 collect_block_names(&catch.body, names);
@@ -982,12 +1135,16 @@ pub(crate) fn collect_expr_names(expr: &ast::Expr, names: &mut Vec<String>) {
                 }
             }
         }
-        Array(items) => items.iter().for_each(|item| collect_expr_names(item, names)),
+        Array(items) => items
+            .iter()
+            .for_each(|item| collect_expr_names(item, names)),
         Dict(entries) => entries.iter().for_each(|(k, v)| {
             collect_expr_names(k, names);
             collect_expr_names(v, names);
         }),
-        Record(fields) => fields.iter().for_each(|(_, v)| collect_expr_names(v, names)),
+        Record(fields) => fields
+            .iter()
+            .for_each(|(_, v)| collect_expr_names(v, names)),
         Call { callee, args, .. } => {
             collect_expr_names(callee, names);
             args.iter().for_each(|arg| collect_expr_names(arg, names));
