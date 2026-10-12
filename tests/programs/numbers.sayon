@@ -1,0 +1,32 @@
+# Numeric literals, arithmetic, and checked operations
+print(42, 0xFF, 0b1010, 0o755, 1_000_000)
+print(255u, 3.14, 2.5e-2, 1e3)
+print(7 / 2, 7 % 3, -7 / 2, -7 % 3)
+print(7.0 / 2.0, 0.1 + 0.2, 10.0 % 3.0)
+print(2 + 3 * 4, (2 + 3) * 4, -2 * -3)
+
+small: integer8 = 127
+print(small)
+byte_value: byte = 255
+print(byte_value)
+
+print(integer(3.99), integer(-3.99), float(7), float32(0.1))
+print(9223372036854775807)
+largest = 9223372036854775807
+try
+    print(largest + 1)
+catch problem
+    print("{problem.code}: {problem.message}")
+
+try
+    print(10 / (5 - 5))
+catch problem
+    print("{problem.code}: {problem.message}")
+
+try
+    print(integer8(300))
+catch problem
+    print("{problem.code}: {problem.message}")
+
+ratio = 1.0 / 0.0
+print(ratio, -ratio)

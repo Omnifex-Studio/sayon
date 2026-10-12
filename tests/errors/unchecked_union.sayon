@@ -1,0 +1,7 @@
+function find(id: integer) -> string or nothing
+    if id == 1
+        return "ada"
+    return nothing
+
+name = find(2)
+print(length(name))

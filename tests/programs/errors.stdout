@@ -1,0 +1,18 @@
+Error: Division by zero
+Operation finished
+checked 5 done
+20
+checked 0 done
+caught: Division by zero (UserError)
+looked at 3
+looked at -2
+-2
+body 0
+cleanup 0
+cleanup 1
+body 2
+cleanup 2
+inner finally
+outer caught inner
+re-raised: first
+AssertionError: math is broken

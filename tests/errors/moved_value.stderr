@@ -1,0 +1,11 @@
+error[E_MOVED_VALUE]: `numbers` was transferred to `other`
+  --> moved_value.sayon:3:7
+   |
+ 2 | other = numbers
+   |         ------- ownership transferred here
+ 3 | print(numbers)
+   |       ^^^^^^^ `numbers` no longer owns the array
+   |
+   = help: use `other` here, or write `other = clone(numbers)` when you need two independent copies
+
+1 error found; nothing was run

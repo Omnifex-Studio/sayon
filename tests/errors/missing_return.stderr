@@ -1,0 +1,9 @@
+error[E_MISSING_RETURN]: `sign` returns string but can reach its end without returning
+  --> missing_return.sayon:1:1
+   |
+ 1 | function sign(n: integer) -> string
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: add a `return` on every path, for example at the end of the function
+
+1 error found; nothing was run

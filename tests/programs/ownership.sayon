@@ -1,0 +1,45 @@
+# Ownership: moves, clones, borrows, and parameter modes
+function total(values: Array<integer>) -> integer
+    result = 0
+    for value in values
+        result = result + value
+    return result
+
+function append_score(update scores: Array<integer>, score: integer)
+    push(scores, score)
+
+function keep(own items: Array<string>) -> Array<string>
+    push(items, "kept")
+    return items
+
+function rename(update name: string)
+    name = name + " (renamed)"
+
+numbers = [1, 2, 3]
+print(total(numbers))
+print(numbers)
+
+append_score(numbers, 4)
+print(numbers)
+
+original = [10, 20]
+independent = clone(original)
+push(independent, 30)
+print(original, independent)
+
+first = ["a"]
+second = first
+print(second)
+first = ["b"]
+print(first)
+
+words = ["x"]
+kept = keep(words)
+print(kept)
+
+label = "file"
+rename(label)
+print(label)
+
+moved = move(kept)
+print(moved)

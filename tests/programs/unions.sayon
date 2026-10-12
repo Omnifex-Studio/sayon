@@ -1,0 +1,43 @@
+# Unions, nothing, and narrowing
+function find(names: Array<string>, wanted: string) -> integer or nothing
+    for i in range(length(names))
+        if names[i] == wanted
+            return i
+    return nothing
+
+names = ["ada", "grace", "linus"]
+position = find(names, "grace")
+if position != nothing
+    print("found at", position + 1)
+missing = find(names, "alan")
+if missing == nothing
+    print("alan is missing")
+
+function describe(value: integer or string or boolean) -> string
+    if typeof(value) == "integer"
+        return "number {value + 1}"
+    if typeof(value) == "string"
+        return "text {value}"
+    return "flag {value}"
+
+print(describe(41), describe("abc"), describe(true))
+
+mixed = [1, "two", 3.0, nothing]
+print(mixed, length(mixed))
+for item in mixed
+    print(typeof(item))
+
+parsed = tonumber("12")
+print(parsed, typeof(parsed))
+parsed = tonumber("1.5")
+print(parsed, typeof(parsed))
+
+stack = ["a"]
+item = pop(stack)
+if item == nothing
+    print("empty")
+else
+    print("got", item)
+print(pop(stack) == nothing)
+value: integer or nothing = 5
+print(value == 5, value == 6, value != nothing)

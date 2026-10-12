@@ -1,0 +1,9 @@
+error[E_UNSUPPORTED_OPERATION]: string or nothing does not support `length`
+  --> unchecked_union.sayon:7:14
+   |
+ 7 | print(length(name))
+   |              ^^^^ `length` needs a string, array, or dictionary
+   |
+   = help: the value might be nothing; check first, for example `if value != nothing`
+
+1 error found; nothing was run

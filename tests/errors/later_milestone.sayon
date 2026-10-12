@@ -1,0 +1,7 @@
+type Point = [
+    x: float,
+    y: float
+]
+
+counter = function()
+    return 1

@@ -1,0 +1,13 @@
+error[E_LITERAL_RANGE]: 200 does not fit in integer8
+  --> literal_range.sayon:1:19
+   |
+ 1 | small: integer8 = 200
+   |                   ^^^ integer8 holds -128 to 127
+
+error[E_LITERAL_RANGE]: -1 does not fit in unsigned
+  --> literal_range.sayon:2:22
+   |
+ 2 | positive: unsigned = -1
+   |                      ^^ unsigned holds 0 to 18446744073709551615
+
+2 errors found; nothing was run

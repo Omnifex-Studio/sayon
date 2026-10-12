@@ -1,0 +1,18 @@
+error[E_UNDEFINED_NAME]: `totl` is not defined
+  --> undefined_names.sayon:2:7
+   |
+ 2 | print(totl)
+   |       ^^^^ not found in this scope
+   |
+   = help: did you mean `total`?
+
+error[E_UNDEFINED_NAME]: `greeting` is not defined
+  --> undefined_names.sayon:6:11
+   |
+ 6 |     print(greeting)
+   |           ^^^^^^^^ not found in this scope
+   |
+   = note: `greeting` is a variable of the script's top level; functions cannot see script variables
+   = help: pass it to the function as a parameter, or declare it with `constant` if it never changes
+
+2 errors found; nothing was run

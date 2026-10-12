@@ -1,0 +1,4 @@
+count = 3
+ratio = 0.5
+scaled = count * ratio
+label = "total: " + count

@@ -1,0 +1,4 @@
+# A program with `main` returns its exit status
+function main() -> integer
+    print("finishing with status 4")
+    return 4

@@ -1,0 +1,9 @@
+# Reading and writing whole files
+writefile("files_output.tmp", "line one\nline two\n")
+content = readfile("files_output.tmp")
+print(content)
+print(length(content))
+try
+    readfile("does_not_exist.txt")
+catch problem
+    print(problem.code)

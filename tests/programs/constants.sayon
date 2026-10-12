@@ -1,0 +1,12 @@
+# Module constants are initialized in dependency order
+constant GREETING = "{PREFIX}, world"
+constant PREFIX = "Hello"
+constant LIMIT = 3
+constant SQUARES = [1, 4, 9]
+
+function show()
+    for i in range(LIMIT)
+        print(i, SQUARES[i])
+
+print(GREETING)
+show()

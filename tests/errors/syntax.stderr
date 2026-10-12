@@ -1,0 +1,25 @@
+error[E_UNEXPECTED_CHARACTER]: unexpected character `;`
+  --> syntax.sayon:1:19
+   |
+ 1 | values = [1, 2, 3];
+   |                   ^
+   |
+   = help: statements end at line breaks; remove the `;`
+
+error[E_UNEXPECTED_CHARACTER]: `&&` is not a Sayon operator
+  --> syntax.sayon:2:18
+   |
+ 2 | if values[0] > 0 && values[1] > 0
+   |                  ^^ write `and`
+   |
+   = help: logic in Sayon uses the words `and`, `or`, and `not`
+
+error[E_UNTERMINATED_STRING]: this string is never closed
+  --> syntax.sayon:4:5
+   |
+ 4 | x = "unterminated
+   |     ^^^^^^^^^^^^^
+   |
+   = help: strings end with `"` on the same line
+
+3 errors found; nothing was run

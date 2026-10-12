@@ -1,0 +1,9 @@
+error[E_UNEXPECTED_INDENT]: unexpected indentation
+  --> indentation.sayon:3:7
+   |
+ 2 |     print("one")
+   |     ----- the block's lines start at this column
+ 3 |       print("two")
+   |       ^^^^^ this line is indented more than the lines before it
+
+1 error found; nothing was run

@@ -1,0 +1,40 @@
+# Arrays and dictionaries
+numbers = [3, 1, 2]
+push(numbers, 4)
+print(numbers, length(numbers))
+numbers[0] = 30
+numbers[1] += 5
+print(numbers)
+last = pop(numbers)
+print(last, numbers)
+
+empty: Array<string> = []
+print(empty, length(empty))
+first = pop(empty)
+print(first)
+
+grid = [[1, 2], [3, 4]]
+grid[1][0] = 30
+push(grid[0], 5)
+print(grid, grid[1][1])
+
+profile = ["name" = "Alice", "city" = "Paris"]
+profile["age"] = "30"
+profile["name"] = "Alicia"
+print(profile)
+print(haskey(profile, "city"), haskey(profile, "zip"))
+for key, value in profile
+    print("{key} -> {value}")
+for key in profile
+    print(key)
+
+scores: Dict<string, integer> = []
+scores["ada"] = 3
+scores["ada"] += 4
+print(scores, length(scores))
+
+copy = clone(grid)
+push(copy, [9])
+print(grid, copy)
+print([1, 2] == [1, 2], [1, 2] == [2, 1])
+print(["a" = 1, "b" = 2] == ["b" = 2, "a" = 1])

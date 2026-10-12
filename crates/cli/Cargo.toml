@@ -1,0 +1,20 @@
+[package]
+name = "sayon-cli"
+description = "The sayon command-line tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "sayon"
+path = "src/main.rs"
+
+[dependencies]
+sayon-syntax.workspace = true
+sayon-check.workspace = true
+sayon-ir.workspace = true
+sayon-interp.workspace = true
+
+[lints]
+workspace = true

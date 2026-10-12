@@ -1,0 +1,65 @@
+# Recoverable errors, propagation, and cleanup order
+function divide(a, b)
+    if b == 0
+        error("Division by zero")
+    return a / b
+
+function checked(value: integer) -> integer
+    try
+        return divide(100, value)
+    finally
+        print("checked {value} done")
+
+try
+    value = divide(10, 0)
+    print("not printed {value}")
+catch problem
+    print("Error: {problem}")
+finally
+    print("Operation finished")
+
+print(checked(5))
+try
+    print(checked(0))
+catch problem
+    print("caught: {problem.message} ({problem.code})")
+
+function first_negative(values: Array<integer>) -> integer or nothing
+    for value in values
+        try
+            if value < 0
+                return value
+        finally
+            print("looked at {value}")
+    return nothing
+
+print(first_negative([3, -2, 5]))
+
+for i in range(3)
+    try
+        if i == 1
+            continue
+        print("body {i}")
+    finally
+        print("cleanup {i}")
+
+try
+    try
+        error("inner")
+    finally
+        print("inner finally")
+catch problem
+    print("outer caught {problem.message}")
+
+try
+    try
+        error("first")
+    catch problem
+        raise(problem)
+catch again
+    print("re-raised: {again.message}")
+
+try
+    assert(1 + 1 == 3, "math is broken")
+catch problem
+    print("{problem.code}: {problem.message}")

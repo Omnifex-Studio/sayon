@@ -1,0 +1,11 @@
+error[E_MUTATE_BORROWED]: cannot change `scores`: the parameter is a read-only borrow
+  --> read_only_parameter.sayon:2:10
+   |
+ 1 | function add_bonus(scores: Array<integer>)
+   |                    ------ parameter declared here
+ 2 |     push(scores, 100)
+   |          ^^^^^^
+   |
+   = help: declare it `update scores: Array<integer>` to allow changes the caller will see
+
+1 error found; nothing was run

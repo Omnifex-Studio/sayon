@@ -1,0 +1,9 @@
+error[E_MOVED_VALUE]: `names` was transferred to `consume` in an earlier iteration of the loop
+  --> moved_in_loop.sayon:6:13
+   |
+ 6 |     consume(names)
+   |             ^^^^^ transferred here, so the next iteration no longer owns the array
+   |
+   = help: `consume` takes ownership; pass clone(names) if you still need `names` afterwards
+
+1 error found; nothing was run

@@ -1,0 +1,39 @@
+# Conditions and loops
+function classify(n)
+    if n < 0
+        return "negative"
+    else if n == 0
+        return "zero"
+    else
+        return "positive"
+
+print(classify(-5), classify(0), classify(5))
+
+count = 0
+while count < 3
+    count += 1
+print("count", count)
+
+for i in range(5)
+    if i == 1
+        continue
+    if i == 4
+        break
+    print("range", i)
+
+for i in range(10, 0, -3)
+    print("down", i)
+
+for i in range(2, 5)
+    print("from two", i)
+
+total = 0
+for value in [1, 2, 3, 4]
+    total += value
+print("total", total)
+
+ready = true
+if ready and not false
+    print("ready")
+if false or count == 3
+    print("short circuit")

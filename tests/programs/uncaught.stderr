@@ -1,0 +1,2 @@
+error: uncaught KeyError: the key "b" is not in the dictionary
+  --> uncaught.sayon:3:12

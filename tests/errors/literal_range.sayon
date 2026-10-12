@@ -1,0 +1,2 @@
+small: integer8 = 200
+positive: unsigned = -1

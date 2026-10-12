@@ -1,0 +1,17 @@
+error[E_UNAVAILABLE]: structure types are not available yet
+  --> later_milestone.sayon:1:6
+   |
+ 1 | type Point = [
+   |      ^^^^^ planned for milestone M2
+   |
+   = note: this release does not implement structure types; it is scheduled for M2
+
+error[E_UNAVAILABLE]: function literals and closures are not available yet
+  --> later_milestone.sayon:6:11
+   |
+ 6 | counter = function()
+   |           ^^^^^^^^^^ planned for milestone M2
+   |
+   = note: this release does not implement function literals and closures; it is scheduled for M2
+
+2 errors found; nothing was run

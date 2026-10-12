@@ -1,0 +1,6 @@
+total = 10
+print(totl)
+
+greeting = "hello"
+function shout()
+    print(greeting)

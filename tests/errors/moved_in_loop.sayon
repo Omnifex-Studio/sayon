@@ -1,0 +1,6 @@
+function consume(own items: Array<string>)
+    print(items)
+
+names = ["ada", "grace"]
+for i in range(2)
+    consume(names)

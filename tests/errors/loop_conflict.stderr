@@ -1,0 +1,12 @@
+error[E_BORROW_CONFLICT]: cannot change `scores` while the loop is reading it
+  --> loop_conflict.sayon:4:14
+   |
+ 2 | for score in scores
+   |              ------ the loop reads `scores` here until it finishes
+...
+ 4 |         push(scores, score * 2)
+   |              ^^^^^^
+   |
+   = help: collect the changes in another collection and apply them after the loop
+
+1 error found; nothing was run

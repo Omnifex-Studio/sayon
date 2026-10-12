@@ -1,0 +1,36 @@
+# Functions: inference, generics, recursion, and defaults
+function identity(x)
+    return x
+
+function add(a, b)
+    return a + b
+
+function wrap<T>(own value: T) -> Array<T>
+    return [value]
+
+function factorial(n)
+    if n <= 1
+        return 1
+    return n * factorial(n - 1)
+
+function greet(name, greeting = "Hello", punctuation = "!")
+    print("{greeting}, {name}{punctuation}")
+
+function is_even(n: integer) -> boolean
+    if n == 0
+        return true
+    return is_odd(n - 1)
+
+function is_odd(n: integer) -> boolean
+    if n == 0
+        return false
+    return is_even(n - 1)
+
+print(identity(42), identity("text"), identity(true))
+print(add(1, 2), add(1.5, 2.25), add("con", "cat"))
+print(wrap<integer>(42), wrap("solo"))
+print(factorial(10))
+greet("Ada")
+greet("Grace", "Welcome")
+greet("Linus", "Hi", "?")
+print(is_even(10), is_odd(7))

@@ -1,0 +1,18 @@
+[3, 1, 2, 4] 4
+[30, 6, 2, 4]
+4 [30, 6, 2]
+[] 0
+nothing
+[[1, 2, 5], [30, 4]] 4
+["name" = "Alicia", "city" = "Paris", "age" = "30"]
+true false
+name -> Alicia
+city -> Paris
+age -> 30
+name
+city
+age
+["ada" = 7] 1
+[[1, 2, 5], [30, 4]] [[1, 2, 5], [30, 4], [9]]
+true false
+true

@@ -1,0 +1,4 @@
+scores = [10, 20, 30]
+for score in scores
+    if score > 15
+        push(scores, score * 2)

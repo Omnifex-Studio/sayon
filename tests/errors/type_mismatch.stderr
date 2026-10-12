@@ -1,0 +1,19 @@
+error[E_TYPE_MISMATCH]: `*` needs operands of the same type, found integer and float
+  --> type_mismatch.sayon:3:18
+   |
+ 3 | scaled = count * ratio
+   |          ----- this is integer
+   |                  ^^^^^ this is float
+   |
+   = help: Sayon never converts numbers implicitly; use float(...) on the integer
+
+error[E_TYPE_MISMATCH]: `+` needs operands of the same type, found string and integer
+  --> type_mismatch.sayon:4:21
+   |
+ 4 | label = "total: " + count
+   |         --------- this is string
+   |                     ^^^^^ this is integer
+   |
+   = help: use interpolation such as "{value}" or tostring(...) to build text
+
+2 errors found; nothing was run

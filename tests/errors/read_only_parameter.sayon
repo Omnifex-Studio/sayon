@@ -1,0 +1,5 @@
+function add_bonus(scores: Array<integer>)
+    push(scores, 100)
+
+points = [1, 2]
+add_bonus(points)

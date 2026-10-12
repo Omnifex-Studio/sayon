@@ -1,0 +1,7 @@
+# An error nothing catches ends the program with status 1
+function lookup(table: Dict<string, integer>, key: string) -> integer
+    return table[key]
+
+print("before")
+print(lookup(["a" = 1], "b"))
+print("never printed")

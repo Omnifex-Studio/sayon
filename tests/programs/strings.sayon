@@ -1,0 +1,16 @@
+# Strings, interpolation, and escapes
+name = "Sayon"
+print("Hello, {name}!")
+print("Sum: {100 + 20}")
+print("Braces: {{{name}}}")
+print("Nested: {"inner {name}"}")
+print("Tab:\tend")
+print("Quote: \" and backslash: \\")
+print("Unicode: \u{1F600} \u{e9}")
+
+greeting = "héllo wörld"
+print(length(greeting), byte_length(greeting))
+print("abc" < "abd", "b" > "a", "same" == "same")
+joined = "first" + " " + "second"
+print(joined)
+print(tostring(42) + "!")
