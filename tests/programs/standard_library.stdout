@@ -1,0 +1,19 @@
+arguments: []
+no input: nothing
+["alpha", "beta", "gamma"] alpha | beta | gamma
+HÉLLO mixed [padded]
+3 nothing
+Sayon ababab ["a", "ñ", "b"]
+true true true
+a+b+c ["one", "two", "three"]
+BoundsError: characters 2 to 9 are outside a string of length 3
+4.0 3.141592653589793 2.0 3.0 3.0 -2.0
+7 2.5 9 apple 10
+1024.0 3.0 3.141592653589793
+true
+docs/notes.txt notes.txt a/b
+gz []
+["first.txt", "second.txt"] 14 ["one", "two", "three"]
+true true false
+false
+IOError

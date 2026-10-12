@@ -4,4 +4,5 @@
 //! `ffi` holds the functions compiled programs call.
 
 pub mod ffi;
+pub mod host;
 pub mod text;

@@ -1,0 +1,92 @@
+# Mathematical functions and constants.
+#
+#     math = import("standard/math.sayon")
+#     print(math.sqrt(2.0), math.max(3, 7))
+
+constant PI = 3.141592653589793
+constant E = 2.718281828459045
+constant TAU = 6.283185307179586
+
+function sqrt(x: float) -> float
+    return host_sqrt(x)
+
+function sin(x: float) -> float
+    return host_sin(x)
+
+function cos(x: float) -> float
+    return host_cos(x)
+
+function tan(x: float) -> float
+    return host_tan(x)
+
+function asin(x: float) -> float
+    return host_asin(x)
+
+function acos(x: float) -> float
+    return host_acos(x)
+
+function atan(x: float) -> float
+    return host_atan(x)
+
+# The angle of the point (x, y), from -PI to PI.
+function atan2(y: float, x: float) -> float
+    return host_atan2(y, x)
+
+function exp(x: float) -> float
+    return host_exp(x)
+
+# The natural logarithm.
+function log(x: float) -> float
+    return host_log(x)
+
+function log10(x: float) -> float
+    return host_log10(x)
+
+function log2(x: float) -> float
+    return host_log2(x)
+
+function pow(base: float, exponent: float) -> float
+    return host_pow(base, exponent)
+
+function floor(x: float) -> float
+    return host_floor(x)
+
+function ceil(x: float) -> float
+    return host_ceil(x)
+
+# Rounds half-way values away from zero.
+function round(x: float) -> float
+    return host_round(x)
+
+function trunc(x: float) -> float
+    return host_trunc(x)
+
+# The absolute value of any number. Fails for the most negative integer,
+# whose absolute value does not fit.
+function abs(x)
+    zero = x - x
+    if x < zero
+        return zero - x
+    return x
+
+function min(a, b)
+    if b < a
+        return b
+    return a
+
+function max(a, b)
+    if b > a
+        return b
+    return a
+
+# The value limited to the range from `low` to `high`.
+function clamp(value, low, high)
+    if value < low
+        return low
+    if value > high
+        return high
+    return value
+
+# A float from 0 up to, but not including, 1. Not suitable for security.
+function random() -> float
+    return host_random()

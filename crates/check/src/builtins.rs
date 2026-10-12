@@ -15,7 +15,9 @@ pub enum PreludeItem {
 /// Looks up a prelude function. `host` admits the primitives that only
 /// standard library modules may call.
 pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
-    let _ = host;
+    if host && let Some(primitive) = sayon_runtime::host::Host::lookup(name) {
+        return Some(PreludeItem::Builtin(Builtin::Host(primitive)));
+    }
     let builtin = match name {
         "print" => Builtin::Print,
         "length" => Builtin::Length,

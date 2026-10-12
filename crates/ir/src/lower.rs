@@ -1680,6 +1680,23 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 self.op(Op::Raise(problem), None, span);
                 self.terminate(Terminator::Unreachable);
             }
+            Builtin::Host(function) => {
+                let operands = args
+                    .iter()
+                    .map(|arg| self.operand(&arg.expr, Want::Read))
+                    .collect();
+                let tags = (function.result() == sayon_runtime::host::HostType::OptionalString)
+                    .then(|| (self.l.tag(&Type::String), self.l.tag(&Type::Nothing)));
+                self.op(
+                    Op::Host {
+                        function,
+                        args: operands,
+                        tags,
+                    },
+                    Some(dest),
+                    span,
+                );
+            }
             Builtin::Convert => {
                 let from = self.ty(&args[0].expr.ty);
                 let value = self.operand(&args[0].expr, Want::Owned);

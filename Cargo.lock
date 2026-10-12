@@ -6,6 +6,7 @@ version = 4
 name = "sayon-check"
 version = "0.0.1"
 dependencies = [
+ "sayon-runtime",
  "sayon-syntax",
 ]
 
@@ -18,6 +19,7 @@ dependencies = [
  "sayon-driver",
  "sayon-interp",
  "sayon-ir",
+ "sayon-runtime",
  "sayon-syntax",
 ]
 
@@ -27,6 +29,7 @@ version = "0.0.1"
 dependencies = [
  "sayon-check",
  "sayon-ir",
+ "sayon-runtime",
  "sayon-syntax",
 ]
 
@@ -54,6 +57,7 @@ name = "sayon-ir"
 version = "0.0.1"
 dependencies = [
  "sayon-check",
+ "sayon-runtime",
  "sayon-syntax",
 ]
 

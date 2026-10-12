@@ -1,0 +1,56 @@
+# The standard library modules
+io = import("standard/io.sayon")
+os = import("standard/os.sayon")
+filesystem = import("standard/filesystem.sayon")
+strings = import("standard/strings.sayon")
+math = import("standard/math.sayon")
+
+print("arguments:", os.arguments())
+print("no input:", io.read_line())
+
+# strings
+words = strings.split("alpha,beta,gamma", ",")
+print(words, strings.join(words, " | "))
+print(strings.upper("héllo"), strings.lower("MiXeD"), "[" + strings.trim("  padded  ") + "]")
+print(strings.find("haystack", "st"), strings.find("abc", "z"))
+print(strings.slice("Sayon language", 0, 5), strings.repeat("ab", 3), strings.characters("añb"))
+print(strings.starts_with("sayon", "say"), strings.ends_with("sayon", "on"), strings.contains("sayon", "yo"))
+print(strings.replace("a-b-c", "-", "+"), strings.lines("one\r\ntwo\nthree"))
+try
+    strings.slice("abc", 2, 9)
+catch problem
+    print("{problem.code}: {problem.message}")
+
+# math
+print(math.sqrt(16.0), math.PI, math.floor(2.7), math.ceil(2.1), math.round(2.5), math.trunc(-2.7))
+print(math.abs(-7), math.abs(-2.5), math.max(3, 9), math.min("pear", "apple"), math.clamp(15, 0, 10))
+print(math.pow(2.0, 10.0), math.log10(1000.0), math.atan2(1.0, 1.0) * 4.0)
+chance = math.random()
+print(chance >= 0.0 and chance < 1.0)
+
+# paths
+print(filesystem.join("docs", "notes.txt"), filesystem.name("docs/notes.txt"), filesystem.parent("a/b/c.txt"))
+print(filesystem.extension("archive.tar.gz"), "[" + filesystem.extension(".profile") + "]")
+
+# files and directories
+root = "library_check.tmp"
+if filesystem.exists(root)
+    for name in filesystem.list(root)
+        filesystem.remove(filesystem.join(root, name))
+    filesystem.remove(root)
+filesystem.create_directory(root)
+first = filesystem.join(root, "first.txt")
+io.write_file(first, "one\ntwo\n")
+io.append_file(first, "three\n")
+filesystem.copy(first, filesystem.join(root, "copy.txt"))
+filesystem.rename(filesystem.join(root, "copy.txt"), filesystem.join(root, "second.txt"))
+print(filesystem.list(root), filesystem.size(first), io.read_lines(first))
+print(filesystem.is_directory(root), filesystem.is_file(first), filesystem.exists(filesystem.join(root, "copy.txt")))
+for name in filesystem.list(root)
+    filesystem.remove(filesystem.join(root, name))
+filesystem.remove(root)
+print(filesystem.exists(root))
+try
+    filesystem.size("missing.tmp")
+catch problem
+    print(problem.code)

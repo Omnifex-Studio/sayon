@@ -1112,6 +1112,7 @@ impl<'a> Checker<'a> {
             Builtin::Assert => (1, 2),
             Builtin::Range => (1, 3),
             Builtin::Push | Builtin::HasKey | Builtin::WriteFile => (2, 2),
+            Builtin::Host(host) => (host.params().len(), host.params().len()),
             _ => (1, 1),
         };
         if !self.arity(name, args, min, max, span) {
@@ -1275,6 +1276,22 @@ impl<'a> Checker<'a> {
                 )
             }
             Builtin::Convert => unreachable!("conversions are handled separately"),
+            Builtin::Host(host) => {
+                let values = args
+                    .iter()
+                    .zip(host.params())
+                    .map(|(arg, param)| {
+                        let ty = host_type(*param);
+                        read(self.check_expr_as(
+                            cx,
+                            arg,
+                            &ty,
+                            &format!("argument for `{}`", name.name),
+                        ))
+                    })
+                    .collect();
+                (values, host_type(host.result()))
+            }
         };
         expr(
             ExprKind::Builtin {
@@ -1291,6 +1308,20 @@ impl<'a> Checker<'a> {
             .ty
             .clone()
             .unwrap_or(Type::Unknown)
+    }
+}
+
+/// The Sayon type of a value crossing the host boundary.
+pub(crate) fn host_type(ty: sayon_runtime::host::HostType) -> Type {
+    use sayon_runtime::host::HostType;
+    match ty {
+        HostType::String => Type::String,
+        HostType::Integer => Type::INTEGER,
+        HostType::Float => Type::FLOAT,
+        HostType::Boolean => Type::Boolean,
+        HostType::Nothing => Type::Nothing,
+        HostType::StringArray => Type::array(Type::String),
+        HostType::OptionalString => Type::union([Type::String, Type::Nothing]),
     }
 }
 

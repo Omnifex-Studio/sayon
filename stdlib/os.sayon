@@ -1,0 +1,22 @@
+# The program's environment.
+#
+#     os = import("standard/os.sayon")
+#     for argument in os.arguments()
+#         print(argument)
+
+# The arguments given to the program, without the program's own name. With
+# `sayon run`, these are the words after `--`.
+function arguments() -> Array<string>
+    return host_arguments()
+
+# The value of an environment variable, or nothing when it is not set.
+function environment(name: string) -> string or nothing
+    return host_environment(name)
+
+# The operating system: "windows", "linux", "macos", or "android".
+function platform() -> string
+    return host_platform()
+
+# The directory the program is running in.
+function current_directory() -> string
+    return host_current_directory()

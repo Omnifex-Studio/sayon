@@ -8,6 +8,7 @@ publish.workspace = true
 
 [dependencies]
 sayon-syntax.workspace = true
+sayon-runtime.workspace = true
 sayon-check.workspace = true
 
 [lints]

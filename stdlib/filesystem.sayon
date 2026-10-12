@@ -1,0 +1,89 @@
+# Files, directories, and paths.
+#
+#     filesystem = import("standard/filesystem.sayon")
+#     for name in filesystem.list(".")
+#         print(name)
+#
+# Paths are text. Both `/` and, on Windows, `\` separate path components.
+
+function exists(path: string) -> boolean
+    return host_path_kind(path) != "missing"
+
+function is_file(path: string) -> boolean
+    return host_path_kind(path) == "file"
+
+function is_directory(path: string) -> boolean
+    return host_path_kind(path) == "directory"
+
+# The names in a directory, sorted.
+function list(path: string) -> Array<string>
+    return host_list_directory(path)
+
+# A file's size in bytes.
+function size(path: string) -> integer
+    return host_file_size(path)
+
+# Creates a directory and any missing parent directories.
+function create_directory(path: string)
+    host_create_directory(path)
+
+# Removes a file or an empty directory.
+function remove(path: string)
+    host_remove(path)
+
+function rename(from: string, to: string)
+    host_rename(from, to)
+
+function copy(from: string, to: string)
+    host_copy_file(from, to)
+
+# Joins a directory and a name with one separator.
+function join(base: string, name: string) -> string
+    if base == ""
+        return clone(name)
+    if ends_with_separator(base)
+        return base + name
+    return base + "/" + name
+
+# The last component of a path: `name("docs/notes.txt")` is "notes.txt".
+function name(path: string) -> string
+    parts = components(path)
+    last = pop(parts)
+    if last == nothing
+        return ""
+    return last
+
+# The path without its last component: `parent("docs/notes.txt")` is "docs".
+function parent(path: string) -> string
+    parts = components(path)
+    pop(parts)
+    return host_join(parts, "/")
+
+# The extension of the last component, without the dot, or "" when there is
+# none: `extension("notes.txt")` is "txt", and `extension(".profile")` is "".
+function extension(path: string) -> string
+    pieces = host_split(name(path), ".")
+    if length(pieces) < 2
+        return ""
+    if length(pieces) == 2 and pieces[0] == ""
+        return ""
+    last = pop(pieces)
+    if last == nothing
+        return ""
+    return last
+
+private function ends_with_separator(path: string) -> boolean
+    if host_ends_with(path, "/")
+        return true
+    return host_platform() == "windows" and host_ends_with(path, "\\")
+
+# The non-empty components of a path.
+private function components(path: string) -> Array<string>
+    normalized = clone(path)
+    if host_platform() == "windows"
+        normalized = host_replace(path, "\\", "/")
+    parts: Array<string> = []
+    for part in host_split(normalized, "/")
+        if part != ""
+            push(parts, clone(part))
+    return parts

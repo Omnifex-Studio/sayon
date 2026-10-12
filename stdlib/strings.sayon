@@ -1,0 +1,58 @@
+# Operations on text. Positions and lengths count Unicode characters.
+#
+#     strings = import("standard/strings.sayon")
+#     words = strings.split("a,b,c", ",")
+
+# Splits text at every occurrence of a non-empty separator.
+function split(text: string, separator: string) -> Array<string>
+    return host_split(text, separator)
+
+# The lines of a text, accepting LF and CRLF line endings.
+function lines(text: string) -> Array<string>
+    return host_split_lines(text)
+
+# Joins parts with a separator between them.
+function join(parts: Array<string>, separator: string) -> string
+    return host_join(parts, separator)
+
+# The text without leading and trailing whitespace.
+function trim(text: string) -> string
+    return host_trim(text)
+
+function upper(text: string) -> string
+    return host_upper(text)
+
+function lower(text: string) -> string
+    return host_lower(text)
+
+# Replaces every occurrence of a non-empty piece of text.
+function replace(text: string, from: string, to: string) -> string
+    return host_replace(text, from, to)
+
+function starts_with(text: string, prefix: string) -> boolean
+    return host_starts_with(text, prefix)
+
+function ends_with(text: string, suffix: string) -> boolean
+    return host_ends_with(text, suffix)
+
+function contains(text: string, part: string) -> boolean
+    return host_contains(text, part)
+
+# The position of the first occurrence of `part`, or nothing.
+function find(text: string, part: string) -> integer or nothing
+    position = host_find(text, part)
+    if position < 0
+        return nothing
+    return position
+
+# The text repeated `count` times.
+function repeat(text: string, count: integer) -> string
+    return host_repeat(text, count)
+
+# The characters from `start` up to, but not including, `end`.
+function slice(text: string, start: integer, end: integer) -> string
+    return host_substring(text, start, end)
+
+# Each character as a one-character string.
+function characters(text: string) -> Array<string>
+    return host_characters(text)

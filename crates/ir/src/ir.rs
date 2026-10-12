@@ -352,6 +352,13 @@ pub enum Op {
     Fail(Operand),
     /// Always fails with the given Error value.
     Raise(Operand),
+    /// Calls a host primitive. For a `string or nothing` result, `tags` holds
+    /// the program-wide tags of `string` and `nothing`.
+    Host {
+        function: sayon_runtime::host::Host,
+        args: Vec<Operand>,
+        tags: Option<(u32, u32)>,
+    },
 }
 
 #[derive(Debug, Clone)]

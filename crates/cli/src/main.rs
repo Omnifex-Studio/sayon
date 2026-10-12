@@ -27,7 +27,7 @@ const HELP: &str = "\
 Sayon: a readable language for scripts, applications, and systems programs
 
 Usage:
-    sayon run <file.sayon> [options]     Check and run a program with the interpreter
+    sayon run <file.sayon> [-- args]     Check and run a program with the interpreter
     sayon run --native <file.sayon>      Compile to a native executable and run it
     sayon build <file.sayon> [options]   Compile a native executable
     sayon check <file.sayon> [options]   Report problems without running anything
@@ -61,6 +61,8 @@ struct Options {
     release: bool,
     emit_llvm: bool,
     output: Option<PathBuf>,
+    /// Arguments after `--`, passed to the program.
+    program_args: Vec<String>,
 }
 
 fn main() -> ExitCode {
@@ -96,9 +98,13 @@ fn dispatch(args: &[String]) -> u8 {
             let mut release = false;
             let mut emit_llvm = false;
             let mut output = None;
+            let mut program_args = Vec::new();
             let mut rest = args[1..].iter();
             while let Some(arg) = rest.next() {
                 match arg.as_str() {
+                    "--" if command == "run" => {
+                        program_args = rest.by_ref().cloned().collect();
+                    }
                     "-q" | "--quiet" => quiet = true,
                     "--native" if command == "run" => native = true,
                     "--release" if command != "check" => release = true,
@@ -155,6 +161,7 @@ fn dispatch(args: &[String]) -> u8 {
                 release,
                 emit_llvm,
                 output,
+                program_args,
             };
             match command.as_str() {
                 "run" if options.native => run_native(&file, &options),
@@ -259,6 +266,7 @@ fn run(path: &Path, options: &Options) -> u8 {
     };
     let stdout = std::io::stdout();
     let mut out = std::io::BufWriter::new(stdout.lock());
+    sayon_runtime::host::set_arguments(options.program_args.clone());
     let result = sayon_interp::Machine::new(&compiled.module, &compiled.sources, &mut out).run();
     let _ = out.flush();
     drop(out);
@@ -407,7 +415,10 @@ fn run_native(path: &Path, options: &Options) -> u8 {
         eprintln!("error: {message}");
         return status::BUILD_FAILED;
     }
-    match std::process::Command::new(&executable).status() {
+    match std::process::Command::new(&executable)
+        .args(&options.program_args)
+        .status()
+    {
         Ok(exit) => exit
             .code()
             .map(|code| code.clamp(0, 255) as u8)

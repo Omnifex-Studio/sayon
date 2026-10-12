@@ -33,9 +33,10 @@ Sayon is in early development and not ready for real programs. What works today:
 - An interpreter that runs checked programs, with checked integer arithmetic and cleanup on every exit path
 - A native backend: programs compile through LLVM to standalone Windows executables that need no runtime DLLs
 - Modules: programs can be split across files with `import`
+- Standard library modules for files, directories, standard input and output, program arguments, text, and math
 - The `sayon run`, `sayon run --native`, `sayon build`, and `sayon check` commands
 
-Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Structures and enums, closures, and the standard library modules come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
+Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Structures and enums, closures, and the formatter and test runner come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
 
 ## Documentation
 
@@ -56,7 +57,7 @@ cargo test
 
 Native builds need [LLVM](https://releases.llvm.org)'s clang at build time (found on `PATH`, in the default install location, or through `SAYON_CLANG`). The resulting executables have no such dependency.
 
-`tests/programs` holds runnable examples with their expected output, and `tests/errors` holds invalid programs with the diagnostics they produce.
+`examples` holds small tools written in Sayon, such as a word counter that reads standard input and a directory inventory. `tests/programs` holds runnable programs with their expected output, and `tests/errors` holds invalid programs with the diagnostics they produce.
 
 ## Repository layout
 
@@ -70,6 +71,8 @@ Native builds need [LLVM](https://releases.llvm.org)'s clang at build time (foun
 | `crates/codegen` | Native code generation through LLVM IR |
 | `crates/runtime` | Runtime library linked into compiled programs |
 | `crates/cli` | The `sayon` command |
+| `stdlib` | The standard library, written in Sayon |
+| `examples` | Small programs written in Sayon |
 | `tests` | Example programs and diagnostic snapshots |
 | `docs` | Language reference, feature ledger, and implementation records |
 | `editors/vscode` | VS Code extension: highlighting and the `.sayon` file icon |

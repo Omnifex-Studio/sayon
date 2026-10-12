@@ -1018,3 +1018,85 @@ pub extern "C" fn sayon_exit_status(code: i64) -> i32 {
         255
     }
 }
+
+// ----- host primitives -------------------------------------------------------
+
+/// Records the program's arguments (without the program name).
+#[unsafe(no_mangle)]
+pub extern "C" fn sayon_runtime_init() {
+    crate::host::set_arguments(std::env::args().skip(1).collect());
+}
+
+/// Calls a host primitive. `args` points to one pointer per argument value,
+/// in the primitive's parameter order. The result is written through `out`;
+/// for an optional string, whether it is present is written through
+/// `present` and the text through `out` when it is.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_host_call(
+    err: *mut *mut SayonError,
+    code: u32,
+    args: *const *const u8,
+    out: *mut u8,
+    present: *mut bool,
+    location: *const c_char,
+) -> i32 {
+    use crate::host::{Host, HostArg, HostType, HostValue, invoke};
+    let host = Host::from_code(code).expect("known host primitive");
+    // SAFETY: the generated code passes valid pointers matching the
+    // primitive's parameter and result types.
+    unsafe {
+        let mut values = Vec::new();
+        for (index, ty) in host.params().iter().enumerate() {
+            let pointer = *args.add(index);
+            values.push(match ty {
+                HostType::String => HostArg::String(as_str(pointer as *const SayonStr)),
+                HostType::Integer => HostArg::Integer(*(pointer as *const i64)),
+                HostType::Float => HostArg::Float(*(pointer as *const f64)),
+                HostType::Boolean => HostArg::Boolean(*pointer != 0),
+                HostType::StringArray => {
+                    let array = &*(pointer as *const SayonArray);
+                    let elements: Vec<&str> = (0..array.len as usize)
+                        .map(|i| as_str((array.ptr as *const SayonStr).add(i)))
+                        .collect();
+                    HostArg::Strings(elements)
+                }
+                HostType::Nothing | HostType::OptionalString => {
+                    panic!("unsupported host parameter")
+                }
+            });
+        }
+        match invoke(host, &values) {
+            Ok(HostValue::String(text)) => *(out as *mut SayonStr) = owned(text),
+            Ok(HostValue::Integer(value)) => *(out as *mut i64) = value,
+            Ok(HostValue::Float(value)) => *(out as *mut f64) = value,
+            Ok(HostValue::Boolean(value)) => *out = value as u8,
+            Ok(HostValue::Nothing) => *out = 0,
+            Ok(HostValue::Strings(items)) => {
+                let array = out as *mut SayonArray;
+                *array = SayonArray {
+                    ptr: std::ptr::null_mut(),
+                    len: 0,
+                    cap: 0,
+                };
+                let element_size = std::mem::size_of::<SayonStr>() as i64;
+                let count = items.len() as i64;
+                if count > 0 {
+                    sayon_array_reserve(array, count, element_size);
+                }
+                for (index, item) in items.into_iter().enumerate() {
+                    let target = ((*array).ptr as *mut SayonStr).add(index);
+                    std::ptr::write(target, owned(item));
+                }
+                (*array).len = count;
+            }
+            Ok(HostValue::OptionalString(text)) => {
+                *present = text.is_some();
+                if let Some(text) = text {
+                    *(out as *mut SayonStr) = owned(text);
+                }
+            }
+            Err((code, message)) => return set_error(err, code, message, location),
+        }
+    }
+    0
+}

@@ -210,6 +210,8 @@ pub enum Builtin {
     Raise,
     /// Checked numeric conversion to the expression's type.
     Convert,
+    /// A host primitive, callable only from standard library modules.
+    Host(sayon_runtime::host::Host),
 }
 
 impl Builtin {
@@ -232,6 +234,7 @@ impl Builtin {
             Builtin::Error => "error",
             Builtin::Raise => "raise",
             Builtin::Convert => "conversion",
+            Builtin::Host(host) => host.name(),
         }
     }
 }

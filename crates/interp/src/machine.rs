@@ -7,6 +7,7 @@
 use crate::value::*;
 use sayon_check::types::{FloatType, IntType, Type};
 use sayon_ir::*;
+use sayon_runtime::host::{Host, HostArg, HostType, HostValue, invoke};
 use sayon_runtime::text::{Number, parse_number, range_length};
 use sayon_syntax::{SourceMap, Span};
 use std::io::Write;
@@ -844,10 +845,82 @@ impl<'m> Machine<'m> {
                 let message = self.string(message);
                 Err(self.error("UserError", message.to_string(), span))
             }
+            Op::Host {
+                function,
+                args,
+                tags,
+            } => self.host(*function, args, *tags, span),
             Op::Raise(problem) => match self.take(problem) {
                 Value::Error(error) => Err(*error),
                 other => panic!("raise of {other:?}"),
             },
+        }
+    }
+
+    /// Runs a host primitive through the runtime's shared implementation.
+    /// Output goes through the interpreter's own writer so it stays in order
+    /// with `print`.
+    fn host(
+        &mut self,
+        function: Host,
+        args: &[Operand],
+        tags: Option<(u32, u32)>,
+        span: Span,
+    ) -> Result<Value, ErrorValue> {
+        let values: Vec<Value> = args
+            .iter()
+            .map(|arg| {
+                let source = self.source(arg);
+                self.with_source(&source, Value::clone)
+            })
+            .collect();
+        match function {
+            Host::Write => {
+                let text = values[0].as_str().to_string();
+                let written = self
+                    .out
+                    .write_all(text.as_bytes())
+                    .and_then(|_| self.out.flush());
+                return written.map(|_| Value::Nothing).map_err(|error| {
+                    self.error("IOError", format!("could not write output: {error}"), span)
+                });
+            }
+            Host::WriteError | Host::ReadLine => {
+                let _ = self.out.flush();
+            }
+            _ => {}
+        }
+        let host_args: Vec<HostArg> = values
+            .iter()
+            .zip(function.params())
+            .map(|(value, ty)| match (ty, value) {
+                (HostType::String, Value::Str(text)) => HostArg::String(text),
+                (HostType::Integer, Value::Int(n)) => HostArg::Integer(*n as i64),
+                (HostType::Float, Value::F64(x)) => HostArg::Float(*x),
+                (HostType::Boolean, Value::Bool(b)) => HostArg::Boolean(*b),
+                (HostType::StringArray, Value::Array(items)) => {
+                    HostArg::Strings(items.iter().map(Value::as_str).collect())
+                }
+                (ty, value) => panic!("host argument {value:?} for {ty:?}"),
+            })
+            .collect();
+        match invoke(function, &host_args) {
+            Ok(HostValue::String(text)) => Ok(Value::str(&text)),
+            Ok(HostValue::Integer(n)) => Ok(Value::Int(n as i128)),
+            Ok(HostValue::Float(x)) => Ok(Value::F64(x)),
+            Ok(HostValue::Boolean(b)) => Ok(Value::Bool(b)),
+            Ok(HostValue::Nothing) => Ok(Value::Nothing),
+            Ok(HostValue::Strings(items)) => {
+                Ok(Value::Array(items.iter().map(|s| Value::str(s)).collect()))
+            }
+            Ok(HostValue::OptionalString(text)) => {
+                let (string_tag, nothing_tag) = tags.expect("tags for an optional string");
+                Ok(match text {
+                    Some(text) => Value::Union(string_tag, Box::new(Value::str(&text))),
+                    None => Value::Union(nothing_tag, Box::new(Value::Nothing)),
+                })
+            }
+            Err((code, message)) => Err(self.error(code, message, span)),
         }
     }
 

@@ -319,6 +319,31 @@ Error codes raised by the language and its built-in functions:
 | `error(message)` | Raises a `UserError` |
 | `raise(problem)` | Raises an existing `Error` |
 
+## Standard library
+
+Standard modules are imported like any module, with a `standard/` path. Each module's source in `stdlib/` documents every function.
+
+| Module | Functions |
+|---|---|
+| `standard/io.sayon` | `read_file`, `write_file`, `append_file`, `read_lines`, `read_line` (standard input; `nothing` at the end), `write` (no newline), `write_error` |
+| `standard/os.sayon` | `arguments` (the words after `--` with `sayon run`), `environment`, `platform`, `current_directory` |
+| `standard/filesystem.sayon` | `exists`, `is_file`, `is_directory`, `list` (sorted names), `size`, `create_directory`, `remove`, `rename`, `copy`, `join`, `name`, `parent`, `extension` |
+| `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters` |
+| `standard/math.sayon` | `PI`, `E`, `TAU`, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `log`, `log10`, `log2`, `pow`, `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`, `clamp`, `random` |
+
+```sayon
+io = import("standard/io.sayon")
+strings = import("standard/strings.sayon")
+
+while true
+    line = io.read_line()
+    if line == nothing
+        break
+    print(strings.upper(line))
+```
+
+String positions count Unicode characters. File and directory failures raise `IOError`; text that is not UTF-8 raises `EncodingError`. `math.random()` is not suitable for security.
+
 ### Display
 
 `print` and `tostring` display values as follows. Floats always show a decimal point or an exponent (`3.0`, `0.1`, `1e20`, `inf`, `nan`), and integers never do. Strings appear as text at the top level and quoted inside collections, so collections look like the literals that build them: `[1, "text", true]` and `["name" = "Ada"]`.

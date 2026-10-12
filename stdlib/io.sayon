@@ -1,0 +1,35 @@
+# Console and file input and output.
+#
+#     io = import("standard/io.sayon")
+#     for line in io.read_lines("notes.txt")
+#         print(line)
+
+# The whole content of a text file. Fails with IOError, or EncodingError
+# when the file is not UTF-8.
+function read_file(path: string) -> string
+    return readfile(path)
+
+# Replaces a file's content, creating the file when needed.
+function write_file(path: string, content: string)
+    writefile(path, content)
+
+# Adds text to the end of a file, creating the file when needed.
+function append_file(path: string, content: string)
+    host_append_file(path, content)
+
+# The lines of a text file, without their line endings. Accepts LF and CRLF.
+function read_lines(path: string) -> Array<string>
+    return host_split_lines(readfile(path))
+
+# The next line of standard input without its line ending, or nothing at the
+# end of input.
+function read_line() -> string or nothing
+    return host_read_line()
+
+# Writes text to standard output without adding a newline.
+function write(text: string)
+    host_write(text)
+
+# Writes a line to standard error.
+function write_error(text: string)
+    host_write_error(text + "\n")

@@ -1,0 +1,45 @@
+# Counts lines, words, and the most frequent words of standard input.
+#
+#     sayon run examples/word_count.sayon < some_text.txt
+
+io = import("standard/io.sayon")
+strings = import("standard/strings.sayon")
+
+counts: Dict<string, integer> = []
+lines = 0
+words = 0
+while true
+    line = io.read_line()
+    if line == nothing
+        break
+    lines += 1
+    for piece in strings.split(strings.lower(line), " ")
+        word = strings.trim(piece)
+        if word == ""
+            continue
+        words += 1
+        if haskey(counts, word)
+            counts[word] += 1
+        else
+            counts[word] = 1
+
+print("{lines} lines, {words} words, {length(counts)} different words")
+
+# Report the five most frequent words, earliest first among equal counts.
+reported: Array<string> = []
+for round in range(5)
+    best = ""
+    best_count = 0
+    for word, count in counts
+        if count > best_count
+            seen = false
+            for done in reported
+                if done == word
+                    seen = true
+            if not seen
+                best = clone(word)
+                best_count = count
+    if best_count == 0
+        break
+    print("{best_count}  {best}")
+    push(reported, best)

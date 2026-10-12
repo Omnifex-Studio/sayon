@@ -1,0 +1,39 @@
+# Lists the files under a directory with their sizes, and totals by extension.
+#
+#     sayon run examples/inventory.sayon -- path/to/directory
+
+os = import("standard/os.sayon")
+filesystem = import("standard/filesystem.sayon")
+
+function walk(directory: string, update totals: Dict<string, integer>) -> integer
+    files = 0
+    for name in filesystem.list(directory)
+        path = filesystem.join(directory, name)
+        if filesystem.is_directory(path)
+            files += walk(path, totals)
+        else if filesystem.is_file(path)
+            size = filesystem.size(path)
+            print("{size}\t{path}")
+            kind = filesystem.extension(name)
+            if kind == ""
+                kind = "(none)"
+            if haskey(totals, kind)
+                totals[kind] += size
+            else
+                totals[kind] = size
+            files += 1
+    return files
+
+arguments = os.arguments()
+root = "."
+if length(arguments) > 0
+    root = clone(arguments[0])
+if not filesystem.is_directory(root)
+    error("\"{root}\" is not a directory")
+
+totals: Dict<string, integer> = []
+count = walk(root, totals)
+print("")
+print("{count} files")
+for kind, bytes in totals
+    print("{bytes}\t.{kind}")

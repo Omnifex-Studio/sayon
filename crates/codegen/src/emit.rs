@@ -287,6 +287,7 @@ impl<'m> Codegen<'m> {
         let mut body = Body::new();
         let error = body.alloca("ptr");
         body.line(format!("store ptr null, ptr {error}"));
+        body.line("call void @sayon_runtime_init()");
         let failed = "uncaught";
         for (global, initializer) in &module.initializers {
             let status = body.tmp();
@@ -1522,6 +1523,78 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 ));
                 Some(status)
             }
+            Op::Host {
+                function,
+                args,
+                tags,
+            } => {
+                let count = args.len().max(1);
+                let argv = self.body.alloca(&format!("[{count} x ptr]"));
+                for (index, arg) in args.iter().enumerate() {
+                    let (pointer, _) = self.pointer(arg);
+                    let entry = self.body.tmp();
+                    self.body.line(format!(
+                        "{entry} = getelementptr inbounds [{count} x ptr], ptr {argv}, i64 0, i64 {index}"
+                    ));
+                    self.body.line(format!("store ptr {pointer}, ptr {entry}"));
+                }
+                let location = self.cg.location(span);
+                let code = *function as u32;
+                match tags {
+                    Some((string_tag, nothing_tag)) => {
+                        let text = self.body.alloca("%sayon.str");
+                        self.body
+                            .line(format!("store %sayon.str zeroinitializer, ptr {text}"));
+                        let present = self.body.alloca("i1");
+                        self.body.line(format!("store i1 false, ptr {present}"));
+                        let status = self.body.tmp();
+                        self.body.line(format!(
+                            "{status} = call i32 @sayon_host_call(ptr {err}, i32 {code}, ptr {argv}, ptr {text}, ptr {present}, ptr {location})"
+                        ));
+                        self.finish_instruction();
+                        let ok = self.body.tmp();
+                        self.body.line(format!("{ok} = icmp eq i32 {status}, 0"));
+                        let build = self.body.label("host_ok");
+                        self.body
+                            .line(format!("br i1 {ok}, label %{build}, label %b{}", error.0));
+                        self.body.start(&build);
+                        if let Some(place) = dest {
+                            let (target, ty) = self.place_ptr(place);
+                            let union_llvm = self.cg.llvm(&ty);
+                            self.body
+                                .line(format!("store {union_llvm} zeroinitializer, ptr {target}"));
+                            let flag = self.body.tmp();
+                            self.body.line(format!("{flag} = load i1, ptr {present}"));
+                            let tag = self.body.tmp();
+                            self.body.line(format!(
+                                "{tag} = select i1 {flag}, i32 {string_tag}, i32 {nothing_tag}"
+                            ));
+                            self.body.line(format!("store i32 {tag}, ptr {target}"));
+                            let payload = self.body.tmp();
+                            self.body.line(format!(
+                                "{payload} = getelementptr inbounds i8, ptr {target}, i64 8"
+                            ));
+                            let value = self.body.tmp();
+                            self.body
+                                .line(format!("{value} = load %sayon.str, ptr {text}"));
+                            self.body
+                                .line(format!("store %sayon.str {value}, ptr {payload}"));
+                        }
+                        Some("0".to_string())
+                    }
+                    None => {
+                        let out = match dest {
+                            Some(place) => self.place_ptr(place).0,
+                            None => self.body.alloca("%sayon.array"),
+                        };
+                        let status = self.body.tmp();
+                        self.body.line(format!(
+                            "{status} = call i32 @sayon_host_call(ptr {err}, i32 {code}, ptr {argv}, ptr {out}, ptr null, ptr {location})"
+                        ));
+                        Some(status)
+                    }
+                }
+            }
             Op::Raise(problem) => {
                 let (_, value, _) = self.value(problem);
                 self.body
@@ -1859,4 +1932,6 @@ declare i32 @sayon_read_file(ptr, ptr, ptr, ptr)
 declare i32 @sayon_write_file(ptr, ptr, ptr, ptr)
 declare i32 @sayon_exit_status(i64)
 declare void @sayon_runtime_finish()
+declare void @sayon_runtime_init()
+declare i32 @sayon_host_call(ptr, i32, ptr, ptr, ptr, ptr)
 ";
