@@ -25,7 +25,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Arrays, string-keyed dictionaries, heterogeneous arrays | experimental | M1 |
 | Operators, precedence, checked integer arithmetic | experimental | M1 |
 | Checked numeric conversions | experimental | M1 |
-| `if`/`else if`/`else`, `while`, `for` over ranges, arrays, dictionaries | experimental | M1 |
+| `if`/`elseif`/`else`, `while`, `for` over ranges, arrays, dictionaries | experimental | M1 |
 | Functions, recursion, defaults, parameter modes | experimental | M1 |
 | Inferred and explicit generic functions | experimental | M2 |
 | Unions with `nothing`/`typeof` narrowing | experimental | M2 |

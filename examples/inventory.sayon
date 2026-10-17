@@ -11,7 +11,7 @@ function walk(directory: string, update totals: Dict<string, integer>) -> intege
         path = filesystem.join(directory, name)
         if filesystem.is_directory(path)
             files += walk(path, totals)
-        else if filesystem.is_file(path)
+        elseif filesystem.is_file(path)
             size = filesystem.size(path)
             print("{size}\t{path}")
             kind = filesystem.extension(name)

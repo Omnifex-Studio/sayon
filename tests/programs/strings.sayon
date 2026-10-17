@@ -9,7 +9,7 @@ print("Quote: \" and backslash: \\")
 print("Unicode: \u{1F600} \u{e9}")
 
 greeting = "héllo wörld"
-print(length(greeting), byte_length(greeting))
+print(length(greeting), bytelength(greeting))
 print("abc" < "abd", "b" > "a", "same" == "same")
 joined = "first" + " " + "second"
 print(joined)

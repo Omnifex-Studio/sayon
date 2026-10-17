@@ -170,7 +170,7 @@
     },
     "keyword-control": {
       "name": "keyword.control.sayon",
-      "match": "\\b(if|else|while|for|in|break|continue|return|try|catch|finally|match|case)\\b"
+      "match": "\\b(if|elseif|else|while|for|in|break|continue|return|try|catch|finally|match|case)\\b"
     },
     "keyword-declaration": {
       "name": "storage.modifier.sayon",
@@ -190,7 +190,7 @@
     },
     "builtin-function": {
       "name": "support.function.builtin.sayon",
-      "match": "\\b(print|length|byte_length|typeof|assert|range|tonumber|tostring|push|pop|haskey|readfile|writefile|clone|error|raise|move)\\b(?=\\s*\\()"
+      "match": "\\b(print|length|bytelength|typeof|assert|range|tonumber|tostring|push|pop|haskey|readfile|writefile|clone|error|raise|move)\\b(?=\\s*\\()"
     },
     "type-name": {
       "name": "entity.name.type.sayon",

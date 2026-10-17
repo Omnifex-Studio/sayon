@@ -420,12 +420,20 @@ impl<'t> Parser<'t> {
                 self.unavailable("async and await", "M8")
             }
             TokenKind::Keyword(
-                keyword @ (Keyword::Else | Keyword::Catch | Keyword::Finally | Keyword::Case),
+                keyword @ (Keyword::Else
+                | Keyword::Elseif
+                | Keyword::Catch
+                | Keyword::Finally
+                | Keyword::Case),
             ) => {
                 let (message, help) = match keyword {
                     Keyword::Else => (
                         "`else` without a matching `if`",
                         "`else` must line up with its `if`",
+                    ),
+                    Keyword::Elseif => (
+                        "`elseif` without a matching `if`",
+                        "`elseif` must line up with its `if`",
                     ),
                     Keyword::Case => (
                         "`case` outside a `match`",
@@ -595,15 +603,29 @@ impl<'t> Parser<'t> {
         let body = self.parse_block("the `if` condition");
         let mut branches = vec![IfBranch { condition, body }];
         let mut else_body = None;
-        while self.at_sibling_keyword(Keyword::Else) {
-            self.advance();
-            if self.check_keyword(Keyword::If) {
+        loop {
+            if self.at_sibling_keyword(Keyword::Elseif) {
                 self.advance();
                 let condition = self.parse_expr()?;
-                let body = self.parse_block("the `else if` condition");
+                let body = self.parse_block("the `elseif` condition");
                 branches.push(IfBranch { condition, body });
+            } else if self.at_sibling_keyword(Keyword::Else) {
+                let else_span = self.advance().span;
+                if self.check_keyword(Keyword::If) {
+                    // Keywords are single words; parse it as `elseif` to keep going.
+                    let if_span = self.advance().span;
+                    self.report(
+                        Diagnostic::error("E_SYNTAX", "`else if` is written as one word")
+                            .primary(else_span.to(if_span), "write `elseif`"),
+                    );
+                    let condition = self.parse_expr()?;
+                    let body = self.parse_block("the `elseif` condition");
+                    branches.push(IfBranch { condition, body });
+                } else {
+                    else_body = Some(self.parse_block("`else`"));
+                    break;
+                }
             } else {
-                else_body = Some(self.parse_block("`else`"));
                 break;
             }
         }
@@ -1738,8 +1760,9 @@ mod tests {
     }
 
     #[test]
-    fn if_else_chain() {
-        let module = parse_ok("if a\n    x()\nelse if b\n    y()\nelse\n    z()\n");
+    fn if_elseif_chain() {
+        let module =
+            parse_ok("if a\n    x()\nelseif b\n    y()\nelseif c\n    w()\nelse\n    z()\n");
         let StmtKind::If {
             branches,
             else_body,
@@ -1747,8 +1770,22 @@ mod tests {
         else {
             panic!()
         };
-        assert_eq!(branches.len(), 2);
+        assert_eq!(branches.len(), 3);
         assert!(else_body.is_some());
+    }
+
+    #[test]
+    fn keywords_are_single_words() {
+        let output = parse_source(FileId(0), "if a\n    x()\nelse if b\n    y()\n");
+        let codes: Vec<&str> = output.diagnostics.iter().map(|d| d.code).collect();
+        assert_eq!(codes, vec!["E_SYNTAX"]);
+        assert!(output.diagnostics[0].message.contains("one word"));
+        // The rest of the chain still parses.
+        let StmtKind::If { branches, .. } = &output.module.stmts[0].kind else {
+            panic!()
+        };
+        assert_eq!(branches.len(), 2);
+        assert_eq!(error_codes("elseif b\n    y()\n"), vec!["E_SYNTAX"]);
     }
 
     #[test]

@@ -288,7 +288,7 @@ impl Builtin {
         match self {
             Builtin::Print => "print",
             Builtin::Length => "length",
-            Builtin::ByteLength => "byte_length",
+            Builtin::ByteLength => "bytelength",
             Builtin::TypeOf => "typeof",
             Builtin::Assert => "assert",
             Builtin::Range => "range",

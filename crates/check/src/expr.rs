@@ -333,7 +333,7 @@ impl<'a> Checker<'a> {
                 "error",
                 "raise",
                 "move",
-                "byte_length",
+                "bytelength",
             ]
             .iter()
             .map(|s| s.to_string()),
@@ -1219,7 +1219,7 @@ impl<'a> Checker<'a> {
             }
             Builtin::ByteLength => {
                 let value =
-                    self.check_expr_as(cx, &args[0], &Type::String, "`byte_length` needs a string");
+                    self.check_expr_as(cx, &args[0], &Type::String, "`bytelength` needs a string");
                 (vec![read(value)], Type::INTEGER)
             }
             Builtin::TypeOf => (

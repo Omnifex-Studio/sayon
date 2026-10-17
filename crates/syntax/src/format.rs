@@ -70,6 +70,45 @@ struct Printer<'s> {
     comments: Vec<(u32, u32)>,
 }
 
+/// Where a gap between statements sits.
+#[derive(Clone, Copy)]
+struct Gap<'a> {
+    /// Depth of the statements around the gap.
+    depth: usize,
+    /// Column of the line after the gap.
+    next_column: usize,
+    /// For the gap that ends a block: the column of the block's statements.
+    closing: Option<usize>,
+    /// The statement before the gap, if any.
+    previous: Option<&'a Stmt>,
+}
+
+/// The block a statement ends with, where trailing comments may belong.
+fn last_block(stmt: &Stmt) -> Option<&Block> {
+    match &stmt.kind {
+        StmtKind::If {
+            branches,
+            else_body,
+        } => else_body
+            .as_ref()
+            .or_else(|| branches.last().map(|b| &b.body)),
+        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::Test { body, .. } => {
+            Some(body)
+        }
+        StmtKind::Function(function) => Some(&function.body),
+        StmtKind::Try {
+            body,
+            catch,
+            finally,
+        } => finally
+            .as_ref()
+            .or(catch.as_ref().map(|c| &c.body))
+            .or(Some(body)),
+        StmtKind::Match { arms, .. } => arms.last().map(|arm| &arm.body),
+        _ => None,
+    }
+}
+
 fn indent(depth: usize) -> String {
     " ".repeat(depth * 4)
 }
@@ -102,30 +141,68 @@ impl<'s> Printer<'s> {
     /// begins and `to` where the gap after the last one ends.
     fn statements(&mut self, stmts: &[Stmt], depth: usize, from: usize, to: usize) {
         let mut position = from;
+        let column_of = |stmt: &Stmt| {
+            columns(&self.source[line_start(self.source, stmt.span.start as usize)..])
+        };
+        let own_column = stmts.first().map(column_of).unwrap_or(0);
+        let mut previous = None;
         for stmt in stmts {
-            let next_column =
-                columns(&self.source[line_start(self.source, stmt.span.start as usize)..]);
-            self.gap(
-                position,
-                stmt.span.start as usize,
+            let next_column = column_of(stmt);
+            let gap = Gap {
                 depth,
                 next_column,
-                false,
-            );
+                closing: None,
+                previous,
+            };
+            self.gap(position, stmt.span.start as usize, gap);
             self.statement(stmt, depth);
             position = stmt.span.end as usize;
+            previous = Some(stmt);
         }
         let next_column = self.source[to..]
             .lines()
             .find(|line| !line.trim().is_empty())
             .map(columns)
             .unwrap_or(0);
-        self.gap(position, to, depth, next_column, true);
+        let gap = Gap {
+            depth,
+            next_column,
+            closing: Some(own_column),
+            previous,
+        };
+        self.gap(position, to, gap);
+    }
+
+    /// The depth of a comment indented deeper than the statements at
+    /// `depth`: inside the last blocks of the statement before it, as far
+    /// down as its column reaches.
+    fn trailing_depth(&self, previous: Option<&Stmt>, depth: usize, column: usize) -> usize {
+        let mut depth = depth;
+        let mut current = previous;
+        while let Some(block) = current.and_then(last_block) {
+            let Some(first) = block.stmts.first() else {
+                break;
+            };
+            let block_column =
+                columns(&self.source[line_start(self.source, first.span.start as usize)..]);
+            if column < block_column {
+                break;
+            }
+            depth += 1;
+            current = block.stmts.last();
+        }
+        depth
     }
 
     /// Carries the comments and blank lines in `source[from..to]`. The first
     /// partial line's comment trails the previous statement.
-    fn gap(&mut self, from: usize, to: usize, depth: usize, next_column: usize, closing: bool) {
+    fn gap(&mut self, from: usize, to: usize, gap: Gap) {
+        let Gap {
+            depth,
+            next_column,
+            closing,
+            previous,
+        } = gap;
         let gap = &self.source[from..to];
         let mut lines = gap.split('\n');
         // The gap's first line is the rest of the previous statement's line,
@@ -174,16 +251,16 @@ impl<'s> Printer<'s> {
             }
             blank_pending = false;
             // A comment indented deeper than the following code belongs to
-            // the block that just ended.
-            let comment_depth = if closing || columns(line) > next_column {
-                depth + 1
-            } else {
-                depth
-            };
-            let comment_depth = if closing && columns(line) <= next_column {
-                depth
-            } else {
-                comment_depth
+            // the block that just ended. At the end of a block, a comment
+            // at the block's own column stays in it, and one no deeper than
+            // the next line (such as an `else`) belongs outside.
+            let column = columns(line);
+            let comment_depth = match closing {
+                Some(own) if column > own => self.trailing_depth(previous, depth, column),
+                Some(_) if column > next_column || depth == 0 => depth,
+                Some(_) => depth - 1,
+                None if column > next_column => self.trailing_depth(previous, depth, column),
+                None => depth,
             };
             if trimmed == "##" {
                 in_block_comment = true;
@@ -191,7 +268,8 @@ impl<'s> Printer<'s> {
             }
             let _ = writeln!(self.out, "{}{}", indent(comment_depth), trimmed);
         }
-        if blank_pending && !closing && !self.out.is_empty() && !self.out.ends_with("\n\n") {
+        if blank_pending && closing.is_none() && !self.out.is_empty() && !self.out.ends_with("\n\n")
+        {
             self.out.push('\n');
         }
     }
@@ -292,7 +370,7 @@ impl<'s> Printer<'s> {
                 else_body,
             } => {
                 for (index, branch) in branches.iter().enumerate() {
-                    let keyword = if index == 0 { "if" } else { "else if" };
+                    let keyword = if index == 0 { "if" } else { "elseif" };
                     let condition = self.expr(&branch.condition, 0);
                     let _ = writeln!(self.out, "{pad}{keyword} {condition}");
                     let next = match (branches.get(index + 1), else_body) {
@@ -1151,6 +1229,22 @@ mod tests {
         check(
             "test   \"adds\"\n  assert(1+1==2)\n",
             "test \"adds\"\n    assert(1 + 1 == 2)\n",
+        );
+    }
+
+    #[test]
+    fn elseif_chains() {
+        check(
+            "if a\n  x()\nelseif b\n  y()\n# before else\nelse\n  z()\n",
+            "if a\n    x()\nelseif b\n    y()\n# before else\nelse\n    z()\n",
+        );
+    }
+
+    #[test]
+    fn comments_at_the_end_of_a_branch() {
+        check(
+            "if a\n  x()\n  # end of the branch\n# about else\nelse\n  if b\n    y()\n    # nested\n",
+            "if a\n    x()\n    # end of the branch\n# about else\nelse\n    if b\n        y()\n        # nested\n",
         );
     }
 

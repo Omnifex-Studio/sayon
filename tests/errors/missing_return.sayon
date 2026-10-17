@@ -1,5 +1,5 @@
 function sign(n: integer) -> string
     if n > 0
         return "positive"
-    else if n < 0
+    elseif n < 0
         return "negative"

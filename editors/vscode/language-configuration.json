@@ -56,8 +56,8 @@
     ]
   ],
   "indentationRules": {
-    "increaseIndentPattern": "^\\s*((public|private)\\s+)?(function|if|else|while|for|try|catch|finally|match|case|enum|unsafe|foreign)\\b[^#]*$|^.*=\\s*function\\s*\\(.*\\)\\s*(->.*)?$",
-    "decreaseIndentPattern": "^\\s*(else|catch|finally)\\b"
+    "increaseIndentPattern": "^\\s*((public|private)\\s+)?(function|if|elseif|else|while|for|try|catch|finally|match|case|enum|unsafe|foreign)\\b[^#]*$|^.*=\\s*function\\s*\\(.*\\)\\s*(->.*)?$",
+    "decreaseIndentPattern": "^\\s*(elseif|else|catch|finally)\\b"
   },
   "onEnterRules": [
     {

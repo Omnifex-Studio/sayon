@@ -32,7 +32,7 @@ A block comment
 
 Names start with an ASCII letter or underscore and continue with letters, digits, or underscores. By convention, variables and functions use `snake_case`, types use `PascalCase`, and constants use `UPPER_SNAKE_CASE`.
 
-Reserved words: `and`, `async`, `await`, `break`, `case`, `catch`, `constant`, `continue`, `else`, `enum`, `false`, `finally`, `for`, `foreign`, `function`, `if`, `import`, `in`, `is`, `match`, `not`, `nothing`, `or`, `own`, `private`, `public`, `return`, `true`, `try`, `type`, `unsafe`, `update`, `variable`, `while`.
+Keywords are always single words, such as `elseif` (never `else if`). Reserved words: `and`, `async`, `await`, `break`, `case`, `catch`, `constant`, `continue`, `else`, `elseif`, `enum`, `false`, `finally`, `for`, `foreign`, `function`, `if`, `import`, `in`, `is`, `match`, `not`, `nothing`, `or`, `own`, `private`, `public`, `return`, `true`, `try`, `type`, `unsafe`, `update`, `variable`, `while`.
 
 ## Literals
 
@@ -245,7 +245,7 @@ Converting a float to an integer rejects infinity and NaN. Converting a float to
 ```sayon
 if n < 0
     print("negative")
-else if n == 0
+elseif n == 0
     print("zero")
 else
     print("positive")
@@ -395,7 +395,7 @@ Error codes raised by the language and its built-in functions:
 |---|---|
 | `print(values...)` | Writes the values separated by spaces, then a newline |
 | `length(value)` | Characters in a string, elements in an array, entries in a dictionary |
-| `byte_length(text)` | Bytes in a string's UTF-8 encoding |
+| `bytelength(text)` | Bytes in a string's UTF-8 encoding |
 | `typeof(value)` | The name of the value's type, or of the member a union holds |
 | `tostring(value)` | Display text for any value |
 | `tonumber(text)` | Parses `integer or float`; numbers are returned unchanged |

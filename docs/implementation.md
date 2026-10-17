@@ -37,7 +37,7 @@ param       = [ "own" | "update" ] NAME [ ":" type ] [ "=" expression ] ;
 declaration = [ "public" | "private" ] ( "variable" | "constant" ) NAME [ ":" type ] "=" expression
             | NAME ":" type "=" expression ;
 
-if          = "if" expression block { "else" "if" expression block } [ "else" block ] ;
+if          = "if" expression block { "elseif" expression block } [ "else" block ] ;
 while       = "while" expression block ;
 for         = "for" NAME [ "," NAME ] "in" expression block ;
 try         = "try" block [ "catch" NAME block ] [ "finally" block ] ;   (* at least one clause *)

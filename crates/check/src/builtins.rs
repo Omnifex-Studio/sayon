@@ -21,7 +21,7 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
     let builtin = match name {
         "print" => Builtin::Print,
         "length" => Builtin::Length,
-        "byte_length" => Builtin::ByteLength,
+        "bytelength" => Builtin::ByteLength,
         "typeof" => Builtin::TypeOf,
         "assert" => Builtin::Assert,
         "range" => Builtin::Range,

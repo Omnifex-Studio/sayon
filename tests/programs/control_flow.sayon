@@ -2,7 +2,7 @@
 function classify(n)
     if n < 0
         return "negative"
-    else if n == 0
+    elseif n == 0
         return "zero"
     else
         return "positive"
