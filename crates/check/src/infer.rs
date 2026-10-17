@@ -125,6 +125,15 @@ impl Bounds {
             traits,
         }
     }
+
+    /// Whether only numbers satisfy these bounds, which makes every value
+    /// of the type Copy.
+    pub fn only_numbers(&self) -> bool {
+        self.literal.is_some()
+            || [Traits::ARITHMETIC, Traits::NEGATE, Traits::NUMERIC]
+                .iter()
+                .any(|t| self.traits.contains(*t))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -226,6 +235,7 @@ impl Unifier {
                 args: named.args.iter().map(|a| self.resolve(a)).collect(),
                 ..*named
             }),
+            Type::Function(function) => Type::function(function.map(|t| self.resolve(t))),
             other => other,
         }
     }
@@ -254,6 +264,9 @@ impl Unifier {
                     .collect(),
                 ..*named
             }),
+            Type::Function(function) => {
+                Type::function(function.map(|t| self.resolve_for_display(t)))
+            }
             other => other,
         }
     }
@@ -341,7 +354,8 @@ impl Unifier {
                         traits: one,
                     });
                 }
-                Type::Range | Type::Param(_) => false,
+                // Function values have no meaningful equality.
+                Type::Range | Type::Param(_) | Type::Function(_) => false,
                 _ => true,
             },
             _ => true,
@@ -360,6 +374,7 @@ impl Unifier {
             Type::Dict(key, value) => self.occurs(var, &key) || self.occurs(var, &value),
             Type::Union(members) => members.iter().any(|m| self.occurs(var, m)),
             Type::Named(named) => named.args.iter().any(|a| self.occurs(var, a)),
+            Type::Function(function) => function.types().any(|t| self.occurs(var, t)),
             _ => false,
         }
     }
@@ -404,6 +419,18 @@ impl Unifier {
                     self.unify(x, y).map_err(|_| self.mismatch(&a, &b))?;
                 }
                 Ok(())
+            }
+            (Type::Function(x), Type::Function(y)) => {
+                let same_shape = x.params.len() == y.params.len()
+                    && x.params.iter().zip(&y.params).all(|(p, q)| p.0 == q.0);
+                if !same_shape {
+                    return Err(self.mismatch(&a, &b));
+                }
+                for ((_, p), (_, q)) in x.params.iter().zip(&y.params) {
+                    self.unify(p, q).map_err(|_| self.mismatch(&a, &b))?;
+                }
+                self.unify(&x.ret, &y.ret)
+                    .map_err(|_| self.mismatch(&a, &b))
             }
             (Type::Named(x), Type::Named(y)) if x.id == y.id => {
                 for (p, q) in x.args.iter().zip(&y.args) {
@@ -457,6 +484,11 @@ impl Unifier {
             Type::Named(named) => {
                 for arg in &named.args {
                     self.free_vars(arg, out);
+                }
+            }
+            Type::Function(function) => {
+                for ty in function.types() {
+                    self.free_vars(ty, out);
                 }
             }
             _ => {}

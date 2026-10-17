@@ -20,6 +20,10 @@ pub(crate) enum Helper {
     Clone,
     Eq,
     Display,
+    /// Destroys and frees a closure environment block.
+    EnvDrop,
+    /// Copies a closure environment block, returning the new one.
+    EnvClone,
 }
 
 pub struct Codegen<'m> {
@@ -208,6 +212,8 @@ impl<'m> Codegen<'m> {
             Helper::Clone => "clone",
             Helper::Eq => "eq",
             Helper::Display => "display",
+            Helper::EnvDrop => "envdrop",
+            Helper::EnvClone => "envclone",
         };
         let name = format!("@sayon.{prefix}.{}", self.helpers.len());
         self.helpers.insert((kind, ty.clone()), name.clone());
@@ -237,6 +243,7 @@ impl<'m> Codegen<'m> {
         out.push_str("%sayon.str = type { ptr, i64, i64 }\n");
         out.push_str("%sayon.array = type { ptr, i64, i64 }\n");
         out.push_str("%sayon.range = type { i64, i64, i64 }\n");
+        out.push_str("%sayon.func = type { ptr, ptr }\n");
         for definition in &self.layouts.definitions {
             out.push_str(definition);
             out.push('\n');
@@ -1082,6 +1089,21 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 self.body.line(format!("{result} = add i64 {v}, 1"));
                 self.body.line(format!("store i64 {result}, ptr {dest}"));
             }
+            Rvalue::MakeClosure {
+                function,
+                env,
+                captures,
+            } => {
+                let environment = match env {
+                    Some(env) => self.make_environment(env, captures),
+                    None => "null".to_string(),
+                };
+                self.body
+                    .line(format!("store ptr @sayon.fn.{}, ptr {dest}", function.0));
+                let field = self.offset_pointer(dest, 8);
+                self.body
+                    .line(format!("store ptr {environment}, ptr {field}"));
+            }
             Rvalue::Pop {
                 array,
                 element_tag,
@@ -1168,6 +1190,30 @@ impl<'c, 'm> FnEmit<'c, 'm> {
         self.body.memcpy(&target, &source, &bytes.to_string());
         self.body.line(format!("br label %{done}"));
         self.body.start(&done);
+    }
+
+    /// Allocates a closure environment holding the captured values.
+    fn make_environment(&mut self, env: &Type, captures: &[Operand]) -> String {
+        let Type::Named(named) = env else {
+            panic!("environment of type {env}")
+        };
+        let size = 16 + self.cg.layouts.size_of(env);
+        let block = self.body.tmp();
+        self.body
+            .line(format!("{block} = call ptr @sayon_alloc(i64 {size})"));
+        let drop = self.cg.helper(Helper::EnvDrop, env);
+        let clone = self.cg.helper(Helper::EnvClone, env);
+        self.body.line(format!("store ptr {drop}, ptr {block}"));
+        let clone_field = self.offset_pointer(&block, 8);
+        self.body
+            .line(format!("store ptr {clone}, ptr {clone_field}"));
+        let fields = sayon_check::types::structure_fields(&self.cg.module.types, named);
+        for (index, (capture, field_ty)) in captures.iter().zip(&fields).enumerate() {
+            let offset = 16 + self.cg.layouts.field_offset(named, index as u32);
+            let address = self.offset_pointer(&block, offset);
+            self.store_operand(capture, &address, field_ty);
+        }
+        block
     }
 
     fn builder_text(&mut self, builder: &str, text: &str) {
@@ -1377,6 +1423,55 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     function.0,
                     all.join(", ")
                 ));
+                Some(status)
+            }
+            Op::CallValue { callee, args } => {
+                let (pointer, ty) = self.place_ptr(callee);
+                let Type::Function(signature) = ty else {
+                    panic!("call of a {ty} value")
+                };
+                let code = self.body.tmp();
+                self.body.line(format!("{code} = load ptr, ptr {pointer}"));
+                let field = self.offset_pointer(&pointer, 8);
+                let block = self.body.tmp();
+                self.body.line(format!("{block} = load ptr, ptr {field}"));
+                // A named function's value has no environment; its code
+                // never reads the pointer.
+                let environment = self.body.tmp();
+                self.body.line(format!(
+                    "{environment} = getelementptr i8, ptr {block}, i64 16"
+                ));
+                let mut values = vec![format!("ptr {environment}")];
+                for (arg, (mode, param_ty)) in args.iter().zip(&signature.params) {
+                    if by_reference(*mode, param_ty) {
+                        let (pointer, _) = self.pointer(arg);
+                        values.push(format!("ptr {pointer}"));
+                    } else {
+                        let param_llvm = self.cg.llvm(param_ty);
+                        let temp = self.body.alloca(&param_llvm);
+                        self.store_operand(arg, &temp, param_ty);
+                        let loaded = self.body.tmp();
+                        self.body
+                            .line(format!("{loaded} = load {param_llvm}, ptr {temp}"));
+                        values.push(format!("{param_llvm} {loaded}"));
+                    }
+                }
+                let ret_pointer = match dest {
+                    Some(place) => self.place_ptr(place).0,
+                    None => {
+                        let ret_llvm = self.cg.llvm(&signature.ret);
+                        self.body.alloca(&ret_llvm)
+                    }
+                };
+                let status = self.body.tmp();
+                let mut all = vec![
+                    format!("ptr {ret_pointer}"),
+                    format!("ptr {err}"),
+                    format!("i64 {}", values.len()),
+                ];
+                all.extend(values);
+                self.body
+                    .line(format!("{status} = call i32 {code}({})", all.join(", ")));
                 Some(status)
             }
             Op::IntArith { op, ty, lhs, rhs } => {
@@ -1965,6 +2060,8 @@ impl<'c, 'm> FnEmit<'c, 'm> {
 pub(crate) const MEMCPY: &str = "declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)";
 
 const RUNTIME_DECLARATIONS: &str = "\
+declare ptr @sayon_alloc(i64)
+declare void @sayon_free(ptr, i64)
 declare void @sayon_str_drop(ptr)
 declare void @sayon_str_clone(ptr, ptr)
 declare void @sayon_str_concat(ptr, ptr, ptr)

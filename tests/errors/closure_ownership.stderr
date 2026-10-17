@@ -1,0 +1,77 @@
+error[E_MOVED_VALUE]: `names` was transferred into a closure
+  --> closure_ownership.sayon:4:7
+   |
+ 2 | count_names = function() return length(names)
+   |                                        ----- captured here
+...
+ 4 | print(names)
+   |       ^^^^^ `names` no longer owns the array
+   |
+   = help: the closure owns `names` now; to keep it here, give the closure a copy: `copy = clone(names)`
+
+error[E_MOVED_VALUE]: `total` now belongs to a closure that changes it
+   --> closure_ownership.sayon:10:7
+    |
+  8 |     total += x
+    |     ----- captured here
+...
+ 10 | print(total)
+    |       ^^^^^ the closure holds its current value
+    |
+    = help: the closure changes `total`, so it keeps the variable; have the closure return what you need
+
+error[E_MOVE_CAPTURED]: cannot transfer `label` out of the closure that captured it
+   --> closure_ownership.sayon:13:32
+    |
+ 12 | label = "ready"
+    | ----- declared here
+ 13 | take_label = function() return label
+    |                                ^^^^^ the closure keeps it for its next call
+    |
+    = help: use clone(label) for a copy
+
+error[E_PARAMETER_MODE]: `append_one` changes its parameter `items`, which its declaration must state to use it as a value
+   --> closure_ownership.sayon:22:12
+    |
+ 19 | function append_one(items)
+    |                     ----- parameter declared here
+...
+ 22 | appender = append_one
+    |            ^^^^^^^^^^ used as a value here
+    |
+    = help: declare the parameter `update items`
+
+error[E_MUTATE_BORROWED]: cannot call `f`: the parameter is a read-only borrow, and a call could change what its function value captured
+   --> closure_ownership.sayon:29:63
+    |
+ 29 | apply_read = function(f: function(integer) -> integer) return f(1)
+    |                       - parameter declared here
+    |                                                               ^
+    |
+    = help: declare it `update f: function(integer) -> integer`
+
+error[E_MUTATE_CONSTANT]: cannot call `tick`: it is a constant, and a call could change what its function value captured
+   --> closure_ownership.sayon:39:7
+    |
+ 39 | print(tick())
+    |       ^^^^
+    |
+    = help: a constant can hold named functions and closures that only read what they capture
+
+error[E_MOVED_VALUE]: `message` was transferred into a closure in an earlier iteration of the loop
+   --> closure_ownership.sayon:43:37
+    |
+ 43 |     show = function() return length(message)
+    |                                     ^^^^^^^ transferred here, so the next iteration no longer owns the string
+    |
+    = help: the closure owns `message` now; to keep it here, give the closure a copy: `copy = clone(message)`
+
+error[E_MOVE_BORROWED]: cannot transfer `word`: it borrows an element during the loop
+   --> closure_ownership.sayon:47:37
+    |
+ 47 |     keep = function() return length(word)
+    |                                     ^^^^
+    |
+    = help: use clone(word) to keep a copy of the element
+
+8 errors found; nothing was run

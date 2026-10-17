@@ -23,9 +23,9 @@ use std::io::Write;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 /// Heap objects the runtime has created and not yet released: owned string
-/// data, array storage, dictionaries, errors, and text builders. With
-/// `SAYON_DEBUG_ALLOC` set, a program reports the count when it exits; a
-/// correct program reports zero.
+/// data, array storage, dictionaries, errors, text builders, and closure
+/// environments. With `SAYON_DEBUG_ALLOC` set, a program reports the count
+/// when it exits; a correct program reports zero.
 static LIVE: AtomicI64 = AtomicI64::new(0);
 
 fn allocated() {
@@ -363,6 +363,33 @@ pub unsafe extern "C" fn sayon_print(
             ),
         }
     }
+}
+
+// ----- closure environments ---------------------------------------------------------------
+
+fn block_layout(size: i64) -> Layout {
+    Layout::from_size_align(size.max(1) as usize, ELEMENT_ALIGN).expect("block layout")
+}
+
+/// Allocates `size` bytes for a closure environment.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_alloc(size: i64) -> *mut u8 {
+    let layout = block_layout(size);
+    // SAFETY: the layout has a nonzero size.
+    let pointer = unsafe { alloc(layout) };
+    if pointer.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
+    allocated();
+    pointer
+}
+
+/// Frees a block from `sayon_alloc` of the same size.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_free(pointer: *mut u8, size: i64) {
+    released();
+    // SAFETY: `pointer` came from `sayon_alloc(size)`.
+    unsafe { dealloc(pointer, block_layout(size)) }
 }
 
 // ----- arrays ------------------------------------------------------------------------------

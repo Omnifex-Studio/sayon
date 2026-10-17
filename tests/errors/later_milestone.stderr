@@ -1,25 +1,17 @@
-error[E_UNAVAILABLE]: function literals and closures are not available yet
-  --> later_milestone.sayon:1:11
-   |
- 1 | counter = function()
-   |           ^^^^^^^^^^ planned for milestone M2
-   |
-   = note: this release does not implement function literals and closures; it is scheduled for M2
-
 error[E_UNAVAILABLE]: string indexing and slicing is not available yet
-  --> later_milestone.sayon:4:9
+  --> later_milestone.sayon:1:9
    |
- 4 | first = "word"[0]
+ 1 | first = "word"[0]
    |         ^^^^^^^^^ planned for milestone M2
    |
    = note: this release does not implement string indexing and slicing; it is scheduled for M2
 
 error[E_UNAVAILABLE]: unsafe blocks are not available yet
-  --> later_milestone.sayon:6:1
+  --> later_milestone.sayon:3:1
    |
- 6 | unsafe
+ 3 | unsafe
    | ^^^^^^ planned for milestone M3
    |
    = note: this release does not implement unsafe blocks; it is scheduled for M3
 
-3 errors found; nothing was run
+2 errors found; nothing was run

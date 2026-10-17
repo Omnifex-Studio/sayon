@@ -13,12 +13,18 @@
 //! | union | `{ i32 tag, [N x i64] payload }`, payload at offset 8 | 8 + 8N |
 //! | structure | `{ fields... }` in declaration order, naturally aligned | sum with padding |
 //! | enum | `{ i32 tag, [N x i64] payload }`; a variant's fields are laid out like a structure from offset 8 | 8 + 8N |
+//! | function value | `%sayon.func = { ptr code, ptr environment }` | 16 |
 //!
 //! Every union places its payload at offset 8 and uses program-wide tags, so
 //! a reference to a union value is also a valid reference to any narrower
 //! union holding the same member. An enum's tag is its variant's position
 //! plus one. An all-zero value is "empty": dropping it does nothing, which is
 //! how moved-from places are represented.
+//!
+//! A closure's environment is a heap block: a pointer to its drop function,
+//! a pointer to its clone function, then the environment structure from
+//! offset 16. A named function's value has a null environment. The code
+//! receives a pointer to the environment structure before its arguments.
 
 use sayon_check::types::{
     FloatType, IntType, NamedType, Type, TypeDef, structure_fields, variant_fields,
@@ -51,6 +57,7 @@ impl Layouts {
             Type::Array(_) => "%sayon.array".to_string(),
             Type::Range => "%sayon.range".to_string(),
             Type::Dict(..) | Type::Error => "ptr".to_string(),
+            Type::Function(_) => "%sayon.func".to_string(),
             Type::Union(_) => self.tagged(ty, "union"),
             Type::Named(named) if self.is_enum(named) => self.tagged(ty, "enum"),
             Type::Named(named) => {
@@ -116,6 +123,7 @@ impl Layouts {
             Type::Boolean | Type::Nothing | Type::Unknown => 1,
             Type::String | Type::Array(_) | Type::Range => 24,
             Type::Dict(..) | Type::Error => 8,
+            Type::Function(_) => 16,
             Type::Union(_) => 8 + 8 * self.payload_words(ty),
             Type::Named(named) if self.is_enum(named) => 8 + 8 * self.payload_words(ty),
             Type::Named(named) => {
@@ -196,7 +204,7 @@ pub fn int_code(int: IntType) -> u32 {
 /// Whether values of the type own resources that must be released.
 pub fn needs_drop(ty: &Type) -> bool {
     match ty {
-        Type::String | Type::Array(_) | Type::Dict(..) | Type::Error => true,
+        Type::String | Type::Array(_) | Type::Dict(..) | Type::Error | Type::Function(_) => true,
         Type::Union(members) => members.iter().any(needs_drop),
         // Every non-Copy field owns something.
         Type::Named(_) => !ty.is_copy(),

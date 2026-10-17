@@ -8,7 +8,7 @@
 //! move or change data they only borrow.
 
 use crate::hir::*;
-use crate::types::Type;
+use crate::types::{Type, TypeDef, holds_function};
 use sayon_syntax::ast::ParamMode;
 use sayon_syntax::{Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
@@ -21,6 +21,7 @@ enum MoveReason {
     Element,
     Structure,
     Outcome,
+    Closure,
     Explicit,
 }
 
@@ -146,9 +147,27 @@ struct Analyzer<'p> {
     loop_borrows: Vec<LoopBorrow>,
     regions: Vec<HashSet<LocalId>>,
     reason: MoveReason,
+    /// Stand-ins for the function's generic parameters when deciding what
+    /// is Copy: a number for a parameter only numbers can fill.
+    stand_ins: Vec<Type>,
+    types: &'p [TypeDef],
+    /// Module constants whose function values never change what they
+    /// captured, so calling them only reads them.
+    fixed_constants: &'p [bool],
+    /// The same for `constant` locals of the function.
+    fixed_locals: HashSet<LocalId>,
 }
 
 impl<'p> Analyzer<'p> {
+    /// Whether values of the type are copied rather than moved.
+    fn copy(&self, ty: &Type) -> bool {
+        if self.stand_ins.is_empty() {
+            ty.is_copy()
+        } else {
+            ty.substitute(&self.stand_ins).is_copy()
+        }
+    }
+
     fn emit(&mut self, code: &'static str, span: Span, build: impl FnOnce() -> Diagnostic) {
         if self.report && self.reported.insert((code, span)) {
             self.diagnostics.push(build());
@@ -229,9 +248,13 @@ impl<'p> Analyzer<'p> {
             MoveReason::Element => " into a collection".to_string(),
             MoveReason::Structure => " into a structure".to_string(),
             MoveReason::Outcome => " into an Outcome".to_string(),
+            MoveReason::Closure => " into a closure".to_string(),
             MoveReason::Explicit => String::new(),
         };
-        let message = if site.earlier_iteration {
+        let taken_over = site.reason == MoveReason::Closure && self.copy(&self.local(local).ty);
+        let message = if taken_over {
+            format!("`{name}` now belongs to a closure that changes it")
+        } else if site.earlier_iteration {
             format!("`{name}` was transferred{destination} in an earlier iteration of the loop")
         } else if maybe {
             format!("`{name}` may have been transferred{destination}")
@@ -245,9 +268,17 @@ impl<'p> Analyzer<'p> {
             MoveReason::Call(callee) => format!(
                 "`{callee}` takes ownership; pass clone({name}) if you still need `{name}` afterwards"
             ),
+            MoveReason::Closure if self.copy(&self.local(local).ty) => format!(
+                "the closure changes `{name}`, so it keeps the variable; have the closure return what you need"
+            ),
+            MoveReason::Closure => format!(
+                "the closure owns `{name}` now; to keep it here, give the closure a copy: `copy = clone({name})`"
+            ),
             _ => format!("write clone({name}) at the transfer if you need to keep using `{name}`"),
         };
-        let move_label = if maybe && !site.earlier_iteration {
+        let move_label = if site.reason == MoveReason::Closure {
+            "captured here"
+        } else if maybe && !site.earlier_iteration {
             "transferred here on some paths"
         } else {
             "ownership transferred here"
@@ -260,9 +291,14 @@ impl<'p> Analyzer<'p> {
                     format!("transferred here, so the next iteration no longer owns {value}"),
                 )
             } else {
+                let label = if taken_over {
+                    "the closure holds its current value".to_string()
+                } else {
+                    format!("`{name}` no longer owns {value}")
+                };
                 diagnostic
                     .secondary(site.span, move_label)
-                    .primary(span, format!("`{name}` no longer owns {value}"))
+                    .primary(span, label)
             };
             diagnostic.help(help)
         });
@@ -376,6 +412,10 @@ impl<'p> Analyzer<'p> {
                     });
                     return;
                 }
+                if info.kind == LocalKind::Captured {
+                    self.move_captured(&info, span);
+                    return;
+                }
                 if !self.require_param_mode(local, ParamMode::Own, span) {
                     return;
                 }
@@ -389,6 +429,111 @@ impl<'p> Analyzer<'p> {
             Usage::BorrowUpdate => self.check_update(local, span),
             _ => {}
         }
+    }
+
+    fn move_captured(&mut self, info: &Local, span: Span) {
+        let name = info.name.clone();
+        let declared = info.span;
+        self.emit("E_MOVE_CAPTURED", span, || {
+            Diagnostic::error(
+                "E_MOVE_CAPTURED",
+                format!("cannot transfer `{name}` out of the closure that captured it"),
+            )
+            .primary(span, "the closure keeps it for its next call")
+            .secondary(declared, "declared here")
+            .help(format!("use clone({name}) for a copy"))
+        });
+    }
+
+    /// The values a closure takes when it is made. A Copy value it only reads
+    /// is copied; anything else moves into its environment, and a Copy
+    /// variable it changes is taken over so that the change is not lost.
+    fn captures(&mut self, captures: &mut [Capture], span: Span, state: &mut State) {
+        let saved = std::mem::replace(&mut self.reason, MoveReason::Closure);
+        for capture in captures {
+            let copy = self.copy(&capture.value.ty);
+            if copy && !capture.mutated {
+                self.expr(&mut capture.value, Ctx::Read, state);
+                continue;
+            }
+            self.expr(&mut capture.value, Ctx::Consume, state);
+            if copy && let Some(local) = Self::root(&capture.value) {
+                if !self.check_initialized(local, span, state) {
+                    continue;
+                }
+                let info = self.local(local).clone();
+                match info.kind {
+                    LocalKind::Captured => self.move_captured(&info, capture.value.span),
+                    LocalKind::Constant => self.check_update_copy(local, capture.value.span),
+                    _ => self.mark_moved(local, capture.value.span, state),
+                }
+            }
+        }
+        self.reason = saved;
+    }
+
+    /// Calling a function value borrows it for changes: a closure may update
+    /// what it captured.
+    fn call_value(&mut self, callee: &mut Expr, args: &mut [Arg], state: &mut State) {
+        let root = Self::root(callee);
+        let mut name = "the function value".to_string();
+        let mut reads = false;
+        if let Some(id) = constant_root(callee) {
+            name = self.constant_names[id.0 as usize].clone();
+            if !self.fixed_constants[id.0 as usize] {
+                let span = callee.span;
+                self.emit("E_MUTATE_CONSTANT", span, || {
+                    Diagnostic::error(
+                        "E_MUTATE_CONSTANT",
+                        format!("cannot call `{name}`: it is a constant, and a call could change what its function value captured"),
+                    )
+                    .primary(span, "")
+                    .help("a constant can hold named functions and closures that only read what they capture")
+                });
+                return;
+            }
+            reads = true;
+        }
+        if let Some(local) = root {
+            let info = self.local(local).clone();
+            name = info.name.clone();
+            let span = callee.span;
+            if info.kind == LocalKind::Constant && self.fixed_locals.contains(&local) {
+                reads = true;
+            } else if info.kind == LocalKind::Constant {
+                self.emit("E_MUTATE_CONSTANT", span, || {
+                    Diagnostic::error(
+                        "E_MUTATE_CONSTANT",
+                        format!("cannot call `{name}`: it is a constant, and a call could change what its function value captured"),
+                    )
+                    .primary(span, "")
+                    .secondary(info.span, "declared as a constant here")
+                    .help(format!("declare it with `variable {name} = ...`"))
+                });
+                return;
+            }
+            if let Some((ParamMode::Read, true)) = self.params.get(&local).copied() {
+                let ty = info.ty.clone();
+                self.emit("E_MUTATE_BORROWED", span, || {
+                    Diagnostic::error(
+                        "E_MUTATE_BORROWED",
+                        format!("cannot call `{name}`: the parameter is a read-only borrow, and a call could change what its function value captured"),
+                    )
+                    .primary(span, "")
+                    .secondary(info.span, "parameter declared here")
+                    .help(format!("declare it `update {name}: {ty}`"))
+                });
+                return;
+            }
+        }
+        let (ctx, access) = if reads {
+            (Ctx::Read, Access::Read)
+        } else {
+            (Ctx::Update, Access::Update)
+        };
+        self.expr(callee, ctx, state);
+        let first = root.map(|local| (local, access, callee.span));
+        self.args_with(args, &name, first, state);
     }
 
     fn check_update(&mut self, local: LocalId, span: Span) {
@@ -477,7 +622,7 @@ impl<'p> Analyzer<'p> {
         match &mut expr.kind {
             ExprKind::Local { local, usage } => {
                 let local = *local;
-                let copy = self.local(local).ty.is_copy();
+                let copy = self.copy(&self.local(local).ty);
                 self.use_local(local, usage, copy, ctx, span, state);
             }
             // Using a narrowed value uses the local that holds it; taking
@@ -486,7 +631,8 @@ impl<'p> Analyzer<'p> {
                 match &mut inner.kind {
                     ExprKind::Local { local, usage } => {
                         let local = *local;
-                        self.use_local(local, usage, ty.is_copy(), ctx, span, state);
+                        let copy = self.copy(&ty);
+                        self.use_local(local, usage, copy, ctx, span, state);
                     }
                     _ => self.expr(inner, ctx, state),
                 }
@@ -508,7 +654,7 @@ impl<'p> Analyzer<'p> {
                         .primary(span, "")
                         .help(format!("copy it first: `items = clone({name})`"))
                     });
-                } else if ctx == Ctx::Consume && !ty.is_copy() {
+                } else if ctx == Ctx::Consume && !self.copy(&ty) {
                     let name = self.constant_names[id.0 as usize].clone();
                     self.emit("E_MOVE_CONSTANT", span, || {
                         Diagnostic::error(
@@ -532,6 +678,10 @@ impl<'p> Analyzer<'p> {
                 let name = builtin.name().to_string();
                 self.args(args, &name, state);
             }
+            ExprKind::CallValue { callee, args } => self.call_value(callee, args, state),
+            ExprKind::Closure { captures, .. } => self.captures(captures, span, state),
+            // A named function has no environment of its own.
+            ExprKind::FunctionRef { .. } => {}
             ExprKind::Binary { lhs, rhs, .. } => {
                 self.expr(lhs, Ctx::Read, state);
                 self.expr(rhs, Ctx::Read, state);
@@ -567,7 +717,7 @@ impl<'p> Analyzer<'p> {
                 self.reason = saved;
             }
             ExprKind::Field { value, name } => {
-                if ctx == Ctx::Consume && !ty.is_copy() && Self::is_place(value) {
+                if ctx == Ctx::Consume && !self.copy(&ty) && Self::is_place(value) {
                     // Taking one field would leave the structure incomplete.
                     let field_value = Analyzer::describe_value(&ty);
                     let owner = Self::root(value)
@@ -597,7 +747,7 @@ impl<'p> Analyzer<'p> {
             }
             ExprKind::Index { target, index } => {
                 self.expr(index, Ctx::Read, state);
-                if ctx == Ctx::Consume && !ty.is_copy() {
+                if ctx == Ctx::Consume && !self.copy(&ty) {
                     let element = Analyzer::describe_value(&ty);
                     self.emit("E_MOVE_OUT_OF_ELEMENT", span, || {
                         Diagnostic::error(
@@ -627,7 +777,7 @@ impl<'p> Analyzer<'p> {
             ExprKind::Inject(inner) => {
                 let place =
                     Self::root(inner).is_some() || matches!(inner.kind, ExprKind::Constant(_));
-                if ctx != Ctx::Consume && place && !inner.ty.is_copy() {
+                if ctx != Ctx::Consume && place && !self.copy(&inner.ty) {
                     let inner_ty = inner.ty.clone();
                     self.emit("E_BORROWED_UNION", span, || {
                         Diagnostic::error(
@@ -654,8 +804,18 @@ impl<'p> Analyzer<'p> {
     }
 
     fn args(&mut self, args: &mut [Arg], callee: &str, state: &mut State) {
+        self.args_with(args, callee, None, state);
+    }
+
+    fn args_with(
+        &mut self,
+        args: &mut [Arg],
+        callee: &str,
+        first: Option<(LocalId, Access, Span)>,
+        state: &mut State,
+    ) {
         let saved = std::mem::replace(&mut self.reason, MoveReason::Call(callee.to_string()));
-        let mut accesses: Vec<(LocalId, Access, Span)> = Vec::new();
+        let mut accesses: Vec<(LocalId, Access, Span)> = first.into_iter().collect();
         for arg in args.iter_mut() {
             let ctx = match arg.mode {
                 ParamMode::Own => Ctx::Consume,
@@ -665,7 +825,7 @@ impl<'p> Analyzer<'p> {
             self.expr(&mut arg.expr, ctx, state);
             if let Some(root) = Self::root(&arg.expr) {
                 let access = match ctx {
-                    _ if arg.expr.ty.is_copy() && ctx != Ctx::Update => None,
+                    _ if self.copy(&arg.expr.ty) && ctx != Ctx::Update => None,
                     Ctx::Consume => Some(Access::Move),
                     Ctx::Update => Some(Access::Update),
                     Ctx::Read => Some(Access::Read),
@@ -710,7 +870,7 @@ impl<'p> Analyzer<'p> {
             Place::Local(local) => {
                 let local = *local;
                 let ty = self.local(local).ty.clone();
-                if !ty.is_copy() && !self.require_param_mode(local, ParamMode::Update, span) {
+                if !self.copy(&ty) && !self.require_param_mode(local, ParamMode::Update, span) {
                     return;
                 }
                 if !self.loop_conflict(local, span, "replace") {
@@ -739,7 +899,7 @@ impl<'p> Analyzer<'p> {
                 if !self.check_initialized(local, span, state) {
                     return;
                 }
-                if self.local(local).ty.is_copy() {
+                if self.copy(&self.local(local).ty) {
                     // A Copy value (such as a structure of numbers) belongs to
                     // this function even when it arrived as a parameter.
                     self.check_update_copy(local, span);
@@ -811,6 +971,9 @@ impl<'p> Analyzer<'p> {
         let span = stmt.span;
         match &mut stmt.kind {
             StmtKind::Let { local, value } => {
+                if self.local(*local).kind == LocalKind::Constant && fixed(self.types, value) {
+                    self.fixed_locals.insert(*local);
+                }
                 let name = self.local(*local).name.clone();
                 let saved = std::mem::replace(&mut self.reason, MoveReason::Assign(name));
                 self.expr(value, Ctx::Consume, state);
@@ -833,7 +996,7 @@ impl<'p> Analyzer<'p> {
                         let local = *local;
                         if self.check_initialized(local, span, state) {
                             let ty = self.local(local).ty.clone();
-                            if !ty.is_copy() {
+                            if !self.copy(&ty) {
                                 self.check_update(local, span);
                             } else {
                                 self.loop_conflict(local, span, "change");
@@ -893,7 +1056,8 @@ impl<'p> Analyzer<'p> {
                         _ => Vec::new(),
                     };
                     for (binding, element) in bindings.iter().zip(element_types) {
-                        self.locals[binding.0 as usize].borrowed = !element.is_copy();
+                        let borrowed = !self.copy(&element);
+                        self.locals[binding.0 as usize].borrowed = borrowed;
                     }
                 }
                 let borrow = if collection {
@@ -1010,7 +1174,7 @@ impl<'p> Analyzer<'p> {
         arms: &mut [MatchArm],
         state: &mut State,
     ) {
-        let copy = scrutinee.ty.is_copy();
+        let copy = self.copy(&scrutinee.ty);
         let consuming = owned && !copy;
         let saved = std::mem::replace(&mut self.reason, MoveReason::Explicit);
         let ctx = if owned { Ctx::Consume } else { Ctx::Read };
@@ -1029,7 +1193,7 @@ impl<'p> Analyzer<'p> {
             let guarded = arm.guard.is_some();
             let mut borrows = false;
             for binding in bindings {
-                let borrowed = !self.local(binding).ty.is_copy() && (!consuming || guarded);
+                let borrowed = !self.copy(&self.local(binding).ty) && (!consuming || guarded);
                 self.locals[binding.0 as usize].borrowed = borrowed;
                 borrows |= borrowed;
                 if let Some(map) = &mut arm_state {
@@ -1099,6 +1263,36 @@ impl<'p> Analyzer<'p> {
     }
 }
 
+/// Whether the function values in an expression's value never change what
+/// they captured: named functions, and closures that only read their
+/// captures.
+fn fixed(types: &[TypeDef], expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::FunctionRef { .. } => true,
+        ExprKind::Closure { captures, .. } => captures.iter().all(|capture| !capture.mutated),
+        ExprKind::Array(items) | ExprKind::Variant { args: items, .. } => {
+            items.iter().all(|item| fixed(types, item))
+        }
+        ExprKind::Record(fields) => fields.iter().all(|(_, value)| fixed(types, value)),
+        ExprKind::Dict(entries) => entries.iter().all(|(_, value)| fixed(types, value)),
+        ExprKind::Inject(inner) => fixed(types, inner),
+        _ => !holds_function(types, &expr.ty),
+    }
+}
+
+/// The module constant an expression reads in place, if any.
+fn constant_root(expr: &Expr) -> Option<ConstId> {
+    match &expr.kind {
+        ExprKind::Constant(id) => Some(*id),
+        ExprKind::Narrow(inner)
+        | ExprKind::Inject(inner)
+        | ExprKind::VariantPayload { value: inner, .. }
+        | ExprKind::Index { target: inner, .. }
+        | ExprKind::Field { value: inner, .. } => constant_root(inner),
+        _ => None,
+    }
+}
+
 /// Infers parameter modes and checks ownership for every function.
 pub fn check_program(program: &mut Program, components: &[Vec<FuncId>]) -> Vec<Diagnostic> {
     let mut modes: HashMap<FuncId, Vec<ParamMode>> = HashMap::new();
@@ -1109,6 +1303,11 @@ pub fn check_program(program: &mut Program, components: &[Vec<FuncId>]) -> Vec<D
         .map(|(i, f)| (FuncId(i as u32), f.name.clone()))
         .collect();
     let constant_names: Vec<String> = program.constants.iter().map(|c| c.name.clone()).collect();
+    let fixed_constants: Vec<bool> = program
+        .constants
+        .iter()
+        .map(|c| fixed(&program.types, &c.value))
+        .collect();
     for (index, function) in program.functions.iter().enumerate() {
         modes.insert(
             FuncId(index as u32),
@@ -1122,7 +1321,16 @@ pub fn check_program(program: &mut Program, components: &[Vec<FuncId>]) -> Vec<D
         for _ in 0..8 {
             let mut changed = false;
             for id in component {
-                let inferred = analyze(program, *id, &modes, &names, &constant_names, false).0;
+                let inferred = analyze(
+                    program,
+                    *id,
+                    &modes,
+                    &names,
+                    &constant_names,
+                    &fixed_constants,
+                    false,
+                )
+                .0;
                 if modes.get(id) != Some(&inferred) {
                     modes.insert(*id, inferred);
                     changed = true;
@@ -1139,7 +1347,33 @@ pub fn check_program(program: &mut Program, components: &[Vec<FuncId>]) -> Vec<D
             }
         }
         for id in component {
-            let (_, mut found) = analyze(program, *id, &modes, &names, &constant_names, true);
+            let (_, mut found) = analyze(
+                program,
+                *id,
+                &modes,
+                &names,
+                &constant_names,
+                &fixed_constants,
+                true,
+            );
+            diagnostics.append(&mut found);
+        }
+    }
+
+    // A closure's parameter modes come from its type, so its body is checked
+    // once, after every named function's modes are known.
+    for index in 0..program.functions.len() {
+        if program.functions[index].closure {
+            let id = FuncId(index as u32);
+            let (_, mut found) = analyze(
+                program,
+                id,
+                &modes,
+                &names,
+                &constant_names,
+                &fixed_constants,
+                true,
+            );
             diagnostics.append(&mut found);
         }
     }
@@ -1160,6 +1394,10 @@ pub fn check_program(program: &mut Program, components: &[Vec<FuncId>]) -> Vec<D
             loop_borrows: Vec::new(),
             regions: Vec::new(),
             reason: MoveReason::Explicit,
+            stand_ins: Vec::new(),
+            types: &program.types,
+            fixed_constants: &fixed_constants,
+            fixed_locals: HashSet::new(),
         };
         let mut state: State = Some(HashMap::new());
         analyzer.expr(
@@ -1170,7 +1408,58 @@ pub fn check_program(program: &mut Program, components: &[Vec<FuncId>]) -> Vec<D
         diagnostics.append(&mut analyzer.diagnostics);
         program.constants[index].locals = locals;
     }
+    diagnostics.extend(function_value_modes(program, &modes));
     diagnostics
+}
+
+/// A named function used as a value is called through its function type, so
+/// a parameter it takes over or changes must say so in its declaration.
+fn function_value_modes(
+    program: &mut Program,
+    modes: &HashMap<FuncId, Vec<ParamMode>>,
+) -> Vec<Diagnostic> {
+    let mut found = Vec::new();
+    let mut check = |expr: &mut Expr| {
+        if let (ExprKind::FunctionRef { function, .. }, Type::Function(ty)) = (&expr.kind, &expr.ty)
+        {
+            for (index, ((mode, _), actual)) in ty.params.iter().zip(&modes[function]).enumerate() {
+                if mode != actual {
+                    found.push((*function, index, *actual, expr.span));
+                }
+            }
+        }
+    };
+    for function in &mut program.functions {
+        visit_block_mut(&mut function.body, &mut check);
+    }
+    for constant in &mut program.constants {
+        visit_expr_mut(&mut constant.value, &mut check);
+    }
+    let mut reported = HashSet::new();
+    found
+        .into_iter()
+        .filter(|(function, index, _, _)| reported.insert((*function, *index)))
+        .map(|(function, index, actual, span)| {
+            let callee = &program.functions[function.0 as usize];
+            let param = &callee.params[index];
+            let name = callee.locals[param.local.0 as usize].name.clone();
+            let (verb, keyword) = match actual {
+                ParamMode::Own => ("takes ownership of", "own"),
+                ParamMode::Update => ("changes", "update"),
+                ParamMode::Read => ("only reads", "read"),
+            };
+            Diagnostic::error(
+                "E_PARAMETER_MODE",
+                format!(
+                    "`{}` {verb} its parameter `{name}`, which its declaration must state to use it as a value",
+                    callee.name
+                ),
+            )
+            .primary(span, "used as a value here")
+            .secondary(param.span, "parameter declared here")
+            .help(format!("declare the parameter `{keyword} {name}`"))
+        })
+        .collect()
 }
 
 fn analyze(
@@ -1179,15 +1468,34 @@ fn analyze(
     modes: &HashMap<FuncId, Vec<ParamMode>>,
     names: &HashMap<FuncId, String>,
     constant_names: &[String],
+    fixed_constants: &[bool],
     report: bool,
 ) -> (Vec<ParamMode>, Vec<Diagnostic>) {
+    let types = &program.types;
     let function = &mut program.functions[id.0 as usize];
     let mut locals = std::mem::take(&mut function.locals);
     let mut body = std::mem::take(&mut function.body);
     let mut params: HashMap<LocalId, (ParamMode, bool)> = HashMap::new();
     let mut state_map = HashMap::new();
+    let stand_ins: Vec<Type> = if function.numeric_generics.contains(&true) {
+        (0..function.generic_count)
+            .map(
+                |index| match function.numeric_generics.get(index as usize) {
+                    Some(true) => Type::INTEGER,
+                    _ => Type::Param(index),
+                },
+            )
+            .collect()
+    } else {
+        Vec::new()
+    };
     for (param, mode) in function.params.iter().zip(&modes[&id]) {
-        let explicit = param.explicit_mode || param.ty.is_copy();
+        let copy = if stand_ins.is_empty() {
+            param.ty.is_copy()
+        } else {
+            param.ty.substitute(&stand_ins).is_copy()
+        };
+        let explicit = param.explicit_mode || copy;
         params.insert(param.local, (*mode, explicit));
         state_map.insert(param.local, Status::Init);
     }
@@ -1211,6 +1519,10 @@ fn analyze(
         loop_borrows: Vec::new(),
         regions: Vec::new(),
         reason: MoveReason::Explicit,
+        stand_ins,
+        types,
+        fixed_constants,
+        fixed_locals: HashSet::new(),
     };
     for default in defaults.iter_mut().flatten() {
         let mut state: State = Some(state_map.clone());

@@ -1,6 +1,3 @@
-counter = function()
-    return 1
-
 first = "word"[0]
 
 unsafe

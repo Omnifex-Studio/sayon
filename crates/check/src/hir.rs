@@ -58,6 +58,9 @@ pub enum LocalKind {
     CaughtError,
     /// A name bound by a `case` pattern.
     CaseBinding,
+    /// A function literal's copy of a variable of the function around it,
+    /// kept in the closure's environment between calls.
+    Captured,
 }
 
 #[derive(Debug, Clone)]
@@ -88,11 +91,20 @@ pub struct Function {
     pub span: Span,
     /// Number of generic parameters (`Type::Param(0..generic_count)`).
     pub generic_count: u32,
+    /// The generic parameters only numbers can fill, so that their values
+    /// are Copy.
+    pub numeric_generics: Vec<bool>,
     pub params: Vec<Param>,
     pub ret: Type,
     pub locals: Vec<Local>,
     pub body: Block,
     pub is_entry: bool,
+    /// The body of a function literal. Its compiled form takes the closure's
+    /// environment before its parameters.
+    pub closure: bool,
+    /// For a closure, the locals of the body that hold captured values, in
+    /// the order of the environment.
+    pub captures: Vec<LocalId>,
 }
 
 impl Function {
@@ -368,6 +380,22 @@ pub enum ExprKind {
         value: Box<Expr>,
         name: String,
     },
+    /// A closure: the function literal's body, and the values it captures
+    /// from the enclosing function, in the order of its `captures`.
+    Closure {
+        function: FuncId,
+        captures: Vec<Capture>,
+    },
+    /// A named function used as a value.
+    FunctionRef {
+        function: FuncId,
+        type_args: Vec<Type>,
+    },
+    /// Calls a function value.
+    CallValue {
+        callee: Box<Expr>,
+        args: Vec<Arg>,
+    },
     /// `try value`: the `Outcome` in `ty`, `success(value)`, or `failure(error)`
     /// when evaluating the value raises an error.
     TryExpr(Box<Expr>),
@@ -410,6 +438,16 @@ pub enum ExprKind {
 pub enum ErrorField {
     Message,
     Code,
+}
+
+/// A value a closure takes from the enclosing function when it is made.
+#[derive(Debug, Clone)]
+pub struct Capture {
+    /// The enclosing function's variable, as it is read there.
+    pub value: Expr,
+    /// The closure changes it, so it takes the variable over even when the
+    /// value is Copy.
+    pub mutated: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -504,6 +542,17 @@ pub fn visit_expr_mut(expr: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
                 visit_expr_mut(&mut arg.expr, f);
             }
         }
+        ExprKind::CallValue { callee, args } => {
+            visit_expr_mut(callee, f);
+            for arg in args {
+                visit_expr_mut(&mut arg.expr, f);
+            }
+        }
+        ExprKind::Closure { captures, .. } => {
+            for capture in captures {
+                visit_expr_mut(&mut capture.value, f);
+            }
+        }
         ExprKind::Binary { lhs, rhs, .. } => {
             visit_expr_mut(lhs, f);
             visit_expr_mut(rhs, f);
@@ -545,6 +594,7 @@ pub fn visit_expr_mut(expr: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
         | ExprKind::String(_)
         | ExprKind::Nothing
         | ExprKind::Local { .. }
-        | ExprKind::Constant(_) => {}
+        | ExprKind::Constant(_)
+        | ExprKind::FunctionRef { .. } => {}
     }
 }

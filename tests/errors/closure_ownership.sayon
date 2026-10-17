@@ -1,0 +1,48 @@
+names = ["Ada", "Grace"]
+count_names = function() return length(names)
+print(count_names())
+print(names)
+
+total = 0
+add = function(x: integer)
+    total += x
+add(5)
+print(total)
+
+label = "ready"
+take_label = function() return label
+print(take_label())
+
+constant square = function(x: integer) return x * x
+print(square(4))
+
+function append_one(items)
+    push(items, 1)
+
+appender = append_one
+values = [0]
+appender(values)
+
+function call_with_one(f)
+    return f(1)
+
+apply_read = function(f: function(integer) -> integer) return f(1)
+print(call_with_one(function(x) return x + 1))
+
+function make_counter()
+    count = 0
+    return function()
+        count += 1
+        return count
+
+constant tick = make_counter()
+print(tick())
+
+message = "hi"
+for i in range(2)
+    show = function() return length(message)
+    print(show())
+
+for word in ["x", "y"]
+    keep = function() return length(word)
+    print(keep())

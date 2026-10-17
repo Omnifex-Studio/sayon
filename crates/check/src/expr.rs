@@ -176,9 +176,8 @@ impl<'a> Checker<'a> {
                 expr(ExprKind::TryExpr(Box::new(value)), ty, span)
             }
             ast::ExprKind::IsError(inner) => self.check_is_error(cx, inner, span),
-            ast::ExprKind::Function(_) => {
-                self.unavailable(span, "function literals and closures", "M2");
-                expr(ExprKind::Nothing, Type::Unknown, span)
+            ast::ExprKind::Function(function) => {
+                self.check_function_literal(cx, function, expected, span)
             }
             ast::ExprKind::Import { .. } => {
                 self.error(
@@ -306,7 +305,7 @@ impl<'a> Checker<'a> {
         expected: Option<&Type>,
     ) -> hir::Expr {
         let span = name.span;
-        if let Some(local) = cx.lookup(&name.name) {
+        if let Some(local) = self.find_local(cx, &name.name, span) {
             return self.local_use(cx, local, span);
         }
         if let Some(item) = self.item(cx.module, &name.name) {
@@ -933,14 +932,8 @@ impl<'a> Checker<'a> {
                         self.call_function(cx, id, name, generic_args, args, span)
                     }
                     Some(Item::Constant(_)) => {
-                        self.error(
-                            Diagnostic::error(
-                                "E_NOT_CALLABLE",
-                                format!("`{}` is a constant, not a function", name.name),
-                            )
-                            .primary(callee.span, ""),
-                        );
-                        expr(ExprKind::Nothing, Type::Unknown, span)
+                        let value = self.check_expr(cx, callee, None);
+                        self.call_value(cx, value, args, span)
                     }
                     Some(Item::Type(id)) => self.positional_construct(cx, id, args, span),
                     None => {
@@ -955,7 +948,20 @@ impl<'a> Checker<'a> {
                 let id = self.type_reference(cx, target).expect("type");
                 return self.qualified_variant(cx, id, name, Some(args), expected, span);
             }
-            ast::ExprKind::Member { name, .. } => {
+            ast::ExprKind::Member { target, name } => {
+                // A structure field holding a function value can be called.
+                let value = self.check_expr(cx, target, None);
+                let is_field = match self.unifier.resolve(&value.ty) {
+                    Type::Named(named) => {
+                        let def = self.type_def(named.id);
+                        !def.is_enum() && def.field_index(&name.name).is_some()
+                    }
+                    _ => false,
+                };
+                if is_field {
+                    let field = self.check_field(cx, value, name, callee.span);
+                    return self.call_value(cx, field, args, span);
+                }
                 self.error(
                     Diagnostic::error("E_UNKNOWN_METHOD", format!("no method `{}` is available here", name.name))
                         .primary(name.span, "")
@@ -967,32 +973,47 @@ impl<'a> Checker<'a> {
                 return expr(ExprKind::Nothing, Type::Unknown, span);
             }
             _ => {
-                self.error(
-                    Diagnostic::error("E_NOT_CALLABLE", "this expression cannot be called")
-                        .primary(callee.span, "")
-                        .note("calling function values arrives with closures in milestone M2"),
-                );
-                return expr(ExprKind::Nothing, Type::Unknown, span);
+                let value = self.check_expr(cx, callee, None);
+                return self.call_value(cx, value, args, span);
             }
         };
 
-        if cx.lookup(&name.name).is_some() {
-            self.unavailable(callee.span, "calling a function stored in a variable", "M2");
-            return expr(ExprKind::Nothing, Type::Unknown, span);
+        if let Some(local) = self.find_local(cx, &name.name, name.span) {
+            if !generic_args.is_empty() {
+                self.error(
+                    Diagnostic::error(
+                        "E_TYPE_ARGUMENTS",
+                        format!(
+                            "`{}` holds a function value, which takes no type arguments",
+                            name.name
+                        ),
+                    )
+                    .primary(callee.span, ""),
+                );
+            }
+            let value = self.local_use(cx, local, name.span);
+            return self.call_value(cx, value, args, span);
         }
         match self.item(cx.module, &name.name) {
             Some(Item::Function(id)) => {
                 return self.call_function(cx, id, name, generic_args, args, span);
             }
+            // A constant holding a function value can be called.
             Some(Item::Constant(_)) => {
-                self.error(
-                    Diagnostic::error(
-                        "E_NOT_CALLABLE",
-                        format!("`{}` is a constant, not a function", name.name),
-                    )
-                    .primary(callee.span, ""),
-                );
-                return expr(ExprKind::Nothing, Type::Unknown, span);
+                if !generic_args.is_empty() {
+                    self.error(
+                        Diagnostic::error(
+                            "E_TYPE_ARGUMENTS",
+                            format!(
+                                "`{}` holds a function value, which takes no type arguments",
+                                name.name
+                            ),
+                        )
+                        .primary(callee.span, ""),
+                    );
+                }
+                let value = self.check_expr(cx, callee, None);
+                return self.call_value(cx, value, args, span);
             }
             Some(Item::Type(id)) => return self.positional_construct(cx, id, args, span),
             None => {}
@@ -1075,7 +1096,7 @@ impl<'a> Checker<'a> {
     /// by a local variable.
     fn module_alias(&self, cx: &FnCtx, target: &ast::Expr) -> Option<checker::ModuleId> {
         match &target.kind {
-            ast::ExprKind::Name(alias) if cx.lookup(&alias.name).is_none() => {
+            ast::ExprKind::Name(alias) if !self.is_local_name(cx, &alias.name) => {
                 self.import(cx.module, &alias.name)
             }
             _ => None,
@@ -1089,10 +1110,7 @@ impl<'a> Checker<'a> {
                 let ty = self.constant_type(id);
                 expr(ExprKind::Constant(id), ty, span)
             }
-            Item::Function(_) => {
-                self.unavailable(span, "function values", "M2");
-                expr(ExprKind::Nothing, Type::Unknown, span)
-            }
+            Item::Function(id) => self.function_value(id, span),
             Item::Type(id) => self.type_as_value(id, span),
         }
     }

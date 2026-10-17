@@ -3,6 +3,7 @@
 
 pub mod builtins;
 mod checker;
+mod closures;
 mod driver;
 mod expr;
 pub mod hir;

@@ -1,6 +1,6 @@
 //! Checks items component by component and assembles the program.
 
-use crate::checker::{Checker, ConstState, FnCtx, FunctionEntry, Item};
+use crate::checker::{Checker, ConstState, FnCtx, FunctionEntry, Item, Signature};
 use crate::hir::{self, ConstId, FuncId, LocalKind};
 use crate::narrow::block_exits;
 use crate::types::Type;
@@ -97,6 +97,7 @@ impl<'a> Checker<'a> {
 
     fn check_constant(&mut self, id: ConstId) {
         let first_var = self.unifier.var_count();
+        let first_closure = self.closures.len();
         let decl = self.constants[id.0 as usize].decl;
         self.constants[id.0 as usize].state = ConstState::InProgress;
         let module = self.constants[id.0 as usize].module;
@@ -112,6 +113,7 @@ impl<'a> Checker<'a> {
         self.solve_deferred(true);
         self.default_vars(first_var);
         self.finalize_expr(&mut value);
+        self.finish_closures(first_closure);
         let ty = annotation
             .map(|t| self.finalize_type(&t))
             .unwrap_or_else(|| value.ty.clone());
@@ -123,6 +125,7 @@ impl<'a> Checker<'a> {
 
     fn check_functions(&mut self, functions: &[FuncId]) {
         let first_var = self.unifier.var_count();
+        let first_closure = self.closures.len();
         for id in functions {
             let signature = self.initial_signature(*id);
             self.functions[id.0 as usize].signature = Some(signature);
@@ -164,6 +167,7 @@ impl<'a> Checker<'a> {
                 .clone()
                 .expect("signature");
             function.generic_count = signature.generic_count;
+            function.numeric_generics = numeric_generics(&signature);
             if signature.generic_count > 0 {
                 let identity: Vec<Type> = (0..signature.generic_count).map(Type::Param).collect();
                 fill_recursive_type_args(&mut function, *id, &identity);
@@ -194,7 +198,31 @@ impl<'a> Checker<'a> {
             }
             entry.hir = Some(function);
         }
+        self.finish_closures(first_closure);
         self.scc_order.push(functions.to_vec());
+    }
+
+    /// Finalizes the function literals checked since `first`. A literal
+    /// shares the type parameters of the named function it appears in.
+    fn finish_closures(&mut self, first: usize) {
+        for (closure, owner) in self.closures[first..].to_vec() {
+            let Some(mut function) = self.functions[closure.0 as usize].hir.take() else {
+                continue;
+            };
+            self.finalize_function(&mut function);
+            let signature =
+                owner.and_then(|owner| self.functions[owner.0 as usize].signature.as_ref());
+            let generic_count = signature.map_or(0, |signature| signature.generic_count);
+            function.generic_count = generic_count;
+            function.numeric_generics = signature.map(numeric_generics).unwrap_or_default();
+            if let Some(owner) = owner
+                && generic_count > 0
+            {
+                let identity: Vec<Type> = (0..generic_count).map(Type::Param).collect();
+                fill_recursive_type_args(&mut function, owner, &identity);
+            }
+            self.functions[closure.0 as usize].hir = Some(function);
+        }
     }
 
     fn check_function_body(&mut self, id: FuncId) -> hir::Function {
@@ -242,7 +270,11 @@ impl<'a> Checker<'a> {
                     .mode
                     .map(|(mode, _)| mode)
                     .unwrap_or(ast::ParamMode::Read),
-                explicit_mode: param.mode.is_some() || param.ty.is_some(),
+                // Calling a function value borrows it for changes, so how a
+                // parameter holding one is passed is inferred even when its
+                // type is written.
+                explicit_mode: param.mode.is_some()
+                    || (param.ty.is_some() && !self.holds_function(&self.unifier.resolve(&ty))),
                 ty,
                 default,
                 span: param.span,
@@ -277,6 +309,9 @@ impl<'a> Checker<'a> {
             locals: cx.locals,
             body,
             is_entry: false,
+            closure: false,
+            captures: Vec::new(),
+            numeric_generics: Vec::new(),
         }
     }
 
@@ -295,6 +330,7 @@ impl<'a> Checker<'a> {
             return main;
         }
         let first_var = self.unifier.var_count();
+        let first_closure = self.closures.len();
         let mut cx = FnCtx::new(self.entry_module, None, Type::Nothing, true);
         let stmts = self.check_stmts(&mut cx, script.iter().copied());
         self.solve_deferred(true);
@@ -312,8 +348,12 @@ impl<'a> Checker<'a> {
                 locals: scope.declared,
             },
             is_entry: true,
+            closure: false,
+            captures: Vec::new(),
+            numeric_generics: Vec::new(),
         };
         self.finalize_function(&mut function);
+        self.finish_closures(first_closure);
         let id = FuncId(self.functions.len() as u32);
         self.functions.push(FunctionEntry {
             ast: None,
@@ -333,6 +373,7 @@ impl<'a> Checker<'a> {
         let mut tests = Vec::new();
         for (module, name, span, body) in std::mem::take(&mut self.test_blocks) {
             let first_var = self.unifier.var_count();
+            let first_closure = self.closures.len();
             let mut cx = FnCtx::new(module, None, Type::Nothing, false);
             let block = self.check_block(&mut cx, body);
             self.solve_deferred(true);
@@ -346,8 +387,12 @@ impl<'a> Checker<'a> {
                 locals: cx.locals,
                 body: block,
                 is_entry: false,
+                closure: false,
+                captures: Vec::new(),
+                numeric_generics: Vec::new(),
             };
             self.finalize_function(&mut function);
+            self.finish_closures(first_closure);
             let id = FuncId(self.functions.len() as u32);
             self.functions.push(FunctionEntry {
                 ast: None,
@@ -389,12 +434,24 @@ impl<'a> Checker<'a> {
     }
 }
 
+fn numeric_generics(signature: &Signature) -> Vec<bool> {
+    signature
+        .bounds
+        .iter()
+        .map(|bounds| bounds.only_numbers())
+        .collect()
+}
+
 fn fill_recursive_type_args(function: &mut hir::Function, id: FuncId, identity: &[Type]) {
     let mut fill = |expr: &mut hir::Expr| {
         if let hir::ExprKind::Call {
             function: callee,
             type_args,
             ..
+        }
+        | hir::ExprKind::FunctionRef {
+            function: callee,
+            type_args,
         } = &mut expr.kind
             && *callee == id
             && type_args.is_empty()

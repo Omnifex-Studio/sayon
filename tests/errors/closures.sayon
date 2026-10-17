@@ -1,0 +1,22 @@
+limit = 5
+print(limit(1))
+
+identity = function(x) return x
+print(identity(1, 2))
+print(identity<integer>(3))
+
+function run(f: function(integer) -> integer)
+    return f(1)
+
+print(run(function(a, b) return a + b))
+
+function fill(f: function(update Array<integer>) -> nothing, own items: Array<integer>)
+    f(items)
+    return items
+
+print(fill(function(own items) push(items, 1), []))
+
+with_default = function(x: integer = 1) return x
+generic = function<T>(x: T) return x
+
+same = identity == identity

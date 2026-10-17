@@ -45,6 +45,8 @@ enum Step {
     Payload,
     /// A field of a structure, or of an enum value's variant.
     Field(usize),
+    /// The environment of a function value.
+    Env,
 }
 
 #[derive(Clone, Debug)]
@@ -243,6 +245,24 @@ impl<'m> Machine<'m> {
                     self.push_frame(*callee, values)?;
                 }
                 Terminator::Op {
+                    op: Op::CallValue { callee, args },
+                    dest,
+                    normal,
+                    error,
+                    ..
+                } => {
+                    let mut env = self.resolve(callee);
+                    let code = self.read(&env, |value| match value {
+                        Value::Function(code, _) => *code,
+                        other => panic!("call of {other:?}"),
+                    });
+                    env.path.push(Step::Env);
+                    let mut values = vec![SlotValue::Ref(env)];
+                    values.extend(args.iter().map(|arg| self.pass(arg)));
+                    self.top().waiting = Some((dest.clone(), *normal, *error));
+                    self.push_frame(code, values)?;
+                }
+                Terminator::Op {
                     op,
                     dest,
                     normal,
@@ -333,6 +353,7 @@ impl<'m> Machine<'m> {
                 (Step::Field(i), Value::Record(_, fields) | Value::Variant(_, _, fields)) => {
                     &fields[*i]
                 }
+                (Step::Env, Value::Function(_, env)) => env,
                 (step, value) => panic!("invalid path step {step:?} into {value:?}"),
             };
         }
@@ -356,6 +377,7 @@ impl<'m> Machine<'m> {
                 (Step::Field(i), Value::Record(_, fields) | Value::Variant(_, _, fields)) => {
                     &mut fields[*i]
                 }
+                (Step::Env, Value::Function(_, env)) => env,
                 (step, value) => panic!("invalid mutable path step {step:?} into {value:?}"),
             };
         }
@@ -687,6 +709,20 @@ impl<'m> Machine<'m> {
                 Value::Int(start as i128 + index * step as i128)
             }
             Rvalue::Increment(value) => Value::Int(self.int(value) + 1),
+            Rvalue::MakeClosure {
+                function,
+                env,
+                captures,
+            } => {
+                let env = match env {
+                    Some(ty) => {
+                        let id = ty.as_named().expect("environment structure").id;
+                        Value::Record(id, captures.iter().map(|value| self.take(value)).collect())
+                    }
+                    None => Value::Nothing,
+                };
+                Value::Function(*function, Box::new(env))
+            }
             Rvalue::Pop {
                 array,
                 element_tag,
@@ -727,7 +763,9 @@ impl<'m> Machine<'m> {
 
     fn operation(&mut self, op: &Op, span: Span) -> Result<Value, ErrorValue> {
         match op {
-            Op::Call { .. } => unreachable!("calls are handled by the frame loop"),
+            Op::Call { .. } | Op::CallValue { .. } => {
+                unreachable!("calls are handled by the frame loop")
+            }
             Op::IntArith { op, ty, lhs, rhs } => {
                 let (a, b) = (self.int(lhs), self.int(rhs));
                 let symbol = match op {

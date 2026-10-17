@@ -240,8 +240,50 @@ fn errors_and_try() {
 
 #[test]
 fn unavailable_features_name_their_milestone() {
-    fails("f = function(x)\n    return x\n", "E_UNAVAILABLE");
+    fails("async function work()\n    return 1\n", "E_UNAVAILABLE");
     fails("unsafe\n    x = 1\n", "E_UNAVAILABLE");
+}
+
+// ----- function values and closures -------------------------------------------
+
+#[test]
+fn functions_are_values() {
+    ok("function add(a, b)\n    return a + b\n\nf = add\nprint(f(1, 2))\n");
+    ok("function apply(f, x)\n    return f(x)\n\nprint(apply(function(x) return x + 1, 2))\n");
+    ok("limit = 3\nkeep = function(x: integer) return x < limit\nprint(keep(2), limit)\n");
+    fails("n = 5\nprint(n(1))\n", "E_NOT_CALLABLE");
+    fails(
+        "f = function(x) return x\nprint(f(1, 2))\n",
+        "E_ARGUMENT_COUNT",
+    );
+    fails(
+        "function grow(items)\n    push(items, 1)\n\ng = grow\n",
+        "E_PARAMETER_MODE",
+    );
+}
+
+#[test]
+fn closures_own_what_they_capture() {
+    ok(
+        "function counter()\n    count = 0\n    return function()\n        count += 1\n        return count\n\nc = counter()\nprint(c(), c())\n",
+    );
+    fails(
+        "names = [\"a\"]\nf = function() return length(names)\nprint(names)\n",
+        "E_MOVED_VALUE",
+    );
+    fails(
+        "total = 0\nadd = function(x: integer)\n    total += x\nadd(1)\nprint(total)\n",
+        "E_MOVED_VALUE",
+    );
+    fails(
+        "label = \"a\"\nf = function() return label\n",
+        "E_MOVE_CAPTURED",
+    );
+    fails(
+        "function counter()\n    count = 0\n    return function()\n        count += 1\n        return count\n\nconstant c = counter()\nprint(c())\n",
+        "E_MUTATE_CONSTANT",
+    );
+    ok("constant square = function(x: integer) return x * x\nprint(square(3))\n");
 }
 
 // ----- structures and enums ---------------------------------------------------

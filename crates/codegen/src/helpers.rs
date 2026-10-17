@@ -4,6 +4,8 @@
 //! - `clone(ptr src, ptr dst)` initializes `dst` with an independent copy.
 //! - `eq(ptr, ptr) -> i1` compares contents.
 //! - `display(ptr builder, ptr value, i1 nested)` appends the `tostring` text.
+//! - `envdrop(ptr block)` destroys a closure environment and frees its block.
+//! - `envclone(ptr block) -> ptr` returns a new block with a deep copy.
 
 use crate::emit::{Body, Codegen, Helper, MEMCPY};
 use crate::layout::{int_code, int_llvm, needs_drop};
@@ -18,12 +20,16 @@ impl<'m> Codegen<'m> {
             Helper::Clone => ("void", "ptr %src, ptr %dst"),
             Helper::Eq => ("zeroext i1", "ptr %a, ptr %b"),
             Helper::Display => ("void", "ptr %builder, ptr %value, i1 zeroext %nested"),
+            Helper::EnvDrop => ("void", "ptr %p"),
+            Helper::EnvClone => ("ptr", "ptr %p"),
         };
         match kind {
             Helper::Drop => self.drop_body(&mut body, ty),
             Helper::Clone => self.clone_body(&mut body, ty),
             Helper::Eq => self.eq_body(&mut body, ty),
             Helper::Display => self.display_body(&mut body, ty),
+            Helper::EnvDrop => self.env_drop_body(&mut body, ty),
+            Helper::EnvClone => self.env_clone_body(&mut body, ty),
         }
         let _ = write!(
             self.helper_code,
@@ -169,8 +175,51 @@ impl<'m> Codegen<'m> {
             .collect()
     }
 
+    fn env_drop_body(&mut self, body: &mut Body, env: &Type) {
+        if needs_drop(env) {
+            let drop = self.helper(Helper::Drop, env);
+            let record = offset_pointer(body, "%p", 16);
+            body.line(format!("call void {drop}(ptr {record})"));
+        }
+        let size = 16 + self.layouts.size_of(env);
+        body.line(format!("call void @sayon_free(ptr %p, i64 {size})"));
+        body.line("ret void");
+    }
+
+    fn env_clone_body(&mut self, body: &mut Body, env: &Type) {
+        let size = 16 + self.layouts.size_of(env);
+        let block = body.tmp();
+        body.line(format!("{block} = call ptr @sayon_alloc(i64 {size})"));
+        self.intrinsic(MEMCPY.to_string());
+        body.memcpy(&block, "%p", &size.to_string());
+        if needs_drop(env) {
+            let clone = self.helper(Helper::Clone, env);
+            let from = offset_pointer(body, "%p", 16);
+            let to = offset_pointer(body, &block, 16);
+            body.line(format!("call void {clone}(ptr {from}, ptr {to})"));
+        }
+        body.line(format!("ret ptr {block}"));
+    }
+
     fn drop_body(&mut self, body: &mut Body, ty: &Type) {
         match ty {
+            Type::Function(_) => {
+                let field = offset_pointer(body, "%p", 8);
+                let block = body.tmp();
+                body.line(format!("{block} = load ptr, ptr {field}"));
+                let none = body.tmp();
+                body.line(format!("{none} = icmp eq ptr {block}, null"));
+                let release = body.label("release");
+                let done = body.label("done");
+                body.line(format!("br i1 {none}, label %{done}, label %{release}"));
+                body.start(&release);
+                let drop = body.tmp();
+                body.line(format!("{drop} = load ptr, ptr {block}"));
+                body.line(format!("call void {drop}(ptr {block})"));
+                body.line(format!("br label %{done}"));
+                body.start(&done);
+                body.line("store %sayon.func zeroinitializer, ptr %p");
+            }
             Type::String => body.line("call void @sayon_str_drop(ptr %p)"),
             Type::Error => body.line("call void @sayon_error_drop(ptr %p)"),
             Type::Dict(_, value) => {
@@ -244,6 +293,28 @@ impl<'m> Codegen<'m> {
 
     fn clone_body(&mut self, body: &mut Body, ty: &Type) {
         match ty {
+            Type::Function(_) => {
+                self.intrinsic(MEMCPY.to_string());
+                body.memcpy("%dst", "%src", "16");
+                let field = offset_pointer(body, "%src", 8);
+                let block = body.tmp();
+                body.line(format!("{block} = load ptr, ptr {field}"));
+                let none = body.tmp();
+                body.line(format!("{none} = icmp eq ptr {block}, null"));
+                let copy = body.label("copy");
+                let done = body.label("done");
+                body.line(format!("br i1 {none}, label %{done}, label %{copy}"));
+                body.start(&copy);
+                let clone_field = offset_pointer(body, &block, 8);
+                let clone = body.tmp();
+                body.line(format!("{clone} = load ptr, ptr {clone_field}"));
+                let copied = body.tmp();
+                body.line(format!("{copied} = call ptr {clone}(ptr {block})"));
+                let target = offset_pointer(body, "%dst", 8);
+                body.line(format!("store ptr {copied}, ptr {target}"));
+                body.line(format!("br label %{done}"));
+                body.start(&done);
+            }
             Type::String => body.line("call void @sayon_str_clone(ptr %src, ptr %dst)"),
             Type::Error => body.line("call void @sayon_error_clone(ptr %src, ptr %dst)"),
             Type::Dict(_, value) => {
@@ -358,6 +429,8 @@ impl<'m> Codegen<'m> {
             Type::Float(FloatType::F32) => scalar(body, "float", "fcmp oeq"),
             Type::Boolean => scalar(body, "i1", "icmp eq"),
             Type::Nothing | Type::Unknown => body.line("ret i1 true"),
+            // Function values are never compared.
+            Type::Function(_) => body.line("ret i1 false"),
             Type::String => {
                 let result = body.tmp();
                 body.line(format!(
@@ -557,6 +630,7 @@ impl<'m> Codegen<'m> {
                 ));
             }
             Type::Nothing | Type::Unknown => self.text(body, "nothing"),
+            Type::Function(_) => self.text(body, "function"),
             Type::String => {
                 body.line("call void @sayon_builder_str(ptr %builder, ptr %value, i1 %nested)")
             }

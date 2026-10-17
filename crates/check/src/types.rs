@@ -1,5 +1,6 @@
 //! Semantic types.
 
+use sayon_syntax::ast::ParamMode;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -96,6 +97,14 @@ pub struct TyVar(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TypeId(pub u32);
 
+/// The type of a function value: how it takes each argument, and what it
+/// returns.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct FunctionType {
+    pub params: Vec<(ParamMode, Type)>,
+    pub ret: Type,
+}
+
 /// A use of a declared structure or enum with its type arguments.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NamedType {
@@ -121,6 +130,8 @@ pub enum Type {
     Union(Vec<Type>),
     /// A declared structure or enum.
     Named(Box<NamedType>),
+    /// A function value: a named function or a closure with its captures.
+    Function(Box<FunctionType>),
     /// A type parameter of a generic function.
     Param(u32),
     Var(TyVar),
@@ -175,6 +186,7 @@ impl Type {
             Type::Dict(key, value) => key.has_vars() || value.has_vars(),
             Type::Union(members) => members.iter().any(Type::has_vars),
             Type::Named(named) => named.args.iter().any(Type::has_vars),
+            Type::Function(function) => function.types().any(Type::has_vars),
             _ => false,
         }
     }
@@ -186,6 +198,7 @@ impl Type {
             Type::Dict(key, value) => key.has_params() || value.has_params(),
             Type::Union(members) => members.iter().any(Type::has_params),
             Type::Named(named) => named.args.iter().any(Type::has_params),
+            Type::Function(function) => function.types().any(Type::has_params),
             _ => false,
         }
     }
@@ -214,8 +227,13 @@ impl Type {
                 args: named.args.iter().map(|a| a.substitute(args)).collect(),
                 ..(**named).clone()
             }),
+            Type::Function(function) => Type::function(function.map(|t| t.substitute(args))),
             other => other.clone(),
         }
+    }
+
+    pub fn function(function: FunctionType) -> Type {
+        Type::Function(Box::new(function))
     }
 
     /// The structure or enum this type names, if any.
@@ -274,6 +292,25 @@ impl fmt::Display for Type {
                 }
                 Ok(())
             }
+            Type::Function(function) => {
+                f.write_str("function(")?;
+                for (index, (mode, param)) in function.params.iter().enumerate() {
+                    if index > 0 {
+                        f.write_str(", ")?;
+                    }
+                    match mode {
+                        ParamMode::Own => f.write_str("own ")?,
+                        ParamMode::Update => f.write_str("update ")?,
+                        ParamMode::Read => {}
+                    }
+                    write!(f, "{param}")?;
+                }
+                f.write_str(")")?;
+                if function.ret != Type::Nothing {
+                    write!(f, " -> {}", function.ret)?;
+                }
+                Ok(())
+            }
             Type::Param(index) => {
                 let letters = ["T", "U", "V", "W"];
                 match letters.get(*index as usize) {
@@ -283,6 +320,28 @@ impl fmt::Display for Type {
             }
             Type::Var(_) => f.write_str("_"),
             Type::Unknown => f.write_str("?"),
+        }
+    }
+}
+
+impl FunctionType {
+    /// The parameter types and the result type.
+    pub fn types(&self) -> impl Iterator<Item = &Type> {
+        self.params
+            .iter()
+            .map(|(_, ty)| ty)
+            .chain(std::iter::once(&self.ret))
+    }
+
+    /// The same function type with `f` applied to every type in it.
+    pub fn map(&self, mut f: impl FnMut(&Type) -> Type) -> FunctionType {
+        FunctionType {
+            params: self
+                .params
+                .iter()
+                .map(|(mode, ty)| (*mode, f(ty)))
+                .collect(),
+            ret: f(&self.ret),
         }
     }
 }
@@ -353,6 +412,32 @@ pub fn structure_fields(types: &[TypeDef], named: &NamedType) -> Vec<Type> {
         .iter()
         .map(|field| field.ty.substitute(&named.args))
         .collect()
+}
+
+/// Whether a value of the type can contain a function value.
+pub fn holds_function(types: &[TypeDef], ty: &Type) -> bool {
+    fn search(types: &[TypeDef], ty: &Type, seen: &mut Vec<TypeId>) -> bool {
+        match ty {
+            Type::Function(_) => true,
+            Type::Union(members) => members.iter().any(|m| search(types, m, seen)),
+            Type::Array(element) | Type::Dict(_, element) => search(types, element, seen),
+            Type::Named(named) => {
+                if seen.contains(&named.id) {
+                    return false;
+                }
+                seen.push(named.id);
+                let def = &types[named.id.0 as usize];
+                let variant_fields = def.variants().iter().flat_map(|v| &v.fields);
+                def.fields()
+                    .iter()
+                    .chain(variant_fields)
+                    .any(|field| search(types, &field.ty, seen))
+                    || named.args.iter().any(|a| search(types, a, seen))
+            }
+            _ => false,
+        }
+    }
+    search(types, ty, &mut Vec::new())
 }
 
 /// The field types of one variant of an enum value, with its type arguments

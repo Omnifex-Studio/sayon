@@ -750,7 +750,12 @@ impl<'t> Parser<'t> {
             None
         };
         let header_span = start.to(self.previous_span());
-        let body = self.parse_block("the function header");
+        let next = self.peek();
+        let body = if !named && !next.line_start && next.kind != TokenKind::EndOfFile {
+            self.parse_inline_body()?
+        } else {
+            self.parse_block("the function header")
+        };
         Ok(Function {
             visibility,
             name,
@@ -759,6 +764,55 @@ impl<'t> Parser<'t> {
             ret,
             body,
             header_span,
+        })
+    }
+
+    /// The body of a function literal written on its header's line, such as
+    /// `function(x) return x * 2`: one `return` or expression statement.
+    fn parse_inline_body(&mut self) -> Result<Block> {
+        let token = self.peek();
+        let start = token.span;
+        let kind = match &token.kind {
+            TokenKind::Keyword(Keyword::Return) => {
+                self.advance();
+                let next = self.peek();
+                let ends = self.at_line_break()
+                    || matches!(
+                        next.kind,
+                        TokenKind::RightParen | TokenKind::RightBracket | TokenKind::Comma
+                    );
+                if ends {
+                    StmtKind::Return(None)
+                } else {
+                    StmtKind::Return(Some(self.parse_expr()?))
+                }
+            }
+            TokenKind::Keyword(
+                Keyword::If
+                | Keyword::While
+                | Keyword::For
+                | Keyword::Match
+                | Keyword::Try
+                | Keyword::Function
+                | Keyword::Variable
+                | Keyword::Constant,
+            ) => {
+                self.report(
+                    Diagnostic::error(
+                        "E_SYNTAX",
+                        "a function body on the header's line holds one `return` or expression",
+                    )
+                    .primary(start, "")
+                    .help("start the body on the next line, indented by four spaces"),
+                );
+                return Err(());
+            }
+            _ => self.parse_expression_statement()?,
+        };
+        let span = start.to(self.previous_span());
+        Ok(Block {
+            stmts: vec![Stmt { kind, span }],
+            span,
         })
     }
 
@@ -1007,6 +1061,9 @@ impl<'t> Parser<'t> {
             self.nesting -= 1;
             return Ok(inner);
         }
+        if self.check_keyword(Keyword::Function) {
+            return self.parse_function_type();
+        }
         let first = self.expect_ident("a type")?;
         let (module, name) = if self.eat(&TokenKind::Dot) {
             (Some(first), self.expect_ident("a type name")?)
@@ -1028,6 +1085,40 @@ impl<'t> Parser<'t> {
         Ok(TypeExpr {
             kind: TypeExprKind::Named { module, name, args },
             span,
+        })
+    }
+
+    /// `function(integer, own string) -> boolean`, the type of a function value.
+    fn parse_function_type(&mut self) -> Result<TypeExpr> {
+        let start = self.expect_keyword(Keyword::Function)?;
+        self.expect(&TokenKind::LeftParen, "`(`")?;
+        self.nesting += 1;
+        let mut params = Vec::new();
+        while !self.check(&TokenKind::RightParen) {
+            let mode = if self.eat_keyword(Keyword::Own) {
+                Some(ParamMode::Own)
+            } else if self.eat_keyword(Keyword::Update) {
+                Some(ParamMode::Update)
+            } else {
+                None
+            };
+            params.push((mode, self.parse_type()?));
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RightParen, "`)`")?;
+        self.nesting -= 1;
+        // `-> integer or nothing` is the result type; a function type that
+        // is itself a member of a union is written in parentheses.
+        let ret = if self.eat(&TokenKind::Arrow) {
+            Some(Box::new(self.parse_type()?))
+        } else {
+            None
+        };
+        Ok(TypeExpr {
+            kind: TypeExprKind::Function { params, ret },
+            span: start.to(self.previous_span()),
         })
     }
 
@@ -1721,6 +1812,29 @@ mod tests {
         );
         assert_eq!(expr_of("p = Point()"), "Point()");
         assert_eq!(error_codes("p = Point(x = 1, 2)"), vec!["E_SYNTAX"]);
+    }
+
+    #[test]
+    fn function_types() {
+        let module = parse_ok(
+            "function apply(f: function(integer, own string) -> integer or nothing)\n    f(1, \"a\")\n",
+        );
+        let StmtKind::Function(function) = &module.stmts[0].kind else {
+            panic!()
+        };
+        let ty = function.params[0].ty.as_ref().unwrap();
+        assert_eq!(
+            crate::format::type_text(ty),
+            "function(integer, own string) -> integer or nothing"
+        );
+        let module = parse_ok("x: (function()) or nothing = nothing\n");
+        let StmtKind::Declare(decl) = &module.stmts[0].kind else {
+            panic!()
+        };
+        assert_eq!(
+            crate::format::type_text(decl.ty.as_ref().unwrap()),
+            "(function()) or nothing"
+        );
     }
 
     #[test]

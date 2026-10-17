@@ -1,0 +1,136 @@
+# Named functions as values.
+function add(x, y)
+    return x + y
+
+function apply(func, x, y)
+    return func(x, y)
+
+add_func = add
+print(apply(add_func, 10, 20))
+print(apply(add, 1, 2))
+
+# A closure that changes what it captured keeps it between calls.
+function make_counter()
+    count = 0
+    return function()
+        count = count + 1
+        return count
+
+counter = make_counter()
+print(counter())
+print(counter())
+other = make_counter()
+print(other(), counter())
+
+# One-line bodies.
+greeting = "Hello"
+greet = function(name) return "{greeting}, {name}!"
+print(greet("Ada"))
+double = function(x: integer) return x * 2
+print(apply(function(a, b) return a * b, 6, 7))
+
+function twice(update f, x)
+    return f(f(x))
+
+print(twice(double, 5))
+
+# Generic higher-order functions.
+function map(items, update f)
+    result = []
+    for item in items
+        push(result, f(item))
+    return result
+
+print(map([1, 2, 3], function(x) return x * 10))
+print(map(["a", "b"], function(s: string) return s + "!"))
+
+# Closures that make closures.
+function make_adder(n)
+    return function(x) return x + n
+
+add5 = make_adder(5)
+print(add5(1), add5(10))
+
+function make_scaler_factory(base)
+    return function(factor)
+        scale = base * factor
+        return function(x) return x * scale
+
+factory = make_scaler_factory(2)
+times_six = factory(3)
+print(times_six(7))
+
+# Function values in collections and structures.
+operations = [function(a, b) return a + b, function(a, b) return a - b]
+for index in range(length(operations))
+    print(operations[index](10, 4))
+
+type Button = [
+    label: string,
+    on_click: function(integer) -> string
+]
+
+prefix = "clicked"
+button = Button(label = "OK", on_click = function(times) return "{prefix} {times}")
+print(button.label, button.on_click(2))
+
+handlers: Dict<string, function(integer) -> integer> = ["double" = function(x) return x * 2]
+handlers["square"] = function(x) return x * x
+print(handlers["double"](6), handlers["square"](6))
+
+# An optional callback.
+function notify(callback: (function(string) -> nothing) or nothing, message)
+    if callback != nothing
+        callback(message)
+
+notify(function(text) print("got {text}"), "ping")
+notify(nothing, "silent")
+
+# Errors pass through function values.
+function check_positive(x: integer) -> integer
+    if x < 0
+        error("negative: {x}")
+    return x
+
+checker = check_positive
+outcome = try checker(-3)
+if outcome is error
+    print("caught", outcome.message)
+print(checker(4))
+
+# Each loop iteration's closure captures that iteration's value.
+makers = []
+for i in range(3)
+    push(makers, function() return i * 100)
+for index in range(3)
+    print(makers[index]())
+
+# A closure owns the collection it captured.
+function make_stack()
+    items: Array<string> = []
+    return function(own item: string)
+        push(items, item)
+        return length(items)
+
+stack = make_stack()
+stack("a")
+print(stack("b"))
+
+names = ["a", "b"]
+collect = function(own extra: string)
+    push(names, extra)
+    return length(names)
+print(collect("c"))
+copy = clone(collect)
+print(copy("d"), collect("e"), collect("f"))
+
+# Assignment moves a closure.
+first = make_adder(1)
+second = first
+print(second(1))
+print(second)
+
+# Constants can hold function values that only read what they capture.
+constant square = function(x: integer) return x * x
+constant TOOLS = [add, function(a: integer, b: integer) return a * b]
+print(square(4), TOOLS[0](2, 3), TOOLS[1](2, 3))

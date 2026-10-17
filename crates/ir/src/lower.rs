@@ -8,7 +8,7 @@
 
 use crate::ir::*;
 use sayon_check::hir::{self, Builtin, ErrorField, LocalId, Usage};
-use sayon_check::types::{IntType, Type};
+use sayon_check::types::{FieldDef, IntType, NamedType, Type, TypeDef, TypeDefKind, TypeId};
 use sayon_syntax::ast::{BinaryOp, ParamMode, UnaryOp};
 use sayon_syntax::{Diagnostic, Span};
 use std::collections::HashMap;
@@ -36,6 +36,9 @@ fn lower_program(program: &hir::Program, include_tests: bool) -> LowerOutput {
         diagnostics: Vec::new(),
         union_members: Vec::new(),
         union_tags: HashMap::new(),
+        types: program.types.clone(),
+        envs: HashMap::new(),
+        thunks: HashMap::new(),
     };
     let globals = program
         .constants
@@ -75,8 +78,13 @@ fn lower_program(program: &hir::Program, include_tests: bool) -> LowerOutput {
     while let Some((func, args, id)) = lowerer.queue.pop() {
         let source = program.function(func);
         let name = instance_name(&source.name, &args);
+        let env = if source.closure {
+            lowerer.env_type(func, &args)
+        } else {
+            None
+        };
         let function = FnLower::new(&mut lowerer, &source.locals, args, name, source.span)
-            .lower_function(source);
+            .lower_function(source, env);
         lowerer.functions[id.0 as usize] = Some(function);
     }
     let functions = lowerer
@@ -91,22 +99,11 @@ fn lower_program(program: &hir::Program, include_tests: bool) -> LowerOutput {
         entry,
         union_members: lowerer.union_members,
         tests,
-        types: program.types.clone(),
+        types: lowerer.types,
     };
     LowerOutput {
         module,
         diagnostics: lowerer.diagnostics,
-    }
-}
-
-/// Whether a parameter receives a reference to the caller's value: update
-/// parameters always do, so changes reach the caller; read parameters do
-/// for values that are not Copy.
-fn by_reference(mode: ParamMode, ty: &Type) -> bool {
-    match mode {
-        ParamMode::Own => false,
-        ParamMode::Update => true,
-        ParamMode::Read => !ty.is_copy(),
     }
 }
 
@@ -127,6 +124,11 @@ struct Lowerer<'p> {
     diagnostics: Vec<Diagnostic>,
     union_members: Vec<Type>,
     union_tags: HashMap<Type, u32>,
+    /// The program's structures and enums, then closure environments.
+    types: Vec<TypeDef>,
+    envs: HashMap<(hir::FuncId, Vec<Type>), Option<Type>>,
+    /// The code behind each named function used as a value.
+    thunks: HashMap<(hir::FuncId, Vec<Type>), FunctionId>,
 }
 
 impl<'p> Lowerer<'p> {
@@ -149,6 +151,68 @@ impl<'p> Lowerer<'p> {
         self.functions.push(None);
         self.instances.insert((func, args.clone()), id);
         self.queue.push((func, args, id));
+        id
+    }
+
+    /// The environment structure of a closure instance: one field per
+    /// captured variable. A closure that captures nothing has none.
+    fn env_type(&mut self, func: hir::FuncId, args: &[Type]) -> Option<Type> {
+        let key = (func, args.to_vec());
+        if let Some(env) = self.envs.get(&key) {
+            return env.clone();
+        }
+        let source = self.program.function(func);
+        let env = (!source.captures.is_empty()).then(|| {
+            let fields = source
+                .captures
+                .iter()
+                .map(|local| {
+                    let info = &source.locals[local.0 as usize];
+                    FieldDef {
+                        name: info.name.clone(),
+                        ty: if args.is_empty() {
+                            info.ty.clone()
+                        } else {
+                            info.ty.substitute(args)
+                        },
+                    }
+                })
+                .collect();
+            let id = TypeId(self.types.len() as u32);
+            let name = format!("<environment of {}>", instance_name(&source.name, args));
+            self.types.push(TypeDef {
+                name: name.clone(),
+                generics: 0,
+                kind: TypeDefKind::Structure(fields),
+                copy: false,
+            });
+            Type::named(NamedType {
+                id,
+                name,
+                args: Vec::new(),
+                copy: false,
+            })
+        });
+        self.envs.insert(key, env.clone());
+        env
+    }
+
+    /// The code a named function's value calls.
+    fn thunk(&mut self, func: hir::FuncId, args: Vec<Type>) -> FunctionId {
+        let key = (func, args.clone());
+        if let Some(id) = self.thunks.get(&key) {
+            return *id;
+        }
+        let callee = self.instance(func, args.clone());
+        let id = FunctionId(self.functions.len() as u32);
+        self.functions.push(None);
+        self.thunks.insert(key, id);
+        let program = self.program;
+        let source = program.function(func);
+        let name = format!("{} as a value", instance_name(&source.name, &args));
+        let function =
+            FnLower::new(self, &source.locals, args, name, source.span).lower_thunk(callee, source);
+        self.functions[id.0 as usize] = Some(function);
         id
     }
 }
@@ -459,10 +523,75 @@ impl<'l, 'p> FnLower<'l, 'p> {
         self.f
     }
 
-    fn lower_function(mut self, source: &'p hir::Function) -> Function {
+    /// The code behind a named function's value: it takes the (empty)
+    /// environment first and passes its arguments on.
+    fn lower_thunk(mut self, callee: FunctionId, source: &'p hir::Function) -> Function {
+        let env = self.new_slot(
+            Type::Nothing,
+            SlotKind::Ref { mutable: true },
+            Some("<environment>".to_string()),
+        );
+        let mut params = vec![env];
+        let mut args = Vec::new();
+        for param in &source.params {
+            let ty = self.ty(&param.ty);
+            let name = self.locals[param.local.0 as usize].name.clone();
+            let mutable = param.mode == ParamMode::Update;
+            let reference = by_reference(param.mode, &ty);
+            let copy = ty.is_copy();
+            let kind = if reference {
+                SlotKind::Ref { mutable }
+            } else {
+                SlotKind::Value
+            };
+            let slot = self.new_slot(ty, kind, Some(name));
+            params.push(slot);
+            let place = Place::slot(slot);
+            args.push(if reference {
+                Operand::Borrow { place, mutable }
+            } else if copy {
+                Operand::Copy(place)
+            } else {
+                Operand::Move(place)
+            });
+        }
+        self.f.required_params = params.len();
+        self.f.params = params;
+        let ret = self.ty(&source.ret);
+        self.finish_slots(ret);
+        self.push_scope();
+        let entry = self.new_block();
+        self.switch_to(entry);
+        let ret_place = Place::slot(self.f.ret_slot);
+        self.op(
+            Op::Call {
+                function: callee,
+                args,
+            },
+            Some(ret_place),
+            source.span,
+        );
+        self.terminate(Terminator::Return);
+        self.f
+    }
+
+    /// Lowers a function body. A closure takes a reference to its
+    /// environment first, and its captured variables refer into it.
+    fn lower_function(mut self, source: &'p hir::Function, env: Option<Type>) -> Function {
         self.f.is_entry = source.is_entry;
         let mut params = Vec::new();
         let mut owned_params = Vec::new();
+        let env_slot = source.closure.then(|| {
+            let ty = env.unwrap_or(Type::Nothing);
+            let slot = self.new_slot(
+                ty,
+                SlotKind::Ref { mutable: true },
+                Some("<environment>".to_string()),
+            );
+            params.push(slot);
+            slot
+        });
+        let first_param = params.len();
         for param in &source.params {
             let ty = self.ty(&param.ty);
             let reference = by_reference(param.mode, &ty);
@@ -483,11 +612,12 @@ impl<'l, 'p> FnLower<'l, 'p> {
             }
         }
         self.f.params = params.clone();
-        self.f.required_params = source
-            .params
-            .iter()
-            .take_while(|p| p.default.is_none())
-            .count();
+        self.f.required_params = first_param
+            + source
+                .params
+                .iter()
+                .take_while(|p| p.default.is_none())
+                .count();
         let ret = self.ty(&source.ret);
         self.finish_slots(ret.clone());
 
@@ -496,6 +626,20 @@ impl<'l, 'p> FnLower<'l, 'p> {
         self.scopes[0].slots.extend(owned_params);
         let entry = self.new_block();
         self.switch_to(entry);
+        if let Some(env_slot) = env_slot {
+            for (field, local) in source.captures.iter().enumerate() {
+                let info = &self.locals[local.0 as usize];
+                let ty = self.ty(&info.ty);
+                let name = info.name.clone();
+                let slot = self.new_slot(ty, SlotKind::Ref { mutable: true }, Some(name));
+                self.local_slots.insert(*local, slot);
+                self.push(Inst::Bind {
+                    slot,
+                    place: Place::slot(env_slot).project(Projection::Field(field as u32)),
+                    mutable: true,
+                });
+            }
+        }
 
         // Defaults for parameters the caller omitted.
         for (index, param) in source.params.iter().enumerate() {
@@ -521,7 +665,7 @@ impl<'l, 'p> FnLower<'l, 'p> {
             });
             self.switch_to(compute);
             self.push_scope();
-            let slot = params[index];
+            let slot = params[first_param + index];
             match self.f.slots[slot.0 as usize].kind {
                 SlotKind::Value => self.expr_into(default, Place::slot(slot)),
                 SlotKind::Ref { mutable } => {
@@ -1553,6 +1697,64 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 );
             }
             H::Builtin { builtin, args } => self.builtin(*builtin, args, &ty, dest, span),
+            H::FunctionRef {
+                function,
+                type_args,
+            } => {
+                let args = type_args.iter().map(|t| self.ty(t)).collect();
+                let code = self.l.thunk(*function, args);
+                self.assign(
+                    dest,
+                    Rvalue::MakeClosure {
+                        function: code,
+                        env: None,
+                        captures: Vec::new(),
+                    },
+                );
+            }
+            H::Closure { function, captures } => {
+                // A closure shares the type parameters of the function it is in.
+                let args = self.type_args.clone();
+                let code = self.l.instance(*function, args.clone());
+                let env = self.l.env_type(*function, &args);
+                let captures = captures
+                    .iter()
+                    .map(|capture| self.operand(&capture.value, Want::Owned))
+                    .collect();
+                self.assign(
+                    dest,
+                    Rvalue::MakeClosure {
+                        function: code,
+                        env,
+                        captures,
+                    },
+                );
+            }
+            H::CallValue { callee, args } => {
+                let Type::Function(signature) = self.ty(&callee.ty) else {
+                    panic!("call of a {} value", callee.ty)
+                };
+                let callee = self.place_of(callee, Want::Mut);
+                let mut operands = Vec::new();
+                for (arg, (mode, param_ty)) in args.iter().zip(&signature.params) {
+                    let want = if !by_reference(*mode, param_ty) {
+                        Want::Owned
+                    } else if *mode == ParamMode::Update {
+                        Want::Mut
+                    } else {
+                        Want::Read
+                    };
+                    operands.push(self.operand(&arg.expr, want));
+                }
+                self.op(
+                    Op::CallValue {
+                        callee,
+                        args: operands,
+                    },
+                    Some(dest),
+                    span,
+                );
+            }
             H::Binary {
                 op: op @ (BinaryOp::And | BinaryOp::Or),
                 lhs,

@@ -61,7 +61,7 @@ pub struct Declaration {
     pub value: Expr,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ParamMode {
     Read,
     Update,
@@ -347,5 +347,10 @@ pub enum TypeExprKind {
         args: Vec<TypeExpr>,
     },
     Union(Vec<TypeExpr>),
+    /// `function(integer, own string) -> boolean`
+    Function {
+        params: Vec<(Option<ParamMode>, TypeExpr)>,
+        ret: Option<Box<TypeExpr>>,
+    },
     Error,
 }

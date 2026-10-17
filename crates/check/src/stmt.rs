@@ -389,7 +389,7 @@ impl<'a> Checker<'a> {
             self.unavailable(value.span, "module imports", "M1 (next step)");
             return None;
         }
-        if let Some(local) = cx.lookup(&name.name) {
+        if let Some(local) = self.find_local(cx, &name.name, name.span) {
             if !self.assignable(cx, local, name.span) {
                 return None;
             }
@@ -523,7 +523,7 @@ impl<'a> Checker<'a> {
     ) -> Option<(Place, Type)> {
         match &target.kind {
             ast::ExprKind::Name(name) => {
-                let Some(local) = cx.lookup(&name.name) else {
+                let Some(local) = self.find_local(cx, &name.name, name.span) else {
                     if self.item(cx.module, &name.name).is_some() {
                         self.error(
                             Diagnostic::error(
@@ -558,7 +558,7 @@ impl<'a> Checker<'a> {
             }
             ast::ExprKind::Member { target: base, name } => {
                 if let ast::ExprKind::Name(alias) = &base.kind
-                    && cx.lookup(&alias.name).is_none()
+                    && !self.is_local_name(cx, &alias.name)
                     && self.import(cx.module, &alias.name).is_some()
                 {
                     self.error(

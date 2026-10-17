@@ -21,7 +21,7 @@ impl<'a> Checker<'a> {
     /// `geometry.Point`, unless a local variable hides it.
     pub(crate) fn type_reference(&mut self, cx: &FnCtx, target: &ast::Expr) -> Option<TypeId> {
         match &target.kind {
-            ast::ExprKind::Name(name) if cx.lookup(&name.name).is_none() => {
+            ast::ExprKind::Name(name) if !self.is_local_name(cx, &name.name) => {
                 match self.item(cx.module, &name.name) {
                     Some(Item::Type(id)) => Some(id),
                     Some(_) => None,
@@ -35,7 +35,7 @@ impl<'a> Checker<'a> {
                 let ast::ExprKind::Name(alias) = &alias.kind else {
                     return None;
                 };
-                if cx.lookup(&alias.name).is_some() {
+                if self.is_local_name(cx, &alias.name) {
                     return None;
                 }
                 let module = self.import(cx.module, &alias.name)?;
@@ -97,7 +97,7 @@ impl<'a> Checker<'a> {
     ) -> hir::Expr {
         let Some(id) = self.type_reference(cx, callee) else {
             if let ast::ExprKind::Name(name) = &callee.kind
-                && cx.lookup(&name.name).is_none()
+                && !self.is_local_name(cx, &name.name)
                 && self.item(cx.module, &name.name).is_none()
                 && self.variant_for_name(cx, &name.name, expected).is_none()
             {

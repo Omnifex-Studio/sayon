@@ -772,8 +772,31 @@ pub fn type_text(ty: &TypeExpr) -> String {
             }
         }
         TypeExprKind::Union(members) => {
-            let members: Vec<String> = members.iter().map(type_text).collect();
+            let members: Vec<String> = members
+                .iter()
+                .map(|member| match member.kind {
+                    TypeExprKind::Function { .. } => format!("({})", type_text(member)),
+                    _ => type_text(member),
+                })
+                .collect();
             members.join(" or ")
+        }
+        TypeExprKind::Function { params, ret } => {
+            let params: Vec<String> = params
+                .iter()
+                .map(|(mode, ty)| {
+                    let mode = match mode {
+                        Some(ParamMode::Own) => "own ",
+                        Some(ParamMode::Update) => "update ",
+                        _ => "",
+                    };
+                    format!("{mode}{}", type_text(ty))
+                })
+                .collect();
+            match ret {
+                Some(ret) => format!("function({}) -> {}", params.join(", "), type_text(ret)),
+                None => format!("function({})", params.join(", ")),
+            }
         }
         TypeExprKind::Error => "?".to_string(),
     }

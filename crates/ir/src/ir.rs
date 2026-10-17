@@ -9,6 +9,18 @@
 
 use sayon_check::types::{FloatType, IntType, Type, TypeDef};
 use sayon_syntax::Span;
+use sayon_syntax::ast::ParamMode;
+
+/// Whether a parameter receives a reference to the caller's value: update
+/// parameters always do, so changes reach the caller; read parameters do
+/// for values that are not Copy.
+pub fn by_reference(mode: ParamMode, ty: &Type) -> bool {
+    match mode {
+        ParamMode::Own => false,
+        ParamMode::Update => true,
+        ParamMode::Read => !ty.is_copy(),
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct FunctionId(pub u32);
@@ -36,7 +48,8 @@ pub struct Module {
     pub union_members: Vec<Type>,
     /// Test functions, when the program was lowered for testing.
     pub tests: Vec<(String, FunctionId)>,
-    /// Declared structures and enums, indexed by `TypeId`.
+    /// Declared structures and enums, indexed by `TypeId`, followed by the
+    /// environment structures of closures.
     pub types: Vec<TypeDef>,
 }
 
@@ -95,7 +108,9 @@ pub struct Slot {
 pub struct Function {
     pub name: String,
     pub span: Span,
-    /// The first `params.len()` slots are the parameters, in order.
+    /// The first `params.len()` slots are the parameters, in order. Code
+    /// reached through a function value takes a reference to its
+    /// environment first.
     pub params: Vec<SlotId>,
     /// Parameters a caller must supply; the rest have defaults computed in
     /// the prologue when the caller passes fewer arguments.
@@ -311,6 +326,13 @@ pub enum Rvalue {
     },
     /// Integer addition that cannot overflow (loop counters below a length).
     Increment(Operand),
+    /// A function value calling `function`. A closure also gets a new
+    /// environment: a structure of type `env` holding the captured values.
+    MakeClosure {
+        function: FunctionId,
+        env: Option<Type>,
+        captures: Vec<Operand>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -344,6 +366,12 @@ pub enum Inst {
 pub enum Op {
     Call {
         function: FunctionId,
+        args: Vec<Operand>,
+    },
+    /// Calls the function value at `callee`, passing a reference to its
+    /// environment before the arguments.
+    CallValue {
+        callee: Place,
         args: Vec<Operand>,
     },
     IntArith {

@@ -1,0 +1,57 @@
+error[E_NOT_CALLABLE]: integer is not a function
+  --> closures.sayon:2:7
+   |
+ 2 | print(limit(1))
+   |       ^^^^^ this cannot be called
+
+error[E_ARGUMENT_COUNT]: this function takes 1 argument, but 2 were given
+  --> closures.sayon:5:7
+   |
+ 5 | print(identity(1, 2))
+   |       ^^^^^^^^^^^^^^
+   |
+   = note: a function value takes all its parameters; defaults apply only to direct calls
+
+error[E_TYPE_ARGUMENTS]: `identity` holds a function value, which takes no type arguments
+  --> closures.sayon:6:7
+   |
+ 6 | print(identity<integer>(3))
+   |       ^^^^^^^^
+
+error[E_ARGUMENT_COUNT]: this function takes 2 parameters, but one taking 1 is expected here
+   --> closures.sayon:11:11
+    |
+ 11 | print(run(function(a, b) return a + b))
+    |           ^^^^^^^^^^^^^^
+
+error[E_PARAMETER_MODE]: the parameter `items` must match the function type expected here
+   --> closures.sayon:17:21
+    |
+ 17 | print(fill(function(own items) push(items, 1), []))
+    |                     ^^^^^^^^^
+    |
+    = help: write `update items`
+
+error[E_DEFAULT_ORDER]: a function literal's parameters cannot have defaults
+   --> closures.sayon:19:25
+    |
+ 19 | with_default = function(x: integer = 1) return x
+    |                         ^^^^^^^^^^^^^^
+    |
+    = help: a function value is always called with every argument
+
+error[E_TYPE_ARGUMENTS]: a function literal cannot declare type parameters
+   --> closures.sayon:20:11
+    |
+ 20 | generic = function<T>(x: T) return x
+    |           ^^^^^^^^^^^^^^^^^
+    |
+    = help: its types are inferred where it is used
+
+error[E_UNSUPPORTED_OPERATION]: function(_) -> _ does not support equality comparison
+   --> closures.sayon:22:8
+    |
+ 22 | same = identity == identity
+    |        ^^^^^^^^^^^^^^^^^^^^ these values cannot be compared
+
+8 errors found; nothing was run

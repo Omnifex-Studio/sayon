@@ -174,6 +174,17 @@ pub(crate) struct FnCtx {
     pub finally_loop_depth: Option<u32>,
     pub generics: HashMap<String, u32>,
     pub is_script: bool,
+    /// For the body of a function literal: the variables it has captured
+    /// from the function around it so far.
+    pub captures: Option<Vec<CaptureSlot>>,
+}
+
+/// A variable of an enclosing function that a function literal uses.
+pub(crate) struct CaptureSlot {
+    /// The literal's local that holds the value.
+    pub inner: LocalId,
+    /// How the enclosing function reads the variable.
+    pub value: hir::Expr,
 }
 
 impl FnCtx {
@@ -188,6 +199,7 @@ impl FnCtx {
             finally_loop_depth: None,
             generics: HashMap::new(),
             is_script,
+            captures: None,
         }
     }
 
@@ -215,6 +227,29 @@ impl FnCtx {
             borrowed: false,
         });
         let scope = self.scopes.last_mut().expect("scope");
+        scope.names.insert(name.to_string(), id);
+        scope.declared.push(id);
+        id
+    }
+
+    /// Declares a local in the function's outermost scope, visible for the
+    /// rest of the body.
+    pub fn declare_outermost(
+        &mut self,
+        name: &str,
+        ty: Type,
+        span: Span,
+        kind: LocalKind,
+    ) -> LocalId {
+        let id = LocalId(self.locals.len() as u32);
+        self.locals.push(hir::Local {
+            name: name.to_string(),
+            ty,
+            span,
+            kind,
+            borrowed: false,
+        });
+        let scope = self.scopes.first_mut().expect("scope");
         scope.names.insert(name.to_string(), id);
         scope.declared.push(id);
         id
@@ -248,6 +283,13 @@ pub(crate) struct Checker<'a> {
     pub scc_order: Vec<Vec<FuncId>>,
     /// Test blocks of the entry module: module, description, span, body.
     pub test_blocks: Vec<(ModuleId, String, Span, &'a ast::Block)>,
+    /// The functions around the function literal being checked, innermost
+    /// last; the literal's context is the one passed around as `cx`.
+    pub enclosing: Vec<FnCtx>,
+    /// Function literal bodies checked so far, with the named function they
+    /// appear in (none in a script, a test, or a constant), finalized
+    /// together with it.
+    pub closures: Vec<(FuncId, Option<FuncId>)>,
 }
 
 pub struct CheckOutput {
@@ -280,7 +322,50 @@ impl<'a> Checker<'a> {
             reported_vars: HashSet::new(),
             scc_order: Vec::new(),
             test_blocks: Vec::new(),
+            enclosing: Vec::new(),
+            closures: Vec::new(),
         }
+    }
+
+    /// The local a name refers to. Inside a function literal, a variable of
+    /// an enclosing function is captured: the literal gets its own local
+    /// for it, initialized from the enclosing one when the closure is made.
+    pub fn find_local(&mut self, cx: &mut FnCtx, name: &str, span: Span) -> Option<LocalId> {
+        if let Some(local) = cx.lookup(name) {
+            return Some(local);
+        }
+        cx.captures.as_ref()?;
+        let mut parent = self.enclosing.pop()?;
+        let found = self.find_local(&mut parent, name, span);
+        let inner = found.map(|outer| {
+            let value = self.local_use(&parent, outer, span);
+            let outer_info = &parent.locals[outer.0 as usize];
+            // A captured constant stays constant.
+            let kind = if outer_info.kind == LocalKind::Constant {
+                LocalKind::Constant
+            } else {
+                LocalKind::Captured
+            };
+            let inner = cx.declare_outermost(name, value.ty.clone(), outer_info.span, kind);
+            cx.captures
+                .as_mut()
+                .expect("closure")
+                .push(CaptureSlot { inner, value });
+            inner
+        });
+        self.enclosing.push(parent);
+        inner
+    }
+
+    /// Whether a name is a local here or in an enclosing function, without
+    /// capturing it (for deciding whether it hides a module or type name).
+    pub fn is_local_name(&self, cx: &FnCtx, name: &str) -> bool {
+        cx.lookup(name).is_some()
+            || (cx.captures.is_some()
+                && self
+                    .enclosing
+                    .iter()
+                    .any(|outer| outer.lookup(name).is_some()))
     }
 
     // ----- diagnostics helpers ---------------------------------------------
@@ -675,6 +760,22 @@ impl<'a> Checker<'a> {
     ) -> Type {
         match &ty.kind {
             ast::TypeExprKind::Error => Type::Unknown,
+            ast::TypeExprKind::Function { params, ret } => {
+                let params = params
+                    .iter()
+                    .map(|(mode, param)| {
+                        (
+                            mode.unwrap_or(ParamMode::Read),
+                            self.resolve_type(module, param, generics),
+                        )
+                    })
+                    .collect();
+                let ret = match ret {
+                    Some(ret) => self.resolve_type(module, ret, generics),
+                    None => Type::Nothing,
+                };
+                Type::function(crate::types::FunctionType { params, ret })
+            }
             ast::TypeExprKind::Union(members) => Type::union(
                 members
                     .iter()
@@ -1067,6 +1168,11 @@ impl<'a> Checker<'a> {
             });
         }
         resolved
+    }
+
+    /// Whether a value of the type can contain a function value.
+    pub fn holds_function(&self, ty: &Type) -> bool {
+        crate::types::holds_function(&self.type_defs, ty)
     }
 
     /// Whether a field type is Copy when type parameters are.
@@ -1831,6 +1937,22 @@ impl<'a> Checker<'a> {
                     if let hir::Segment::Value(value) = segment {
                         self.finalize_expr(value);
                     }
+                }
+            }
+            Closure { captures, .. } => {
+                for capture in captures {
+                    self.finalize_expr(&mut capture.value);
+                }
+            }
+            FunctionRef { type_args, .. } => {
+                for ty in type_args.iter_mut() {
+                    *ty = self.finalize_type(ty);
+                }
+            }
+            CallValue { callee, args } => {
+                self.finalize_expr(callee);
+                for arg in args {
+                    self.finalize_expr(&mut arg.expr);
                 }
             }
             Inject(inner)

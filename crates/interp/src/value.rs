@@ -1,6 +1,7 @@
 //! Runtime values and their display, equality, and ordering rules.
 
 use sayon_check::types::{TypeDef, TypeId};
+use sayon_ir::FunctionId;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::rc::Rc;
@@ -30,6 +31,9 @@ pub enum Value {
         end: i64,
         step: i64,
     },
+    /// A function value: the code to call and its environment, a structure
+    /// of captured values (`Nothing` when it captures none).
+    Function(FunctionId, Box<Value>),
 }
 
 impl Value {
@@ -193,6 +197,7 @@ pub fn display(value: &Value, out: &mut String, nested: bool, types: &[TypeDef])
                 let _ = write!(out, "range({start}, {end}, {step})");
             }
         }
+        Value::Function(..) => out.push_str("function"),
     }
 }
 
