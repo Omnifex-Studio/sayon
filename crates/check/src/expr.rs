@@ -1,7 +1,7 @@
 //! Expression checking: name resolution, inference, and HIR construction.
 
 use crate::builtins::{self, PreludeItem};
-use crate::checker::{self, Checker, Deferred, FnCtx, Item};
+use crate::checker::{self, Checker, Deferred, FAILURE, FnCtx, Item, Narrowing, OUTCOME};
 use crate::hir::{self, Arg, Builtin, ErrorField, ExprKind, Segment, Usage};
 use crate::infer::{Bounds, LiteralKind, Traits};
 use crate::types::Type;
@@ -162,14 +162,20 @@ impl<'a> Checker<'a> {
             }
             ast::ExprKind::Unary { op, operand } => self.check_unary(cx, *op, operand, span),
             ast::ExprKind::Binary { op, lhs, rhs } => self.check_binary(cx, *op, lhs, rhs, span),
-            ast::ExprKind::IsError(_) | ast::ExprKind::TryExpr(_) => {
-                self.unavailable(
-                    span,
-                    "expression-level error capture (`try` expressions and `is error`)",
-                    "M2",
-                );
-                expr(ExprKind::Nothing, Type::Unknown, span)
+            ast::ExprKind::TryExpr(inner) => {
+                // `result: Outcome<T> = try ...` gives the value the type T.
+                let inside = expected.and_then(|e| match self.unifier.resolve(e) {
+                    Type::Named(named) if named.id == OUTCOME => named.args.first().cloned(),
+                    _ => None,
+                });
+                let value = match &inside {
+                    Some(ty) => self.check_expr_as(cx, inner, ty, "the value of the `try`"),
+                    None => self.check_expr(cx, inner, None),
+                };
+                let ty = self.named_type(OUTCOME, vec![value.ty.clone()]);
+                expr(ExprKind::TryExpr(Box::new(value)), ty, span)
             }
+            ast::ExprKind::IsError(inner) => self.check_is_error(cx, inner, span),
             ast::ExprKind::Function(_) => {
                 self.unavailable(span, "function literals and closures", "M2");
                 expr(ExprKind::Nothing, Type::Unknown, span)
@@ -186,6 +192,52 @@ impl<'a> Checker<'a> {
                 expr(ExprKind::Nothing, Type::Unknown, span)
             }
             ast::ExprKind::Error => expr(ExprKind::Nothing, Type::Unknown, span),
+        }
+    }
+
+    /// `value is error`, on an `Outcome` or a union that can hold an `Error`.
+    fn check_is_error(&mut self, cx: &mut FnCtx, inner: &ast::Expr, span: Span) -> hir::Expr {
+        let value = self.check_expr(cx, inner, None);
+        let test = |kind| expr(kind, Type::Boolean, span);
+        match self.unifier.resolve(&value.ty) {
+            Type::Named(named) if named.id == OUTCOME => test(ExprKind::IsVariant {
+                value: Box::new(value),
+                variant: FAILURE,
+            }),
+            Type::Union(members) if members.contains(&Type::Error) => test(ExprKind::IsMember {
+                value: Box::new(value),
+                member: Type::Error,
+            }),
+            Type::Error => test(ExprKind::IsMember {
+                value: Box::new(value),
+                member: Type::Error,
+            }),
+            Type::Var(var) if self.unifier.bounds(var).literal.is_none() => {
+                let outcome = self.instantiate_named(OUTCOME, span);
+                self.unify_at(
+                    &outcome,
+                    &value.ty,
+                    inner.span,
+                    "`is error` tests an Outcome",
+                );
+                test(ExprKind::IsVariant {
+                    value: Box::new(value),
+                    variant: FAILURE,
+                })
+            }
+            Type::Unknown => test(ExprKind::Boolean(false)),
+            unresolved => {
+                let other = self.unifier.resolve_for_display(&unresolved);
+                self.error(
+                    Diagnostic::error(
+                        "E_TYPE_MISMATCH",
+                        format!("`is error` needs an Outcome or a union that can hold an Error, not {other}"),
+                    )
+                    .primary(inner.span, "")
+                    .help("capture an error with `try`, for example `result = try readfile(path)`"),
+                );
+                test(ExprKind::Boolean(false))
+            }
         }
     }
 
@@ -230,8 +282,19 @@ impl<'a> Checker<'a> {
             declared,
             span,
         );
-        match cx.narrowed_type(local) {
-            Some(narrowed) => expr(ExprKind::Narrow(Box::new(base)), narrowed.clone(), span),
+        match cx.narrowed(local) {
+            Some(Narrowing {
+                ty,
+                variant: Some(variant),
+            }) => expr(
+                ExprKind::VariantPayload {
+                    value: Box::new(base),
+                    variant: *variant,
+                },
+                ty.clone(),
+                span,
+            ),
+            Some(narrowing) => expr(ExprKind::Narrow(Box::new(base)), narrowing.ty.clone(), span),
             None => base,
         }
     }
@@ -248,6 +311,9 @@ impl<'a> Checker<'a> {
         }
         if let Some(item) = self.item(cx.module, &name.name) {
             return self.item_value(item, span);
+        }
+        if name.name == "Outcome" {
+            return self.type_as_value(OUTCOME, span);
         }
         if let Some((known, id, variant)) = self.variant_for_name(cx, &name.name, expected) {
             return self.check_variant(cx, id, variant, known, name, None, expected, span);
@@ -1162,7 +1228,9 @@ impl<'a> Checker<'a> {
         };
         let mut value = self.check_expr(cx, &args[0], None);
         let target = match &mut value.kind {
-            ExprKind::Narrow(inner) => &mut inner.kind,
+            ExprKind::Narrow(inner) | ExprKind::VariantPayload { value: inner, .. } => {
+                &mut inner.kind
+            }
             other => other,
         };
         if let ExprKind::Local { usage, .. } = target {

@@ -1,0 +1,84 @@
+# Capturing errors as values: try expressions, Outcome, and `is error`
+io = import("standard/io.sayon")
+
+function divide(a, b)
+    if b == 0
+        error("division by zero")
+    return a / b
+
+result = try divide(10, 2)
+if result is error
+    print("failed:", result.message)
+else
+    print("quotient:", result + 1)
+
+result = try divide(1, 0)
+if result is error
+    print("failed:", result.message, result.code)
+else
+    print("quotient:", result)
+
+print(try divide(9, 3), try divide(1, 0))
+
+missing = try io.read_file("no-such-file.txt")
+if not (missing is error)
+    print(length(missing))
+else
+    print("cannot read:", missing.code)
+
+function parse_all(texts: Array<string>) -> Array<integer or float>
+    values: Array<integer or float> = []
+    for text in texts
+        parsed = try tonumber(text)
+        if parsed is error
+            continue
+        push(values, parsed)
+    return values
+
+print(parse_all(["1", "x", "2.5", ""]))
+
+# An Outcome can be matched like any enum.
+function describe(outcome: Outcome<integer>) -> string
+    match outcome
+        case success(value)
+            return "got {value}"
+        case failure(problem)
+            return "error {problem.code}: {problem.message}"
+
+print(describe(try divide(8, 4)), describe(try divide(8, 0)))
+print(describe(success(1)), typeof(try divide(1, 1)))
+
+# Checked arithmetic fails like any other operation.
+big = try (9223372036854775807 + 1)
+print(big is error, big)
+
+# A try inside a try: the inner one catches the error.
+nested = try try divide(1, 0)
+if not (nested is error)
+    print("outer succeeded; inner failed:", nested is error)
+
+# Owned values move into an Outcome and back out of it.
+function shout(text: string) -> string
+    if text == ""
+        error("nothing to say")
+    return text + "!"
+
+said = try shout("hello")
+if not (said is error)
+    kept = said
+    print(kept)
+
+errors: Array<Error> = []
+for word in ["a", "", "b"]
+    outcome = try shout(word)
+    if outcome is error
+        push(errors, outcome)
+print(length(errors), errors)
+
+# Inside try statements, a try expression handles its own error first.
+try
+    attempt = try divide(2, 0)
+    print("handled inside:", attempt is error)
+    divide(3, 0)
+catch problem
+    print("caught outside:", problem.message)

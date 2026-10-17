@@ -1,7 +1,7 @@
 //! Structures and enums in expressions: construction, field access, and
 //! variant values.
 
-use crate::checker::{Checker, FnCtx, Item};
+use crate::checker::{Checker, FnCtx, Item, OUTCOME};
 use crate::hir::{self, ExprKind};
 use crate::types::{Type, TypeId};
 use sayon_syntax::ast;
@@ -24,7 +24,8 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Name(name) if cx.lookup(&name.name).is_none() => {
                 match self.item(cx.module, &name.name) {
                     Some(Item::Type(id)) => Some(id),
-                    _ => None,
+                    Some(_) => None,
+                    None => (name.name == "Outcome").then_some(OUTCOME),
                 }
             }
             ast::ExprKind::Member {
@@ -344,13 +345,14 @@ impl<'a> Checker<'a> {
         )
     }
 
-    /// Enums of `module` that have a variant called `name`.
+    /// Enums of `module` that have a variant called `name`; failing those,
+    /// the prelude's `Outcome` when it has one (`success` and `failure`).
     pub(crate) fn enums_with_variant(
         &self,
         module: crate::ModuleId,
         name: &str,
     ) -> Vec<(TypeId, u32)> {
-        (0..self.types.len())
+        let found: Vec<(TypeId, u32)> = (0..self.types.len())
             .map(|i| TypeId(i as u32))
             .filter(|id| self.types[id.0 as usize].module == module)
             .filter_map(|id| {
@@ -358,6 +360,14 @@ impl<'a> Checker<'a> {
                     .variant_index(name)
                     .map(|index| (id, index as u32))
             })
+            .collect();
+        if !found.is_empty() {
+            return found;
+        }
+        self.type_def(OUTCOME)
+            .variant_index(name)
+            .map(|index| (OUTCOME, index as u32))
+            .into_iter()
             .collect()
     }
 

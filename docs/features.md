@@ -37,7 +37,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `match` with literal, variant, union-member, and nested patterns, guards, exhaustiveness and unreachable-case checks | experimental | M2 |
 | Record patterns (destructuring structures in `case`), `or` patterns | planned | M2 |
 | Function values, closures, captured state | planned | M2 |
-| `try` expressions, `is error`, `Outcome<T>` | planned | M2 |
+| `try` expressions, `is error` narrowing, `Outcome<T>`, unused-outcome warning | experimental | M2 |
 | Dictionary keys other than strings | planned | M2 |
 | Borrowed views (`View<T>`, `MutableView<T>`) | planned | M2 |
 | String indexing, slicing, character iteration | planned | M2 |

@@ -1244,9 +1244,19 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 let (index, _) = self.field_of(&self.ty(target_ty), name);
                 base.project(Projection::Field(index))
             }
-            hir::Place::Narrow { target, ty } => {
+            hir::Place::Narrow {
+                target,
+                ty,
+                variant,
+            } => {
                 let from = self.place_type(target);
                 let base = self.hir_place_read(target);
+                if let Some(variant) = variant {
+                    return base.project(Projection::VariantField {
+                        variant: *variant,
+                        field: 0,
+                    });
+                }
                 let ty = self.ty(ty);
                 self.narrow(base, &from, &ty)
             }
@@ -1323,6 +1333,13 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 let (index, _) = self.field_of(&value_ty, name);
                 base.project(Projection::Field(index))
             }
+            hir::ExprKind::VariantPayload { value, variant } => {
+                let base = self.place_of(value, Want::Read);
+                base.project(Projection::VariantField {
+                    variant: *variant,
+                    field: 0,
+                })
+            }
             _ => self.temp_place(expr, want),
         }
     }
@@ -1362,10 +1379,12 @@ impl<'l, 'p> FnLower<'l, 'p> {
         let ty = self.ty(&expr.ty);
         let usage = match &expr.kind {
             hir::ExprKind::Local { usage, .. } => Some(*usage),
-            hir::ExprKind::Narrow(inner) => match &inner.kind {
-                hir::ExprKind::Local { usage, .. } => Some(*usage),
-                _ => None,
-            },
+            hir::ExprKind::Narrow(inner) | hir::ExprKind::VariantPayload { value: inner, .. } => {
+                match &inner.kind {
+                    hir::ExprKind::Local { usage, .. } => Some(*usage),
+                    _ => None,
+                }
+            }
             _ => None,
         };
         let placeable = match &expr.kind {
@@ -1373,7 +1392,9 @@ impl<'l, 'p> FnLower<'l, 'p> {
             | hir::ExprKind::Constant(_)
             | hir::ExprKind::Index { .. }
             | hir::ExprKind::Field { .. } => true,
-            hir::ExprKind::Narrow(inner) => matches!(inner.kind, hir::ExprKind::Local { .. }),
+            hir::ExprKind::Narrow(inner) | hir::ExprKind::VariantPayload { value: inner, .. } => {
+                matches!(inner.kind, hir::ExprKind::Local { .. })
+            }
             _ => false,
         };
         if !placeable {
@@ -1465,7 +1486,12 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 Rvalue::Use(Operand::Const(Constant::Str(text.clone()))),
             ),
             H::Nothing => self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing))),
-            H::Local { .. } | H::Constant(_) | H::Index { .. } | H::Narrow(_) | H::Field { .. } => {
+            H::Local { .. }
+            | H::Constant(_)
+            | H::Index { .. }
+            | H::Narrow(_)
+            | H::Field { .. }
+            | H::VariantPayload { .. } => {
                 let operand = self.operand(expr, Want::Owned);
                 self.assign(dest, Rvalue::Use(operand));
             }
@@ -1665,6 +1691,17 @@ impl<'l, 'p> FnLower<'l, 'p> {
                     self.assign(dest, Rvalue::MakeUnion { tag, value });
                 }
             }
+            H::TryExpr(inner) => self.try_expr(inner, &ty, dest),
+            H::IsVariant { value, variant } => {
+                let value = self.operand(value, Want::Read);
+                self.assign(
+                    dest,
+                    Rvalue::VariantIs {
+                        value,
+                        variant: *variant,
+                    },
+                );
+            }
             H::IsMember { value, member } => {
                 let value_ty = self.ty(&value.ty);
                 let member = self.ty(member);
@@ -1700,6 +1737,52 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 self.assign(dest, rvalue);
             }
         }
+    }
+
+    /// `try value`: evaluates the value with a handler of its own, so that an
+    /// error raised on the way becomes `failure(error)` instead of
+    /// propagating; otherwise the result is `success(value)`.
+    fn try_expr(&mut self, inner: &'p hir::Expr, ty: &Type, dest: Place) {
+        let inner_ty = self.ty(&inner.ty);
+        let on_error = self.new_block();
+        let join = self.new_block();
+        self.handlers.push(HandlerCtx {
+            target: on_error,
+            scope_depth: self.scopes.len(),
+        });
+        self.push_scope();
+        let value = self.temp(inner_ty.clone());
+        self.expr_into(inner, Place::slot(value));
+        let operand = if inner_ty.is_copy() {
+            Operand::Copy(Place::slot(value))
+        } else {
+            Operand::Move(Place::slot(value))
+        };
+        self.assign(
+            dest.clone(),
+            Rvalue::MakeVariant {
+                ty: ty.clone(),
+                variant: 0,
+                fields: vec![operand],
+            },
+        );
+        self.pop_scope();
+        self.handlers.pop();
+        self.goto(join);
+
+        // The error edge has already destroyed the temporaries of the value.
+        self.switch_to(on_error);
+        let problem = Operand::Move(Place::slot(self.f.error_slot));
+        self.assign(
+            dest,
+            Rvalue::MakeVariant {
+                ty: ty.clone(),
+                variant: 1,
+                fields: vec![problem],
+            },
+        );
+        self.goto(join);
+        self.switch_to(join);
     }
 
     /// `union == member`: true when the union holds that member with an equal value.

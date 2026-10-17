@@ -1,4 +1,7 @@
 counter = function()
     return 1
 
-contents = try readfile("missing.txt")
+first = "word"[0]
+
+unsafe
+    print("raw")

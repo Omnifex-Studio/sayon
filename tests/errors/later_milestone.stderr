@@ -6,12 +6,20 @@ error[E_UNAVAILABLE]: function literals and closures are not available yet
    |
    = note: this release does not implement function literals and closures; it is scheduled for M2
 
-error[E_UNAVAILABLE]: expression-level error capture (`try` expressions and `is error`) is not available yet
-  --> later_milestone.sayon:4:12
+error[E_UNAVAILABLE]: string indexing and slicing is not available yet
+  --> later_milestone.sayon:4:9
    |
- 4 | contents = try readfile("missing.txt")
-   |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^ planned for milestone M2
+ 4 | first = "word"[0]
+   |         ^^^^^^^^^ planned for milestone M2
    |
-   = note: this release does not implement expression-level error capture (`try` expressions and `is error`); it is scheduled for M2
+   = note: this release does not implement string indexing and slicing; it is scheduled for M2
 
-2 errors found; nothing was run
+error[E_UNAVAILABLE]: unsafe blocks are not available yet
+  --> later_milestone.sayon:6:1
+   |
+ 6 | unsafe
+   | ^^^^^^ planned for milestone M3
+   |
+   = note: this release does not implement unsafe blocks; it is scheduled for M3
+
+3 errors found; nothing was run

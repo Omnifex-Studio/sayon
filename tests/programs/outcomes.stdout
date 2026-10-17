@@ -1,0 +1,13 @@
+quotient: 6
+failed: division by zero UserError
+success(3) failure(Error("division by zero"))
+cannot read: IOError
+[1, 2.5]
+got 2 error UserError: division by zero
+got 1 Outcome<integer>
+true failure(Error("9223372036854775807 + 1 does not fit in integer"))
+outer succeeded; inner failed: true
+hello!
+1 [Error("nothing to say")]
+handled inside: true
+caught outside: division by zero

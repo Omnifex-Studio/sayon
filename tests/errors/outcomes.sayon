@@ -1,0 +1,11 @@
+function save(text: string)
+    writefile("out.txt", text)
+
+try save("notes")
+
+count = 3
+if count is error
+    print("never")
+
+result = try save("more")
+print(result.message)

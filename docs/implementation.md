@@ -74,7 +74,7 @@ collection  = "[" "]"
             | "[" NAME "=" expression { "," NAME "=" expression } [ "," ] "]" ;
 ```
 
-Function literals, `try` expressions, and `is error` parse but are rejected by the checker until their milestones. The parser tests (`crates/syntax/src/parser.rs`) and the programs under `tests/` are the executable form of this grammar.
+Function literals parse but are rejected by the checker until their milestone. The parser tests (`crates/syntax/src/parser.rs`) and the programs under `tests/` are the executable form of this grammar.
 
 ## Ownership rules
 
@@ -84,7 +84,7 @@ For each read of a local, the checker decides the use from the context:
 
 | Context | Owned value | Copy value |
 |---|---|---|
-| assignment source, `own` argument, returned value, collection element, structure field or variant value, `push` value | move | copy |
+| assignment source, `own` argument, returned value, collection element, structure field or variant value, `try` operand, `push` value | move | copy |
 | `update` argument | exclusive borrow | exclusive borrow |
 | `push`/`pop` target, element or field assignment target | exclusive borrow | copy |
 | anything else (operands, read arguments, `print`, conditions) | shared borrow | copy |
@@ -161,6 +161,8 @@ Every compiled function has the signature `i32 f(ptr result, ptr error, i64 argu
 ## Recoverable errors
 
 An `Error` is a runtime object with a code, a message, and the source location of the operation that raised it. Each function has an error slot. A failing operation stores a new error there and continues at its error edge, which destroys the scopes being left and then jumps to the innermost handler or returns status 1. `catch` moves the error out of the slot into its binding.
+
+A `try` expression evaluates its operand under a handler of its own, as a `try` statement does: the operand's temporaries are a scope that the error edge destroys, and the handler moves the error out of the slot into `failure(problem)`. On success the operand moves into `success(value)`. `Outcome<T>` is the prelude's first type definition, an ordinary enum with those two variants, so it has the enum layout and `match` works on it. Narrowing an `Outcome` by `is error` records the variant as well as the type, so reading the variable reads that variant's field; this keeps `Outcome<Error>` unambiguous.
 
 The program's entry runs the module constant initializers, then the entry function. An error escaping either is reported as `error: uncaught CODE: message` followed by `  --> file:line:column`, and the program exits with status 1 after releasing module constants.
 

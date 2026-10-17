@@ -1,0 +1,25 @@
+warning[W_UNUSED_OUTCOME]: the result of this `try` is never inspected
+  --> outcomes.sayon:4:1
+   |
+ 4 | try save("notes")
+   | ^^^^^^^^^^^^^^^^^ an error here would go unnoticed
+   |
+   = help: keep the result and test it with `is error`, or leave out `try` so the error propagates
+
+error[E_TYPE_MISMATCH]: `is error` needs an Outcome or a union that can hold an Error, not integer
+  --> outcomes.sayon:7:4
+   |
+ 7 | if count is error
+   |    ^^^^^
+   |
+   = help: capture an error with `try`, for example `result = try readfile(path)`
+
+error[E_UNCHECKED_OUTCOME]: an Outcome must be checked before its contents are used
+   --> outcomes.sayon:11:14
+    |
+ 11 | print(result.message)
+    |              ^^^^^^^ this may be the value or the error
+    |
+    = help: test it first with `if result is error`: inside, it is the Error; in the `else`, it is the value
+
+2 errors found; nothing was run

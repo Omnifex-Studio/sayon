@@ -18,6 +18,8 @@ pub(crate) enum Item {
 pub(crate) enum TypeSource<'a> {
     Structure(&'a [ast::Field]),
     Enum(&'a [ast::Variant]),
+    /// The prelude's `Outcome<T>`: `success(value: T)` or `failure(problem: Error)`.
+    Outcome,
 }
 
 pub(crate) struct TypeEntry<'a> {
@@ -25,8 +27,39 @@ pub(crate) struct TypeEntry<'a> {
     pub name: String,
     pub span: Span,
     pub visibility: ast::Visibility,
-    pub generics: &'a [ast::Ident],
+    pub generics: Vec<String>,
     pub source: TypeSource<'a>,
+}
+
+/// The type a `try` expression produces; always the first type definition.
+pub(crate) const OUTCOME: TypeId = TypeId(0);
+/// The positions of `Outcome`'s variants.
+pub(crate) const SUCCESS: u32 = 0;
+pub(crate) const FAILURE: u32 = 1;
+/// The module of prelude types, which no source file defines.
+pub(crate) const PRELUDE: ModuleId = ModuleId(u32::MAX);
+
+/// What a test has established about a local.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Narrowing {
+    /// The type the local's value has when it is read.
+    pub ty: Type,
+    /// For an `Outcome`, the variant it holds; reading the local reads that
+    /// variant's one field.
+    pub variant: Option<u32>,
+}
+
+impl Narrowing {
+    pub fn to(ty: Type) -> Narrowing {
+        Narrowing { ty, variant: None }
+    }
+
+    pub fn variant(variant: u32, ty: Type) -> Narrowing {
+        Narrowing {
+            ty,
+            variant: Some(variant),
+        }
+    }
 }
 
 /// A source file being checked. Each file is a module.
@@ -116,7 +149,7 @@ pub(crate) enum Deferred {
 pub(crate) struct Scope {
     pub names: HashMap<String, LocalId>,
     pub declared: Vec<LocalId>,
-    pub narrowed: HashMap<LocalId, Type>,
+    pub narrowed: HashMap<LocalId, Narrowing>,
 }
 
 impl Scope {
@@ -165,7 +198,7 @@ impl FnCtx {
             .find_map(|scope| scope.names.get(name).copied())
     }
 
-    pub fn narrowed_type(&self, local: LocalId) -> Option<&Type> {
+    pub fn narrowed(&self, local: LocalId) -> Option<&Narrowing> {
         self.scopes
             .iter()
             .rev()
@@ -232,7 +265,14 @@ impl<'a> Checker<'a> {
             entry_module: ModuleId(0),
             functions: Vec::new(),
             constants: Vec::new(),
-            types: Vec::new(),
+            types: vec![TypeEntry {
+                module: PRELUDE,
+                name: "Outcome".to_string(),
+                span: Span::new(sayon_syntax::FileId(0), 0, 0),
+                visibility: ast::Visibility::Public,
+                generics: vec!["T".to_string()],
+                source: TypeSource::Outcome,
+            }],
             type_defs: Vec::new(),
             script_names: HashSet::new(),
             deferred: Vec::new(),
@@ -530,7 +570,7 @@ impl<'a> Checker<'a> {
                 name: name.name.clone(),
                 span: name.span,
                 visibility,
-                generics,
+                generics: generics.iter().map(|g| g.name.clone()).collect(),
                 source,
             });
         }
@@ -762,11 +802,13 @@ impl<'a> Checker<'a> {
                             }
                             None => {}
                         }
+                        if other == "Outcome" {
+                            return self.named_annotation(module, OUTCOME, ty, args, generics);
+                        }
                         if matches!(
                             other,
                             "File"
                                 | "Path"
-                                | "Outcome"
                                 | "List"
                                 | "Map"
                                 | "Set"
@@ -868,9 +910,25 @@ impl<'a> Checker<'a> {
                 .generics
                 .iter()
                 .enumerate()
-                .map(|(i, g)| (g.name.clone(), i as u32))
+                .map(|(i, g)| (g.clone(), i as u32))
                 .collect();
             let kind = match entry.source {
+                TypeSource::Outcome => TypeDefKind::Enum(vec![
+                    VariantDef {
+                        name: "success".to_string(),
+                        fields: vec![FieldDef {
+                            name: "value".to_string(),
+                            ty: Type::Param(0),
+                        }],
+                    },
+                    VariantDef {
+                        name: "failure".to_string(),
+                        fields: vec![FieldDef {
+                            name: "problem".to_string(),
+                            ty: Type::Error,
+                        }],
+                    },
+                ]),
                 TypeSource::Structure(fields) => {
                     if fields.is_empty() {
                         let span = entry.span;
@@ -1359,6 +1417,17 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
+            Type::Named(named) if named.id == OUTCOME => {
+                self.error(
+                    Diagnostic::error(
+                        "E_UNCHECKED_OUTCOME",
+                        "an Outcome must be checked before its contents are used",
+                    )
+                    .primary(span, "this may be the value or the error")
+                    .help("test it first with `if result is error`: inside, it is the Error; in the `else`, it is the value"),
+                );
+                Type::Unknown
+            }
             Type::Named(named) => {
                 self.error(
                     Diagnostic::error(
@@ -1606,7 +1675,7 @@ impl<'a> Checker<'a> {
                 self.finalize_place(target);
                 *target_ty = self.finalize_type(target_ty);
             }
-            hir::Place::Narrow { target, ty } => {
+            hir::Place::Narrow { target, ty, .. } => {
                 self.finalize_place(target);
                 *ty = self.finalize_type(ty);
             }
@@ -1764,7 +1833,12 @@ impl<'a> Checker<'a> {
                     }
                 }
             }
-            Inject(inner) | Narrow(inner) | UnionTypeName(inner) => self.finalize_expr(inner),
+            Inject(inner)
+            | Narrow(inner)
+            | UnionTypeName(inner)
+            | TryExpr(inner)
+            | IsVariant { value: inner, .. }
+            | VariantPayload { value: inner, .. } => self.finalize_expr(inner),
             IsMember { value, member } => {
                 self.finalize_expr(value);
                 *member = self.finalize_type(member);

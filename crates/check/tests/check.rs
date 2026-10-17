@@ -394,6 +394,40 @@ fn matches_must_be_exhaustive() {
 }
 
 #[test]
+fn try_expressions_capture_errors_as_outcomes() {
+    let program = ok(
+        "function f(x: integer) -> integer\n    if x == 0\n        error(\"zero\")\n    return x\n\nr = try f(1)\nif r is error\n    print(r.message)\nelse\n    print(r + 1)\n",
+    );
+    let entry = &program.functions[program.entry.0 as usize];
+    let StmtKind::Let { value, .. } = &entry.body.stmts[0].kind else {
+        panic!()
+    };
+    assert_eq!(value.ty.to_string(), "Outcome<integer>");
+    ok(
+        "r: Outcome<integer8> = try 5\nmatch r\n    case success(n)\n        print(n)\n    case failure(problem)\n        print(problem)\n",
+    );
+    fails("r = try tonumber(\"1\")\nprint(r + 1)\n", "E_TYPE_MISMATCH");
+    fails(
+        "r = try tonumber(\"1\")\nprint(r.message)\n",
+        "E_UNCHECKED_OUTCOME",
+    );
+    fails("n = 1\nif n is error\n    print(n)\n", "E_TYPE_MISMATCH");
+    ok(
+        "values: Array<integer or Error> = [1]\nv = pop(values)\nif v is error\n    print(v.message)\n",
+    );
+    let (_, diagnostics) = check_source(FileId(0), "try tonumber(\"1\")\n");
+    assert!(diagnostics.iter().any(|d| d.code == "W_UNUSED_OUTCOME"));
+}
+
+#[test]
+fn outcome_payloads_move_out_of_their_local() {
+    fails(
+        "function f() -> string\n    return \"x\"\n\nr = try f()\nif not (r is error)\n    kept = r\n    print(r)\n",
+        "E_MOVED_VALUE",
+    );
+}
+
+#[test]
 fn case_bindings_narrow_unions() {
     ok(
         "function f(v: integer or nothing) -> integer\n    match v\n        case nothing\n            return 0\n        case n\n            return n + 1\n",

@@ -225,10 +225,12 @@ pub enum Place {
         target_ty: Type,
         name: String,
     },
-    /// A union local known by narrowing to hold `ty`.
+    /// A local known by narrowing to hold `ty`: a union member, or (with a
+    /// variant) the one field of that variant of an enum.
     Narrow {
         target: Box<Place>,
         ty: Type,
+        variant: Option<u32>,
     },
 }
 
@@ -365,6 +367,20 @@ pub enum ExprKind {
     Field {
         value: Box<Expr>,
         name: String,
+    },
+    /// `try value`: the `Outcome` in `ty`, `success(value)`, or `failure(error)`
+    /// when evaluating the value raises an error.
+    TryExpr(Box<Expr>),
+    /// Tests whether an enum value is the given variant.
+    IsVariant {
+        value: Box<Expr>,
+        variant: u32,
+    },
+    /// Reads the one field of an enum value known (by narrowing) to be the
+    /// given variant, such as the Error of an `Outcome` that `is error`.
+    VariantPayload {
+        value: Box<Expr>,
+        variant: u32,
     },
     /// Reads `target[index]`.
     Index {
@@ -519,7 +535,10 @@ pub fn visit_expr_mut(expr: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
         | ExprKind::Narrow(inner)
         | ExprKind::UnionTypeName(inner)
         | ExprKind::IsMember { value: inner, .. }
-        | ExprKind::ErrorField { value: inner, .. } => visit_expr_mut(inner, f),
+        | ExprKind::ErrorField { value: inner, .. }
+        | ExprKind::TryExpr(inner)
+        | ExprKind::IsVariant { value: inner, .. }
+        | ExprKind::VariantPayload { value: inner, .. } => visit_expr_mut(inner, f),
         ExprKind::Integer(_)
         | ExprKind::Float(_)
         | ExprKind::Boolean(_)

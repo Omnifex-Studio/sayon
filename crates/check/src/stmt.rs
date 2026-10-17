@@ -40,7 +40,19 @@ impl<'a> Checker<'a> {
     fn check_stmt(&mut self, cx: &mut FnCtx, ast: &ast::Stmt) -> Option<hir::Stmt> {
         let span = ast.span;
         let kind = match &ast.kind {
-            ast::StmtKind::Expr(value) => StmtKind::Expr(self.check_expr(cx, value, None)),
+            ast::StmtKind::Expr(value) => {
+                if let ast::ExprKind::TryExpr(_) = value.kind {
+                    self.error(
+                        Diagnostic::warning(
+                            "W_UNUSED_OUTCOME",
+                            "the result of this `try` is never inspected",
+                        )
+                        .primary(value.span, "an error here would go unnoticed")
+                        .help("keep the result and test it with `is error`, or leave out `try` so the error propagates"),
+                    );
+                }
+                StmtKind::Expr(self.check_expr(cx, value, None))
+            }
             ast::StmtKind::Assign { target, value } => {
                 return self.check_assign(cx, target, value, span);
             }
@@ -532,13 +544,14 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 let declared = cx.locals[local.0 as usize].ty.clone();
-                match cx.narrowed_type(local) {
+                match cx.narrowed(local) {
                     Some(narrowed) if inner => Some((
                         Place::Narrow {
                             target: Box::new(Place::Local(local)),
-                            ty: narrowed.clone(),
+                            ty: narrowed.ty.clone(),
+                            variant: narrowed.variant,
                         },
-                        narrowed.clone(),
+                        narrowed.ty.clone(),
                     )),
                     _ => Some((Place::Local(local), declared)),
                 }

@@ -20,6 +20,7 @@ enum MoveReason {
     Return,
     Element,
     Structure,
+    Outcome,
     Explicit,
 }
 
@@ -227,6 +228,7 @@ impl<'p> Analyzer<'p> {
             MoveReason::Return => " by `return`".to_string(),
             MoveReason::Element => " into a collection".to_string(),
             MoveReason::Structure => " into a structure".to_string(),
+            MoveReason::Outcome => " into an Outcome".to_string(),
             MoveReason::Explicit => String::new(),
         };
         let message = if site.earlier_iteration {
@@ -444,7 +446,9 @@ impl<'p> Analyzer<'p> {
     fn root(expr: &Expr) -> Option<LocalId> {
         match &expr.kind {
             ExprKind::Local { local, .. } => Some(*local),
-            ExprKind::Narrow(inner) | ExprKind::Inject(inner) => Self::root(inner),
+            ExprKind::Narrow(inner)
+            | ExprKind::Inject(inner)
+            | ExprKind::VariantPayload { value: inner, .. } => Self::root(inner),
             ExprKind::Index { target, .. } | ExprKind::Field { value: target, .. } => {
                 Self::root(target)
             }
@@ -457,7 +461,9 @@ impl<'p> Analyzer<'p> {
     fn is_place(expr: &Expr) -> bool {
         match &expr.kind {
             ExprKind::Local { .. } | ExprKind::Constant(_) => true,
-            ExprKind::Narrow(inner) | ExprKind::Inject(inner) => Self::is_place(inner),
+            ExprKind::Narrow(inner)
+            | ExprKind::Inject(inner)
+            | ExprKind::VariantPayload { value: inner, .. } => Self::is_place(inner),
             ExprKind::Index { target, .. } | ExprKind::Field { value: target, .. } => {
                 Self::is_place(target)
             }
@@ -474,13 +480,23 @@ impl<'p> Analyzer<'p> {
                 let copy = self.local(local).ty.is_copy();
                 self.use_local(local, usage, copy, ctx, span, state);
             }
-            ExprKind::Narrow(inner) => match &mut inner.kind {
-                ExprKind::Local { local, usage } => {
-                    let local = *local;
-                    self.use_local(local, usage, ty.is_copy(), ctx, span, state);
+            // Using a narrowed value uses the local that holds it; taking
+            // the value leaves the whole local spent.
+            ExprKind::Narrow(inner) | ExprKind::VariantPayload { value: inner, .. } => {
+                match &mut inner.kind {
+                    ExprKind::Local { local, usage } => {
+                        let local = *local;
+                        self.use_local(local, usage, ty.is_copy(), ctx, span, state);
+                    }
+                    _ => self.expr(inner, ctx, state),
                 }
-                _ => self.expr(inner, ctx, state),
-            },
+            }
+            ExprKind::TryExpr(inner) => {
+                let saved = std::mem::replace(&mut self.reason, MoveReason::Outcome);
+                self.expr(inner, Ctx::Consume, state);
+                self.reason = saved;
+            }
+            ExprKind::IsVariant { value, .. } => self.expr(value, Ctx::Read, state),
             ExprKind::Constant(id) => {
                 if ctx == Ctx::Update {
                     let name = self.constant_names[id.0 as usize].clone();

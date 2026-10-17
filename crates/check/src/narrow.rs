@@ -1,19 +1,22 @@
-//! Flow-sensitive narrowing of union-typed locals.
+//! Flow-sensitive narrowing of union-typed and `Outcome`-typed locals.
 //!
-//! Recognized tests on a local `x` whose type is a union:
-//! `x == nothing`, `x != nothing`, `typeof(x) == "name"`, `typeof(x) != "name"`,
-//! combined with `not`, `and`, and `or`.
+//! Recognized tests on a local `x`:
+//! `x == nothing`, `x != nothing`, `typeof(x) == "name"`, `typeof(x) != "name"`
+//! (on a union), and `x is error` (on an `Outcome`, or a union that can hold
+//! an `Error`), combined with `not`, `and`, and `or`.
 
-use crate::checker::{Checker, FnCtx};
+use crate::checker::{Checker, FAILURE, FnCtx, Narrowing, OUTCOME, SUCCESS};
 use crate::hir::{self, LocalId};
 use crate::types::Type;
 use sayon_syntax::ast::{self, BinaryOp, UnaryOp};
 use std::collections::HashMap;
 
+type Overlay = HashMap<LocalId, Narrowing>;
+
 #[derive(Default, Clone)]
 pub(crate) struct Facts {
-    pub when_true: Vec<(LocalId, Type)>,
-    pub when_false: Vec<(LocalId, Type)>,
+    pub when_true: Vec<(LocalId, Narrowing)>,
+    pub when_false: Vec<(LocalId, Narrowing)>,
 }
 
 impl Facts {
@@ -23,6 +26,13 @@ impl Facts {
             when_false: self.when_true,
         }
     }
+
+    fn split(local: LocalId, when_true: Narrowing, when_false: Narrowing) -> Facts {
+        Facts {
+            when_true: vec![(local, when_true)],
+            when_false: vec![(local, when_false)],
+        }
+    }
 }
 
 impl<'a> Checker<'a> {
@@ -30,22 +40,15 @@ impl<'a> Checker<'a> {
         self.facts_with(cx, condition, &HashMap::new())
     }
 
-    fn current_type(&self, cx: &FnCtx, local: LocalId, overlay: &HashMap<LocalId, Type>) -> Type {
-        if let Some(ty) = overlay.get(&local) {
-            return ty.clone();
+    /// What is known about a local: its narrowing, or its declared type.
+    fn current(&self, cx: &FnCtx, local: LocalId, overlay: &Overlay) -> Narrowing {
+        if let Some(narrowing) = overlay.get(&local).or_else(|| cx.narrowed(local)) {
+            return narrowing.clone();
         }
-        match cx.narrowed_type(local) {
-            Some(ty) => ty.clone(),
-            None => self.unifier.resolve(&cx.locals[local.0 as usize].ty),
-        }
+        Narrowing::to(self.unifier.resolve(&cx.locals[local.0 as usize].ty))
     }
 
-    fn facts_with(
-        &mut self,
-        cx: &FnCtx,
-        condition: &ast::Expr,
-        overlay: &HashMap<LocalId, Type>,
-    ) -> Facts {
+    fn facts_with(&mut self, cx: &FnCtx, condition: &ast::Expr, overlay: &Overlay) -> Facts {
         match &condition.kind {
             ast::ExprKind::Unary {
                 op: UnaryOp::Not,
@@ -100,22 +103,42 @@ impl<'a> Checker<'a> {
                     facts
                 }
             }
+            ast::ExprKind::IsError(value) => {
+                self.error_test(cx, value, overlay).unwrap_or_default()
+            }
             _ => Facts::default(),
         }
+    }
+
+    /// The local an expression names, with what is known about it.
+    fn tested_local(
+        &self,
+        cx: &FnCtx,
+        expr: &ast::Expr,
+        overlay: &Overlay,
+    ) -> Option<(LocalId, Narrowing)> {
+        let ast::ExprKind::Name(name) = &expr.kind else {
+            return None;
+        };
+        let local = cx.lookup(&name.name)?;
+        Some((local, self.current(cx, local, overlay)))
     }
 
     fn union_local(
         &self,
         cx: &FnCtx,
         expr: &ast::Expr,
-        overlay: &HashMap<LocalId, Type>,
+        overlay: &Overlay,
     ) -> Option<(LocalId, Vec<Type>)> {
-        let ast::ExprKind::Name(name) = &expr.kind else {
-            return None;
-        };
-        let local = cx.lookup(&name.name)?;
-        match self.current_type(cx, local, overlay) {
-            Type::Union(members) => Some((local, members)),
+        match self.tested_local(cx, expr, overlay)? {
+            // The value inside an `Outcome` is not narrowed further.
+            (
+                local,
+                Narrowing {
+                    ty: Type::Union(members),
+                    variant: None,
+                },
+            ) => Some((local, members)),
             _ => None,
         }
     }
@@ -126,7 +149,7 @@ impl<'a> Checker<'a> {
         cx: &FnCtx,
         value: &ast::Expr,
         other: &ast::Expr,
-        overlay: &HashMap<LocalId, Type>,
+        overlay: &Overlay,
     ) -> Option<Facts> {
         if !matches!(other.kind, ast::ExprKind::Nothing) {
             return None;
@@ -135,17 +158,12 @@ impl<'a> Checker<'a> {
         if !members.contains(&Type::Nothing) {
             return None;
         }
-        let rest = Type::union(
-            members
-                .iter()
-                .filter(|m| **m != Type::Nothing)
-                .cloned()
-                .collect::<Vec<_>>(),
-        );
-        Some(Facts {
-            when_true: vec![(local, Type::Nothing)],
-            when_false: vec![(local, rest)],
-        })
+        let rest = without(&members, &Type::Nothing);
+        Some(Facts::split(
+            local,
+            Narrowing::to(Type::Nothing),
+            Narrowing::to(rest),
+        ))
     }
 
     /// Facts for `typeof(value) == "name"`.
@@ -154,7 +172,7 @@ impl<'a> Checker<'a> {
         cx: &FnCtx,
         call: &ast::Expr,
         other: &ast::Expr,
-        overlay: &HashMap<LocalId, Type>,
+        overlay: &Overlay,
     ) -> Option<Facts> {
         let ast::ExprKind::Call { callee, args, .. } = &call.kind else {
             return None;
@@ -180,18 +198,49 @@ impl<'a> Checker<'a> {
             .iter()
             .find(|m| m.type_name() == *type_name)?
             .clone();
-        let rest = Type::union(
-            members
-                .iter()
-                .filter(|m| **m != member)
-                .cloned()
-                .collect::<Vec<_>>(),
-        );
-        Some(Facts {
-            when_true: vec![(local, member)],
-            when_false: vec![(local, rest)],
-        })
+        let rest = without(&members, &member);
+        Some(Facts::split(
+            local,
+            Narrowing::to(member),
+            Narrowing::to(rest),
+        ))
     }
+
+    /// Facts for `value is error`: an `Outcome` holds its failure or its
+    /// success; a union holds its `Error` or one of its other members.
+    fn error_test(&self, cx: &FnCtx, value: &ast::Expr, overlay: &Overlay) -> Option<Facts> {
+        let (local, current) = self.tested_local(cx, value, overlay)?;
+        if current.variant.is_some() {
+            return None;
+        }
+        match &current.ty {
+            Type::Named(named) if named.id == OUTCOME => {
+                let success = named.args.first().cloned().unwrap_or(Type::Unknown);
+                Some(Facts::split(
+                    local,
+                    Narrowing::variant(FAILURE, Type::Error),
+                    Narrowing::variant(SUCCESS, success),
+                ))
+            }
+            Type::Union(members) if members.contains(&Type::Error) => Some(Facts::split(
+                local,
+                Narrowing::to(Type::Error),
+                Narrowing::to(without(members, &Type::Error)),
+            )),
+            _ => None,
+        }
+    }
+}
+
+/// The union of `members` other than `removed`.
+fn without(members: &[Type], removed: &Type) -> Type {
+    Type::union(
+        members
+            .iter()
+            .filter(|m| *m != removed)
+            .cloned()
+            .collect::<Vec<_>>(),
+    )
 }
 
 /// Whether control can never continue past this block.
