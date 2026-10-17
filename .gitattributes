@@ -2,3 +2,4 @@
 *.sayon text eol=lf diff=python
 *.png binary
 *.ico binary
+*.zip binary
