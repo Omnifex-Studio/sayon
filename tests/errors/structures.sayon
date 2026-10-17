@@ -1,0 +1,12 @@
+type Point = [
+    x: float,
+    y: float
+]
+
+type Loop = [next: Loop or nothing]
+
+origin = Point(x = 0.0)
+corner = Point(x = 1.0, y = 2.0, z = 3.0)
+print(corner.width)
+flat = Point(1.0, 2.0)
+unknown = [x = 1.0, label = "a"]

@@ -91,6 +91,22 @@ impl FloatType {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TyVar(pub u32);
 
+/// A structure or enum declared in the program; an index into the program's
+/// type definitions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TypeId(pub u32);
+
+/// A use of a declared structure or enum with its type arguments.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct NamedType {
+    pub id: TypeId,
+    pub name: String,
+    pub args: Vec<Type>,
+    /// Whether the definition is Copy when its type arguments are: every
+    /// field is Copy, treating the type parameters as Copy.
+    pub copy: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Type {
     Int(IntType),
@@ -103,6 +119,8 @@ pub enum Type {
     Dict(Box<Type>, Box<Type>),
     /// A normalized union: flat, deduplicated, sorted, at least two members.
     Union(Vec<Type>),
+    /// A declared structure or enum.
+    Named(Box<NamedType>),
     /// A type parameter of a generic function.
     Param(u32),
     Var(TyVar),
@@ -146,12 +164,17 @@ impl Type {
         matches!(self, Type::Int(_) | Type::Float(_))
     }
 
+    pub fn named(named: NamedType) -> Type {
+        Type::Named(Box::new(named))
+    }
+
     pub fn has_vars(&self) -> bool {
         match self {
             Type::Var(_) => true,
             Type::Array(element) => element.has_vars(),
             Type::Dict(key, value) => key.has_vars() || value.has_vars(),
             Type::Union(members) => members.iter().any(Type::has_vars),
+            Type::Named(named) => named.args.iter().any(Type::has_vars),
             _ => false,
         }
     }
@@ -162,6 +185,7 @@ impl Type {
             Type::Array(element) => element.has_params(),
             Type::Dict(key, value) => key.has_params() || value.has_params(),
             Type::Union(members) => members.iter().any(Type::has_params),
+            Type::Named(named) => named.args.iter().any(Type::has_params),
             _ => false,
         }
     }
@@ -173,6 +197,7 @@ impl Type {
         match self {
             Type::Int(_) | Type::Float(_) | Type::Boolean | Type::Nothing | Type::Range => true,
             Type::Union(members) => members.iter().all(Type::is_copy),
+            Type::Named(named) => named.copy && named.args.iter().all(Type::is_copy),
             Type::Unknown => true,
             _ => false,
         }
@@ -185,7 +210,19 @@ impl Type {
             Type::Array(element) => Type::array(element.substitute(args)),
             Type::Dict(key, value) => Type::dict(key.substitute(args), value.substitute(args)),
             Type::Union(members) => Type::union(members.iter().map(|m| m.substitute(args))),
+            Type::Named(named) => Type::named(NamedType {
+                args: named.args.iter().map(|a| a.substitute(args)).collect(),
+                ..(**named).clone()
+            }),
             other => other.clone(),
+        }
+    }
+
+    /// The structure or enum this type names, if any.
+    pub fn as_named(&self) -> Option<&NamedType> {
+        match self {
+            Type::Named(named) => Some(named),
+            _ => None,
         }
     }
 
@@ -223,6 +260,20 @@ impl fmt::Display for Type {
                 }
                 Ok(())
             }
+            Type::Named(named) => {
+                f.write_str(&named.name)?;
+                if !named.args.is_empty() {
+                    f.write_str("<")?;
+                    for (index, arg) in named.args.iter().enumerate() {
+                        if index > 0 {
+                            f.write_str(", ")?;
+                        }
+                        write!(f, "{arg}")?;
+                    }
+                    f.write_str(">")?;
+                }
+                Ok(())
+            }
             Type::Param(index) => {
                 let letters = ["T", "U", "V", "W"];
                 match letters.get(*index as usize) {
@@ -234,6 +285,84 @@ impl fmt::Display for Type {
             Type::Unknown => f.write_str("?"),
         }
     }
+}
+
+/// A declared structure or enum. Field types refer to the definition's own
+/// type parameters as `Type::Param(0..generics)`.
+#[derive(Clone, Debug)]
+pub struct TypeDef {
+    pub name: String,
+    pub generics: u32,
+    pub kind: TypeDefKind,
+    /// Whether values are Copy when the type arguments are.
+    pub copy: bool,
+}
+
+#[derive(Clone, Debug)]
+pub enum TypeDefKind {
+    Structure(Vec<FieldDef>),
+    Enum(Vec<VariantDef>),
+}
+
+#[derive(Clone, Debug)]
+pub struct FieldDef {
+    pub name: String,
+    pub ty: Type,
+}
+
+#[derive(Clone, Debug)]
+pub struct VariantDef {
+    pub name: String,
+    pub fields: Vec<FieldDef>,
+}
+
+impl TypeDef {
+    pub fn is_enum(&self) -> bool {
+        matches!(self.kind, TypeDefKind::Enum(_))
+    }
+
+    /// The fields of a structure; empty for an enum.
+    pub fn fields(&self) -> &[FieldDef] {
+        match &self.kind {
+            TypeDefKind::Structure(fields) => fields,
+            TypeDefKind::Enum(_) => &[],
+        }
+    }
+
+    /// The variants of an enum; empty for a structure.
+    pub fn variants(&self) -> &[VariantDef] {
+        match &self.kind {
+            TypeDefKind::Enum(variants) => variants,
+            TypeDefKind::Structure(_) => &[],
+        }
+    }
+
+    pub fn field_index(&self, name: &str) -> Option<usize> {
+        self.fields().iter().position(|f| f.name == name)
+    }
+
+    pub fn variant_index(&self, name: &str) -> Option<usize> {
+        self.variants().iter().position(|v| v.name == name)
+    }
+}
+
+/// The field types of a structure value, with its type arguments applied.
+pub fn structure_fields(types: &[TypeDef], named: &NamedType) -> Vec<Type> {
+    types[named.id.0 as usize]
+        .fields()
+        .iter()
+        .map(|field| field.ty.substitute(&named.args))
+        .collect()
+}
+
+/// The field types of one variant of an enum value, with its type arguments
+/// applied.
+pub fn variant_fields(types: &[TypeDef], named: &NamedType, variant: u32) -> Vec<Type> {
+    types[named.id.0 as usize].variants()[variant as usize]
+        .fields
+        .iter()
+        .map(|field| field.ty.substitute(&named.args))
+        .collect()
 }
 
 #[cfg(test)]

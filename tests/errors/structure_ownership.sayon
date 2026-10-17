@@ -1,0 +1,18 @@
+type Person = [name: string, friends: Array<Person>]
+
+ada = Person(name = "Ada", friends = [])
+name = ada.name
+
+function rename(person: Person)
+    person.name = "Grace"
+
+enum Box
+    full(text: string)
+    empty
+
+box = full("contents")
+match box
+    case full(text)
+        kept = text
+    case empty
+        print("empty")

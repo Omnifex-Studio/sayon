@@ -6,8 +6,8 @@
 //! - `display(ptr builder, ptr value, i1 nested)` appends the `tostring` text.
 
 use crate::emit::{Body, Codegen, Helper, MEMCPY};
-use crate::layout::{int_code, int_llvm, needs_drop, size_of};
-use sayon_check::types::{FloatType, Type};
+use crate::layout::{int_code, int_llvm, needs_drop};
+use sayon_check::types::{FloatType, NamedType, Type, structure_fields, variant_fields};
 use std::fmt::Write as _;
 
 impl<'m> Codegen<'m> {
@@ -64,6 +64,97 @@ impl<'m> Codegen<'m> {
         tag
     }
 
+    /// Branches on an enum value's tag; `case` runs for each listed variant
+    /// and must end its block.
+    fn enum_switch(
+        &mut self,
+        body: &mut Body,
+        pointer: &str,
+        variants: &[u32],
+        mut case: impl FnMut(&mut Self, &mut Body, u32, &str),
+    ) {
+        let tag = body.tmp();
+        body.line(format!("{tag} = load i32, ptr {pointer}"));
+        let done = body.label("enum_done");
+        let labels: Vec<String> = variants.iter().map(|_| body.label("variant")).collect();
+        let cases: Vec<String> = variants
+            .iter()
+            .zip(&labels)
+            .map(|(variant, label)| format!("i32 {}, label %{label}", variant + 1))
+            .collect();
+        body.line(format!(
+            "switch i32 {tag}, label %{done} [ {} ]",
+            cases.join(" ")
+        ));
+        for (variant, label) in variants.iter().zip(&labels) {
+            body.start(label);
+            case(self, body, *variant, &done);
+        }
+        body.start(&done);
+    }
+
+    /// The fields of a structure, or of one variant of an enum: their types
+    /// and byte offsets within the whole value.
+    fn parts(&self, named: &NamedType, variant: Option<u32>) -> Vec<(Type, u64)> {
+        match variant {
+            None => structure_fields(&self.module.types, named)
+                .into_iter()
+                .enumerate()
+                .map(|(i, ty)| (ty, self.layouts.field_offset(named, i as u32)))
+                .collect(),
+            Some(variant) => variant_fields(&self.module.types, named, variant)
+                .into_iter()
+                .enumerate()
+                .map(|(i, ty)| {
+                    let offset = self.layouts.variant_field_offset(named, variant, i as u32);
+                    (ty, offset)
+                })
+                .collect(),
+        }
+    }
+
+    fn variant_count(&self, named: &NamedType) -> u32 {
+        self.module.types[named.id.0 as usize].variants().len() as u32
+    }
+
+    /// Drops the fields that own something.
+    fn drop_parts(&mut self, body: &mut Body, pointer: &str, parts: &[(Type, u64)]) {
+        for (ty, offset) in parts {
+            if needs_drop(ty) {
+                let drop = self.helper(Helper::Drop, ty);
+                let address = offset_pointer(body, pointer, *offset);
+                body.line(format!("call void {drop}(ptr {address})"));
+            }
+        }
+    }
+
+    /// Replaces the shallow copies of owning fields in `%dst` with clones.
+    fn clone_parts(&mut self, body: &mut Body, parts: &[(Type, u64)]) {
+        for (ty, offset) in parts {
+            if needs_drop(ty) {
+                let clone = self.helper(Helper::Clone, ty);
+                let from = offset_pointer(body, "%src", *offset);
+                let to = offset_pointer(body, "%dst", *offset);
+                body.line(format!("call void {clone}(ptr {from}, ptr {to})"));
+            }
+        }
+    }
+
+    /// Compares fields in order, branching to `different` at the first
+    /// unequal pair.
+    fn eq_parts(&mut self, body: &mut Body, parts: &[(Type, u64)], different: &str) {
+        for (ty, offset) in parts {
+            let eq = self.helper(Helper::Eq, ty);
+            let a = offset_pointer(body, "%a", *offset);
+            let b = offset_pointer(body, "%b", *offset);
+            let same = body.tmp();
+            body.line(format!("{same} = call zeroext i1 {eq}(ptr {a}, ptr {b})"));
+            let next = body.label("same");
+            body.line(format!("br i1 {same}, label %{next}, label %{different}"));
+            body.start(&next);
+        }
+    }
+
     /// Member types of a union with their program-wide tags.
     fn tagged_members(&self, ty: &Type) -> Vec<(u32, Type)> {
         ty.union_members()
@@ -105,7 +196,7 @@ impl<'m> Codegen<'m> {
                 }
                 body.line(format!(
                     "call void @sayon_array_free(ptr %p, i64 {})",
-                    size_of(element)
+                    self.layouts.size_of(element)
                 ));
             }
             Type::Union(_) => {
@@ -125,6 +216,26 @@ impl<'m> Codegen<'m> {
                 });
                 let llvm = self.llvm(ty);
                 body.line(format!("store {llvm} zeroinitializer, ptr %p"));
+            }
+            Type::Named(named) if self.layouts.is_enum(named) => {
+                let variants: Vec<u32> = (0..self.variant_count(named))
+                    .filter(|v| {
+                        self.parts(named, Some(*v))
+                            .iter()
+                            .any(|(t, _)| needs_drop(t))
+                    })
+                    .collect();
+                self.enum_switch(body, "%p", &variants, |cg, b, variant, done| {
+                    let parts = cg.parts(named, Some(variant));
+                    cg.drop_parts(b, "%p", &parts);
+                    b.line(format!("br label %{done}"));
+                });
+                let llvm = self.llvm(ty);
+                body.line(format!("store {llvm} zeroinitializer, ptr %p"));
+            }
+            Type::Named(named) => {
+                let parts = self.parts(named, None);
+                self.drop_parts(body, "%p", &parts);
             }
             _ => {}
         }
@@ -148,7 +259,7 @@ impl<'m> Codegen<'m> {
                 ));
             }
             Type::Array(element) => {
-                let size = size_of(element);
+                let size = self.layouts.size_of(element);
                 body.line("store %sayon.array zeroinitializer, ptr %dst");
                 let length = load_length(body, "%src");
                 body.line(format!(
@@ -182,7 +293,7 @@ impl<'m> Codegen<'m> {
             }
             Type::Union(_) => {
                 self.intrinsic(MEMCPY.to_string());
-                body.memcpy("%dst", "%src", &size_of(ty).to_string());
+                body.memcpy("%dst", "%src", &self.layouts.size_of(ty).to_string());
                 let members: Vec<(u32, Type)> = self
                     .tagged_members(ty)
                     .into_iter()
@@ -199,6 +310,27 @@ impl<'m> Codegen<'m> {
                     b.line(format!("call void {clone}(ptr {from}, ptr {to})"));
                     b.line(format!("br label %{done}"));
                 });
+            }
+            Type::Named(named) if needs_drop(ty) => {
+                self.intrinsic(MEMCPY.to_string());
+                body.memcpy("%dst", "%src", &self.layouts.size_of(ty).to_string());
+                if self.layouts.is_enum(named) {
+                    let variants: Vec<u32> = (0..self.variant_count(named))
+                        .filter(|v| {
+                            self.parts(named, Some(*v))
+                                .iter()
+                                .any(|(t, _)| needs_drop(t))
+                        })
+                        .collect();
+                    self.enum_switch(body, "%src", &variants, |cg, b, variant, done| {
+                        let parts = cg.parts(named, Some(variant));
+                        cg.clone_parts(b, &parts);
+                        b.line(format!("br label %{done}"));
+                    });
+                } else {
+                    let parts = self.parts(named, None);
+                    self.clone_parts(body, &parts);
+                }
             }
             _ => {
                 let llvm = self.llvm(ty);
@@ -344,6 +476,40 @@ impl<'m> Codegen<'m> {
                 body.start(&different);
                 body.line("ret i1 false");
             }
+            Type::Named(named) if self.layouts.is_enum(named) => {
+                let ta = body.tmp();
+                body.line(format!("{ta} = load i32, ptr %a"));
+                let tb = body.tmp();
+                body.line(format!("{tb} = load i32, ptr %b"));
+                let same_tag = body.tmp();
+                body.line(format!("{same_tag} = icmp eq i32 {ta}, {tb}"));
+                let compare = body.label("compare");
+                let different = body.label("different");
+                body.line(format!(
+                    "br i1 {same_tag}, label %{compare}, label %{different}"
+                ));
+                body.start(&compare);
+                let variants: Vec<u32> = (0..self.variant_count(named))
+                    .filter(|v| !self.parts(named, Some(*v)).is_empty())
+                    .collect();
+                let different_label = different.clone();
+                self.enum_switch(body, "%a", &variants, |cg, b, variant, _| {
+                    let parts = cg.parts(named, Some(variant));
+                    cg.eq_parts(b, &parts, &different_label);
+                    b.line("ret i1 true");
+                });
+                body.line("ret i1 true");
+                body.start(&different);
+                body.line("ret i1 false");
+            }
+            Type::Named(named) => {
+                let different = body.label("different");
+                let parts = self.parts(named, None);
+                self.eq_parts(body, &parts, &different);
+                body.line("ret i1 true");
+                body.start(&different);
+                body.line("ret i1 false");
+            }
             Type::Param(_) | Type::Var(_) => body.line("ret i1 false"),
         }
     }
@@ -475,9 +641,54 @@ impl<'m> Codegen<'m> {
                     b.line(format!("br label %{done}"));
                 });
             }
+            Type::Named(named) if self.layouts.is_enum(named) => {
+                let variants: Vec<u32> = (0..self.variant_count(named)).collect();
+                self.enum_switch(body, "%value", &variants, |cg, b, variant, done| {
+                    let def = &cg.module.types[named.id.0 as usize];
+                    let name = def.variants()[variant as usize].name.clone();
+                    cg.text(b, &name);
+                    let parts = cg.parts(named, Some(variant));
+                    if !parts.is_empty() {
+                        cg.text(b, "(");
+                        for (index, (ty, offset)) in parts.iter().enumerate() {
+                            if index > 0 {
+                                cg.text(b, ", ");
+                            }
+                            cg.display_part(b, ty, *offset);
+                        }
+                        cg.text(b, ")");
+                    }
+                    b.line(format!("br label %{done}"));
+                });
+            }
+            Type::Named(named) => {
+                let def = &self.module.types[named.id.0 as usize];
+                let names: Vec<String> = def.fields().iter().map(|f| f.name.clone()).collect();
+                self.text(body, &format!("{}(", def.name));
+                let parts = self.parts(named, None);
+                for (index, ((ty, offset), name)) in parts.iter().zip(&names).enumerate() {
+                    let label = if index > 0 {
+                        format!(", {name} = ")
+                    } else {
+                        format!("{name} = ")
+                    };
+                    self.text(body, &label);
+                    self.display_part(body, ty, *offset);
+                }
+                self.text(body, ")");
+            }
             Type::Param(_) | Type::Var(_) => {}
         }
         body.line("ret void");
+    }
+
+    /// Displays one field of `%value`, as a nested value.
+    fn display_part(&mut self, body: &mut Body, ty: &Type, offset: u64) {
+        let display = self.helper(Helper::Display, ty);
+        let address = offset_pointer(body, "%value", offset);
+        body.line(format!(
+            "call void {display}(ptr %builder, ptr {address}, i1 true)"
+        ));
     }
 
     fn text(&mut self, body: &mut Body, text: &str) {
@@ -487,6 +698,18 @@ impl<'m> Codegen<'m> {
             text.len()
         ));
     }
+}
+
+/// `pointer + offset` bytes.
+fn offset_pointer(body: &mut Body, pointer: &str, offset: u64) -> String {
+    if offset == 0 {
+        return pointer.to_string();
+    }
+    let address = body.tmp();
+    body.line(format!(
+        "{address} = getelementptr inbounds i8, ptr {pointer}, i64 {offset}"
+    ));
+    address
 }
 
 fn load_length(body: &mut Body, array: &str) -> String {

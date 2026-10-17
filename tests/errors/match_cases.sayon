@@ -1,0 +1,27 @@
+enum Shape
+    circle(radius: float)
+    rectangle(width: float, height: float)
+    point
+
+function area(shape: Shape) -> float
+    match shape
+        case circle(radius)
+            return 3.0 * radius * radius
+        case rectangle(width, height) if width > 0.0
+            return width * height
+
+function describe(value: integer or string or nothing) -> string
+    match value
+        case nothing
+            return "none"
+        case _
+            return "something"
+        case 0
+            return "zero"
+
+function keep(shape: Shape) -> Shape
+    match shape
+        case circle
+            return shape
+        case _
+            return point

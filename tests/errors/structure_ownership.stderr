@@ -1,0 +1,29 @@
+error[E_MOVE_OUT_OF_FIELD]: cannot transfer the string out of the field `name` of `ada`
+  --> structure_ownership.sayon:4:8
+   |
+ 4 | name = ada.name
+   |        ^^^^^^^^ the field stays owned by its structure
+   |
+   = help: use clone(...) for a copy, or transfer the whole structure
+
+error[E_MUTATE_BORROWED]: cannot change `person`: the parameter is a read-only borrow
+  --> structure_ownership.sayon:7:5
+   |
+ 6 | function rename(person: Person)
+   |                 ------ parameter declared here
+ 7 |     person.name = "Grace"
+   |     ^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: declare it `update person: Person` to allow changes the caller will see
+
+error[E_MOVE_BORROWED]: cannot transfer `text`: it borrows part of the matched value
+   --> structure_ownership.sayon:16:16
+    |
+ 15 |     case full(text)
+    |               ---- bound here
+ 16 |         kept = text
+    |                ^^^^
+    |
+    = help: use clone(text) for a copy, or match on move(...) to take the value apart (in a case without an `if` guard)
+
+3 errors found; nothing was run

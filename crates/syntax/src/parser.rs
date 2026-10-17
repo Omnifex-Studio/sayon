@@ -971,6 +971,7 @@ impl<'t> Parser<'t> {
             };
             return Ok(TypeExpr {
                 kind: TypeExprKind::Named {
+                    module: None,
                     name,
                     args: Vec::new(),
                 },
@@ -984,7 +985,13 @@ impl<'t> Parser<'t> {
             self.nesting -= 1;
             return Ok(inner);
         }
-        let name = self.expect_ident("a type")?;
+        let first = self.expect_ident("a type")?;
+        let (module, name) = if self.eat(&TokenKind::Dot) {
+            (Some(first), self.expect_ident("a type name")?)
+        } else {
+            (None, first)
+        };
+        let start = module.as_ref().map(|m| m.span).unwrap_or(name.span);
         let mut args = Vec::new();
         if self.eat(&TokenKind::Less) {
             loop {
@@ -995,9 +1002,9 @@ impl<'t> Parser<'t> {
             }
             self.expect(&TokenKind::Greater, "`>`")?;
         }
-        let span = name.span.to(self.previous_span());
+        let span = start.to(self.previous_span());
         Ok(TypeExpr {
-            kind: TypeExprKind::Named { name, args },
+            kind: TypeExprKind::Named { module, name, args },
             span,
         })
     }
@@ -1027,6 +1034,7 @@ impl<'t> Parser<'t> {
                 // `or` is deliberately excluded so `a < b or c > (d)` stays a comparison.
                 TokenKind::Identifier(_)
                 | TokenKind::Comma
+                | TokenKind::Dot
                 | TokenKind::Keyword(Keyword::Nothing) => {}
                 _ => return false,
             }
@@ -1254,6 +1262,9 @@ impl<'t> Parser<'t> {
     fn finish_call(&mut self, callee: Expr, generic_args: Vec<TypeExpr>) -> Result<Expr> {
         self.expect(&TokenKind::LeftParen, "`(`")?;
         self.nesting += 1;
+        if self.named_argument_ahead() {
+            return self.finish_construct(callee, generic_args);
+        }
         let mut args = Vec::new();
         while !self.check(&TokenKind::RightParen) {
             args.push(self.parse_expr()?);
@@ -1269,6 +1280,46 @@ impl<'t> Parser<'t> {
                 callee: Box::new(callee),
                 generic_args,
                 args,
+            },
+            span,
+        ))
+    }
+
+    /// Whether the call's first argument is written `name = value`.
+    fn named_argument_ahead(&self) -> bool {
+        matches!(self.peek().kind, TokenKind::Identifier(_))
+            && self.peek_at(1).kind == TokenKind::Assign
+    }
+
+    /// The arguments of `Point(x = 1.0, y = 2.0)`, after the `(`.
+    fn finish_construct(&mut self, callee: Expr, generic_args: Vec<TypeExpr>) -> Result<Expr> {
+        let mut fields = Vec::new();
+        while !self.check(&TokenKind::RightParen) {
+            if !self.named_argument_ahead() {
+                self.report(
+                    Diagnostic::error(
+                        "E_SYNTAX",
+                        "after a named field, every argument needs a field name",
+                    )
+                    .primary(self.error_span(), "expected `name = value`"),
+                );
+                return Err(());
+            }
+            let name = self.expect_ident("a field name")?;
+            self.expect(&TokenKind::Assign, "`=`")?;
+            fields.push((name, self.parse_expr()?));
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        let end = self.expect(&TokenKind::RightParen, "`)` or `,`")?;
+        self.nesting -= 1;
+        let span = callee.span.to(end);
+        Ok(self.new_expr(
+            ExprKind::Construct {
+                callee: Box::new(callee),
+                generic_args,
+                fields,
             },
             span,
         ))
@@ -1557,6 +1608,15 @@ mod tests {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            ExprKind::Construct { callee, fields, .. } => format!(
+                "{}{{{}}}",
+                show(callee),
+                fields
+                    .iter()
+                    .map(|(k, v)| format!("{} = {}", k.name, show(v)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             ExprKind::IsError(inner) => format!("({} is error)", show(inner)),
             ExprKind::TryExpr(inner) => format!("(try {})", show(inner)),
             ExprKind::Function(_) => "function".into(),
@@ -1625,6 +1685,37 @@ mod tests {
         assert_eq!(expr_of("wrap<integer>(42)"), "wrap<1>(42)");
         assert_eq!(expr_of("x = a < b"), "(a < b)");
         assert_eq!(expr_of("x = a < b and c > (d)"), "((a < b) and (c > d))");
+    }
+
+    #[test]
+    fn construction_with_named_fields() {
+        assert_eq!(
+            expr_of("p = Point(x = 1.5, y = f(2))"),
+            "Point{x = 1.5, y = f(2)}"
+        );
+        assert_eq!(
+            expr_of("p = geometry.Pair<integer>(first = 1, second = 2)"),
+            "geometry.Pair{first = 1, second = 2}"
+        );
+        assert_eq!(expr_of("p = Point()"), "Point()");
+        assert_eq!(error_codes("p = Point(x = 1, 2)"), vec!["E_SYNTAX"]);
+    }
+
+    #[test]
+    fn qualified_type_names() {
+        let module = parse_ok("origin: geometry.Point = make()\n");
+        let StmtKind::Declare(decl) = &module.stmts[0].kind else {
+            panic!()
+        };
+        let Some(TypeExpr {
+            kind: TypeExprKind::Named { module, name, .. },
+            ..
+        }) = &decl.ty
+        else {
+            panic!()
+        };
+        assert_eq!(module.as_ref().map(|m| m.name.as_str()), Some("geometry"));
+        assert_eq!(name.name, "Point");
     }
 
     #[test]

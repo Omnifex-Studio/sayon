@@ -1,7 +1,4 @@
-type Point = [
-    x: float,
-    y: float
-]
-
 counter = function()
     return 1
+
+contents = try readfile("missing.txt")

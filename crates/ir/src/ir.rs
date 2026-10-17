@@ -7,7 +7,7 @@
 //! and an error successor; on failure the error is stored in the function's
 //! error slot.
 
-use sayon_check::types::{FloatType, IntType, Type};
+use sayon_check::types::{FloatType, IntType, Type, TypeDef};
 use sayon_syntax::Span;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -36,6 +36,8 @@ pub struct Module {
     pub union_members: Vec<Type>,
     /// Test functions, when the program was lowered for testing.
     pub tests: Vec<(String, FunctionId)>,
+    /// Declared structures and enums, indexed by `TypeId`.
+    pub types: Vec<TypeDef>,
 }
 
 impl Module {
@@ -45,6 +47,26 @@ impl Module {
 
     pub fn union_member(&self, tag: u32) -> Option<&Type> {
         self.union_members.get(tag.checked_sub(1)? as usize)
+    }
+
+    /// The type stored at `projection` inside a value of type `ty`.
+    pub fn project_type(&self, ty: &Type, projection: &Projection) -> Type {
+        use sayon_check::types::{structure_fields, variant_fields};
+        match (projection, ty) {
+            (Projection::Index(_), Type::Array(element)) => (**element).clone(),
+            (Projection::DictValue(_), Type::Dict(_, value)) => (**value).clone(),
+            (Projection::DictKey(_), Type::Dict(..)) => Type::String,
+            (Projection::Payload(tag), _) => {
+                self.union_member(*tag).cloned().unwrap_or(Type::Unknown)
+            }
+            (Projection::Field(field), Type::Named(named)) => {
+                structure_fields(&self.types, named)[*field as usize].clone()
+            }
+            (Projection::VariantField { variant, field }, Type::Named(named)) => {
+                variant_fields(&self.types, named, *variant)[*field as usize].clone()
+            }
+            (projection, ty) => panic!("invalid projection {projection:?} on {ty}"),
+        }
     }
 }
 
@@ -114,6 +136,10 @@ pub enum Projection {
     DictKey(SlotId),
     /// Payload of a union known to hold the member with this tag.
     Payload(u32),
+    /// A field of a structure, by position.
+    Field(u32),
+    /// A field of an enum value known to be the given variant.
+    VariantField { variant: u32, field: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -229,6 +255,22 @@ pub enum Rvalue {
     MakeUnion {
         tag: u32,
         value: Operand,
+    },
+    /// A structure value of type `ty`, with its fields in declaration order.
+    MakeRecord {
+        ty: Type,
+        fields: Vec<Operand>,
+    },
+    /// A value of the enum `ty`: one variant and its fields.
+    MakeVariant {
+        ty: Type,
+        variant: u32,
+        fields: Vec<Operand>,
+    },
+    /// True when the enum value is the given variant.
+    VariantIs {
+        value: Operand,
+        variant: u32,
     },
     /// True when the union holds the member with `tag`.
     TagIs {

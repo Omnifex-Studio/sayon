@@ -1,0 +1,134 @@
+# Enums and match: variants, payloads, guards, nested patterns, unions
+enum Shape
+    circle(radius: float)
+    rectangle(width: float, height: float)
+    point
+
+enum Tree
+    leaf(value: integer)
+    node(label: string, children: Array<Tree>)
+
+enum Result<T>
+    ok(value: T)
+    error(message: string)
+
+function area(shape: Shape) -> float
+    match shape
+        case circle(radius)
+            return 3.0 * radius * radius
+        case rectangle(width, height)
+            return width * height
+        case point
+            return 0.0
+
+function describe(shape)
+    match shape
+        case circle(r) if r > 10.0
+            return "a big circle"
+        case circle(_)
+            return "a circle"
+        case rectangle(w, h) if w == h
+            return "a square"
+        case rectangle(_, _)
+            return "a rectangle"
+        case _
+            return "something else"
+
+function sum(tree: Tree) -> integer
+    match tree
+        case leaf(value)
+            return value
+        case node(_, children)
+            total = 0
+            for child in children
+                total += sum(child)
+            return total
+
+function parse(text: string) -> Result<integer>
+    if text == ""
+        return error("empty input")
+    return ok(length(text))
+
+function unwrap_or(own result: Result<string>, own fallback: string) -> string
+    match move(result)
+        case ok(value)
+            return value
+        case error(_)
+            return fallback
+
+shapes = [circle(1.0), Shape.rectangle(2.0, 3.0), point, circle(20.0), rectangle(4.0, 4.0)]
+for shape in shapes
+    print(shape, area(shape), describe(shape))
+
+tree = node("root", [leaf(1), node("inner", [leaf(2), leaf(3)]), leaf(4)])
+print(sum(tree))
+print(tree)
+
+for text in ["", "abc"]
+    match parse(text)
+        case ok(count)
+            print("parsed", count)
+        case error(message)
+            print("failed:", message)
+
+greeting: Result<string> = ok("hello")
+print(unwrap_or(greeting, "none"), unwrap_or(Result.error("x"), "none"))
+
+function classify(value: integer or string or nothing) -> string
+    match value
+        case nothing
+            return "nothing"
+        case 0
+            return "zero"
+        case "zero"
+            return "the word zero"
+        case other
+            return "something: {other}"
+
+print(classify(nothing), classify(0), classify(5), classify("zero"), classify("x"))
+
+function sign(n: integer) -> string
+    match n
+        case 0
+            return "zero"
+        case positive if positive > 0
+            return "positive"
+        case _
+            return "negative"
+
+print(sign(3), sign(0), sign(-3))
+
+flag = true
+match flag
+    case true
+        print("yes")
+    case false
+        print("no")
+
+maybe_shape: Shape or nothing = circle(2.0)
+match maybe_shape
+    case nothing
+        print("no shape")
+    case circle(r)
+        print("circle of", r)
+    case shape
+        print("another shape:", shape)
+
+print(circle(1.0) == circle(1.0), circle(1.0) == point, typeof(point))
+
+function radius_of(result: Result<Shape>) -> float
+    match result
+        case ok(circle(r))
+            return r
+        case ok(_)
+            return 0.0
+        case error(_)
+            return -1.0
+
+print(radius_of(ok(circle(2.5))), radius_of(ok(point)), radius_of(Result.error("none")))
+
+match -1
+    case -1
+        print("minus one")
+    case _
+        print("other")

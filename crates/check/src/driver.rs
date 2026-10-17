@@ -47,6 +47,10 @@ impl<'a> Checker<'a> {
                         self.constants[id.0 as usize].span,
                         &self.constants[id.0 as usize].decl.name.name,
                     ),
+                    Item::Type(id) => (
+                        self.types[id.0 as usize].span,
+                        &self.types[id.0 as usize].name,
+                    ),
                 };
                 diagnostic = diagnostic.secondary(span, format!("`{name}` is part of the cycle"));
             }
@@ -100,7 +104,7 @@ impl<'a> Checker<'a> {
         let annotation = decl
             .ty
             .as_ref()
-            .map(|ty| self.resolve_type(ty, &Default::default()));
+            .map(|ty| self.resolve_type(module, ty, &Default::default()));
         let mut value = match &annotation {
             Some(ty) => self.check_expr_as(&mut cx, &decl.value, ty, "constant value"),
             None => self.check_expr(&mut cx, &decl.value, None),

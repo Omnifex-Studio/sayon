@@ -571,6 +571,30 @@ impl<'s> Printer<'s> {
                     POSTFIX,
                 )
             }
+            ExprKind::Construct {
+                callee,
+                generic_args,
+                fields,
+            } => {
+                let generics = if generic_args.is_empty() {
+                    String::new()
+                } else {
+                    let types: Vec<String> = generic_args.iter().map(type_text).collect();
+                    format!("<{}>", types.join(", "))
+                };
+                let parts: Vec<String> = fields
+                    .iter()
+                    .map(|(name, value)| format!("{} = {}", name.name, self.expr(value, 0)))
+                    .collect();
+                (
+                    format!(
+                        "{}{generics}({})",
+                        self.expr(callee, POSTFIX),
+                        parts.join(", ")
+                    ),
+                    POSTFIX,
+                )
+            }
             ExprKind::Index { target, index } => (
                 format!("{}[{}]", self.expr(target, POSTFIX), self.expr(index, 0)),
                 POSTFIX,
@@ -657,12 +681,16 @@ fn generic_list(generics: &[Ident]) -> String {
 
 pub fn type_text(ty: &TypeExpr) -> String {
     match &ty.kind {
-        TypeExprKind::Named { name, args } => {
+        TypeExprKind::Named { module, name, args } => {
+            let qualified = match module {
+                Some(module) => format!("{}.{}", module.name, name.name),
+                None => name.name.clone(),
+            };
             if args.is_empty() {
-                name.name.clone()
+                qualified
             } else {
                 let args: Vec<String> = args.iter().map(type_text).collect();
-                format!("{}<{}>", name.name, args.join(", "))
+                format!("{qualified}<{}>", args.join(", "))
             }
         }
         TypeExprKind::Union(members) => {
@@ -681,6 +709,9 @@ fn contains_function_literal(stmt: &Stmt) -> bool {
             ExprKind::Dict(entries) => entries.iter().any(|(k, v)| expr_has(k) || expr_has(v)),
             ExprKind::Record(fields) => fields.iter().any(|(_, v)| expr_has(v)),
             ExprKind::Call { callee, args, .. } => expr_has(callee) || args.iter().any(expr_has),
+            ExprKind::Construct { callee, fields, .. } => {
+                expr_has(callee) || fields.iter().any(|(_, v)| expr_has(v))
+            }
             ExprKind::Index { target, index } => expr_has(target) || expr_has(index),
             ExprKind::Member { target, .. } => expr_has(target),
             ExprKind::Unary { operand, .. } => expr_has(operand),
@@ -982,6 +1013,22 @@ fn expr_print(expr: &Expr, source: &str, out: &mut String) {
             }
             out.push(')');
         }
+        ExprKind::Construct {
+            callee,
+            generic_args,
+            fields,
+        } => {
+            out.push_str("construct(");
+            e(callee, out);
+            for ty in generic_args {
+                let _ = write!(out, "<{}>", type_text(ty));
+            }
+            for (name, value) in fields {
+                let _ = write!(out, ",{}=", name.name);
+                e(value, out);
+            }
+            out.push(')');
+        }
         ExprKind::Index { target, index } => {
             out.push_str("index(");
             e(target, out);
@@ -1104,6 +1151,14 @@ mod tests {
         check(
             "test   \"adds\"\n  assert(1+1==2)\n",
             "test \"adds\"\n    assert(1 + 1 == 2)\n",
+        );
+    }
+
+    #[test]
+    fn structures_enums_and_match() {
+        check(
+            "type Point = [x: float, y: float]\nenum Shape\n  circle( radius:float )\n  point\np=Point( x=1.0,y = 2.0 )\nq:geometry.Point=[x=0.0,y=p.y]\nmatch shape\n  case circle(r)  if r>1.0\n    print(r)\n  case _\n    print( \"other\" )\n",
+            "type Point = [x: float, y: float]\nenum Shape\n    circle(radius: float)\n    point\np = Point(x = 1.0, y = 2.0)\nq: geometry.Point = [x = 0.0, y = p.y]\nmatch shape\n    case circle(r) if r > 1.0\n        print(r)\n    case _\n        print(\"other\")\n",
         );
     }
 

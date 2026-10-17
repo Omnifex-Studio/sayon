@@ -7,7 +7,7 @@
 //! start zeroed, so dropping a slot that never received a value (or whose
 //! value moved out) does nothing.
 
-use crate::layout::{Layouts, int_code, int_llvm, needs_drop, size_of};
+use crate::layout::{Layouts, int_code, int_llvm, needs_drop};
 use sayon_check::types::{FloatType, IntType, Type};
 use sayon_ir::*;
 use sayon_syntax::{SourceMap, Span};
@@ -141,7 +141,7 @@ impl<'m> Codegen<'m> {
         Codegen {
             module,
             sources,
-            layouts: Layouts::default(),
+            layouts: Layouts::new(module.types.clone()),
             constants: HashMap::new(),
             constant_defs: String::new(),
             helpers: HashMap::new(),
@@ -448,18 +448,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
             Base::Global(global) => self.cg.module.globals[global.0 as usize].ty.clone(),
         };
         for projection in &place.projection {
-            ty = match (projection, ty) {
-                (Projection::Index(_), Type::Array(element)) => *element,
-                (Projection::DictValue(_), Type::Dict(_, value)) => *value,
-                (Projection::DictKey(_), Type::Dict(..)) => Type::String,
-                (Projection::Payload(tag), _) => self
-                    .cg
-                    .module
-                    .union_member(*tag)
-                    .cloned()
-                    .unwrap_or(Type::Unknown),
-                (projection, ty) => panic!("invalid projection {projection:?} on {ty}"),
-            };
+            ty = self.cg.module.project_type(&ty, projection);
         }
         ty
     }
@@ -537,9 +526,42 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                         .cloned()
                         .unwrap_or(Type::Unknown);
                 }
+                Projection::Field(field) => {
+                    let Type::Named(named) = &ty else {
+                        panic!("field of {ty}")
+                    };
+                    let offset = self.cg.layouts.field_offset(named, *field);
+                    let next = self.cg.module.project_type(&ty, projection);
+                    pointer = self.offset_pointer(&pointer, offset);
+                    ty = next;
+                }
+                Projection::VariantField { variant, field } => {
+                    let Type::Named(named) = &ty else {
+                        panic!("variant field of {ty}")
+                    };
+                    let offset = self
+                        .cg
+                        .layouts
+                        .variant_field_offset(named, *variant, *field);
+                    let next = self.cg.module.project_type(&ty, projection);
+                    pointer = self.offset_pointer(&pointer, offset);
+                    ty = next;
+                }
             }
         }
         (pointer, ty)
+    }
+
+    /// `pointer + offset` bytes.
+    fn offset_pointer(&mut self, pointer: &str, offset: u64) -> String {
+        if offset == 0 {
+            return pointer.to_string();
+        }
+        let address = self.body.tmp();
+        self.body.line(format!(
+            "{address} = getelementptr inbounds i8, ptr {pointer}, i64 {offset}"
+        ));
+        address
     }
 
     fn const_value(&mut self, constant: &Constant) -> (String, String, Type) {
@@ -672,7 +694,11 @@ impl<'c, 'm> FnEmit<'c, 'm> {
         let dest_llvm = self.cg.llvm(dest_ty);
         self.body
             .line(format!("store {dest_llvm} zeroinitializer, ptr {dest}"));
-        let bytes = size_of(&source_ty).min(size_of(dest_ty));
+        let bytes = self
+            .cg
+            .layouts
+            .size_of(&source_ty)
+            .min(self.cg.layouts.size_of(dest_ty));
         match operand {
             Operand::Copy(place) | Operand::Move(place) | Operand::Borrow { place, .. } => {
                 let (source, _) = self.place_ptr(place);
@@ -711,7 +737,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 let Type::Array(element) = ty else {
                     panic!("push onto {ty}")
                 };
-                let size = size_of(&element);
+                let size = self.cg.layouts.size_of(&element);
                 self.body.line(format!(
                     "call void @sayon_array_reserve(ptr {pointer}, i64 1, i64 {size})"
                 ));
@@ -825,7 +851,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 if items.is_empty() {
                     return;
                 }
-                let size = size_of(element);
+                let size = self.cg.layouts.size_of(element);
                 self.body.line(format!(
                     "call void @sayon_array_reserve(ptr {dest}, i64 {}, i64 {size})",
                     items.len()
@@ -850,7 +876,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
             Rvalue::MakeDict { value, entries } => {
                 self.body.line(format!(
                     "call void @sayon_dict_new(ptr {dest}, i64 {})",
-                    size_of(value)
+                    self.cg.layouts.size_of(value)
                 ));
                 if entries.is_empty() {
                     return;
@@ -882,6 +908,55 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 ));
                 let member = self.operand_type(value);
                 self.store_operand(value, &payload, &member);
+            }
+            Rvalue::MakeRecord { ty, fields } => {
+                let Type::Named(named) = ty else {
+                    panic!("record of {ty}")
+                };
+                let llvm = self.cg.llvm(ty);
+                self.body
+                    .line(format!("store {llvm} zeroinitializer, ptr {dest}"));
+                let field_types =
+                    sayon_check::types::structure_fields(&self.cg.module.types, named);
+                for (index, (operand, field_ty)) in fields.iter().zip(&field_types).enumerate() {
+                    let offset = self.cg.layouts.field_offset(named, index as u32);
+                    let target = self.offset_pointer(dest, offset);
+                    self.store_operand(operand, &target, field_ty);
+                }
+            }
+            Rvalue::MakeVariant {
+                ty,
+                variant,
+                fields,
+            } => {
+                let Type::Named(named) = ty else {
+                    panic!("variant of {ty}")
+                };
+                let llvm = self.cg.llvm(ty);
+                self.body
+                    .line(format!("store {llvm} zeroinitializer, ptr {dest}"));
+                self.body
+                    .line(format!("store i32 {}, ptr {dest}", variant + 1));
+                let field_types =
+                    sayon_check::types::variant_fields(&self.cg.module.types, named, *variant);
+                for (index, (operand, field_ty)) in fields.iter().zip(&field_types).enumerate() {
+                    let offset =
+                        self.cg
+                            .layouts
+                            .variant_field_offset(named, *variant, index as u32);
+                    let target = self.offset_pointer(dest, offset);
+                    self.store_operand(operand, &target, field_ty);
+                }
+            }
+            Rvalue::VariantIs { value, variant } => {
+                let (pointer, _) = self.pointer(value);
+                let loaded = self.body.tmp();
+                self.body
+                    .line(format!("{loaded} = load i32, ptr {pointer}"));
+                let result = self.body.tmp();
+                self.body
+                    .line(format!("{result} = icmp eq i32 {loaded}, {}", variant + 1));
+                self.body.line(format!("store i1 {result}, ptr {dest}"));
             }
             Rvalue::TagIs { value, tag } => {
                 let (pointer, _) = self.pointer(value);
@@ -1075,11 +1150,20 @@ impl<'c, 'm> FnEmit<'c, 'm> {
             }
             None => dest.to_string(),
         };
-        let bytes = size_of(&element).min(size_of(dest_ty).max(if element_tag.is_some() {
-            size_of(&element)
-        } else {
-            0
-        }));
+        let bytes = self
+            .cg
+            .layouts
+            .size_of(&element)
+            .min(
+                self.cg
+                    .layouts
+                    .size_of(dest_ty)
+                    .max(if element_tag.is_some() {
+                        self.cg.layouts.size_of(&element)
+                    } else {
+                        0
+                    }),
+            );
         self.cg.intrinsic(MEMCPY.to_string());
         self.body.memcpy(&target, &source, &bytes.to_string());
         self.body.line(format!("br label %{done}"));

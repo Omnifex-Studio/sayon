@@ -91,10 +91,22 @@ fn lower_program(program: &hir::Program, include_tests: bool) -> LowerOutput {
         entry,
         union_members: lowerer.union_members,
         tests,
+        types: program.types.clone(),
     };
     LowerOutput {
         module,
         diagnostics: lowerer.diagnostics,
+    }
+}
+
+/// Whether a parameter receives a reference to the caller's value: update
+/// parameters always do, so changes reach the caller; read parameters do
+/// for values that are not Copy.
+fn by_reference(mode: ParamMode, ty: &Type) -> bool {
+    match mode {
+        ParamMode::Own => false,
+        ParamMode::Update => true,
+        ParamMode::Read => !ty.is_copy(),
     }
 }
 
@@ -453,7 +465,7 @@ impl<'l, 'p> FnLower<'l, 'p> {
         let mut owned_params = Vec::new();
         for param in &source.params {
             let ty = self.ty(&param.ty);
-            let reference = param.mode != ParamMode::Own && !ty.is_copy();
+            let reference = by_reference(param.mode, &ty);
             let kind = if reference {
                 SlotKind::Ref {
                     mutable: param.mode == ParamMode::Update,
@@ -663,7 +675,200 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 finally,
             } => self.try_stmt(body, catch.as_ref(), finally.as_ref()),
             Block(block) => self.lower_block(block),
+            Match {
+                scrutinee,
+                owned,
+                arms,
+            } => self.match_stmt(scrutinee, *owned, arms),
         }
+    }
+
+    /// Tests each arm's pattern in order; the first that matches (and whose
+    /// guard holds) binds its names and runs. A match that owns its value
+    /// keeps it in a temporary: unguarded arms move their bindings out of it,
+    /// and whatever remains is destroyed when the match ends.
+    fn match_stmt(&mut self, scrutinee: &'p hir::Expr, owned: bool, arms: &'p [hir::MatchArm]) {
+        self.push_scope();
+        let ty = self.ty(&scrutinee.ty);
+        let copy = ty.is_copy();
+        let place = if owned || copy {
+            let slot = self.temp(ty.clone());
+            self.expr_into(scrutinee, Place::slot(slot));
+            Place::slot(slot)
+        } else {
+            self.place_of(scrutinee, Want::Read)
+        };
+        let consuming = owned && !copy;
+        let end = self.new_block();
+        for arm in arms {
+            if self.terminated {
+                break;
+            }
+            let next = self.new_block();
+            self.test_pattern(&place, &ty, &arm.pattern, next);
+            self.push_scope();
+            self.block_scopes.push(self.scopes.len() - 1);
+            let take = consuming && arm.guard.is_none();
+            self.bind_pattern(&place, &ty, &arm.pattern, take);
+            if let Some(guard) = &arm.guard {
+                // Guarded bindings only copy or borrow, so failing leaves
+                // nothing to clean up.
+                let condition = self.condition(guard);
+                let body = self.new_block();
+                self.terminate(Terminator::Branch {
+                    condition,
+                    then_block: body,
+                    else_block: next,
+                });
+                self.switch_to(body);
+            }
+            self.lower_block(&arm.body);
+            self.block_scopes.pop();
+            self.pop_scope();
+            self.goto(end);
+            self.switch_to(next);
+        }
+        // Exhaustiveness checking makes this unreachable.
+        self.terminate(Terminator::Unreachable);
+        self.switch_to(end);
+        self.pop_scope();
+    }
+
+    /// Branches to `fail` unless the value at `place` matches `pattern`.
+    fn test_pattern(&mut self, place: &Place, ty: &Type, pattern: &'p hir::Pattern, fail: BlockId) {
+        match pattern {
+            hir::Pattern::Wildcard | hir::Pattern::Binding(_) => {}
+            hir::Pattern::Literal(literal) => {
+                let flag = self.new_slot(Type::Boolean, SlotKind::Value, None);
+                let lhs = self.read_operand(place, ty);
+                self.push_scope();
+                let rhs = self.operand(literal, Want::Read);
+                self.assign(
+                    Place::slot(flag),
+                    Rvalue::Compare {
+                        op: CompareOp::Equal,
+                        ty: ty.clone(),
+                        lhs,
+                        rhs,
+                    },
+                );
+                self.pop_scope();
+                self.branch_unless(flag, fail);
+            }
+            hir::Pattern::Variant {
+                variant, fields, ..
+            } => {
+                let flag = self.new_slot(Type::Boolean, SlotKind::Value, None);
+                let value = self.read_operand(place, ty);
+                self.assign(
+                    Place::slot(flag),
+                    Rvalue::VariantIs {
+                        value,
+                        variant: *variant,
+                    },
+                );
+                self.branch_unless(flag, fail);
+                let field_types = self.variant_field_types(ty, *variant);
+                for (index, (field, field_ty)) in fields.iter().zip(&field_types).enumerate() {
+                    let inner = place.project(Projection::VariantField {
+                        variant: *variant,
+                        field: index as u32,
+                    });
+                    self.test_pattern(&inner, field_ty, field, fail);
+                }
+            }
+            hir::Pattern::Member { member, inner } => {
+                let member = self.ty(member);
+                let tag = self.l.tag(&member);
+                let flag = self.new_slot(Type::Boolean, SlotKind::Value, None);
+                let value = self.read_operand(place, ty);
+                self.assign(Place::slot(flag), Rvalue::TagIs { value, tag });
+                self.branch_unless(flag, fail);
+                let payload = place.project(Projection::Payload(tag));
+                self.test_pattern(&payload, &member, inner, fail);
+            }
+        }
+    }
+
+    /// Binds a pattern's names to the parts of the value at `place`: Copy
+    /// values are copied; others are moved out when `take` is set, and
+    /// borrowed otherwise.
+    fn bind_pattern(&mut self, place: &Place, ty: &Type, pattern: &'p hir::Pattern, take: bool) {
+        match pattern {
+            hir::Pattern::Wildcard | hir::Pattern::Literal(_) => {}
+            hir::Pattern::Binding(local) => {
+                let info = &self.locals[local.0 as usize];
+                let local_ty = self.ty(&info.ty);
+                let name = Some(info.name.clone());
+                let source = self.narrow(place.clone(), ty, &local_ty);
+                if local_ty.is_copy() {
+                    let slot = self.new_slot(local_ty, SlotKind::Value, name);
+                    self.local_slots.insert(*local, slot);
+                    self.assign(Place::slot(slot), Rvalue::Use(Operand::Copy(source)));
+                } else if take {
+                    let slot = self.declare_local(*local);
+                    self.assign(Place::slot(slot), Rvalue::Use(Operand::Move(source)));
+                } else {
+                    let slot = self.new_slot(local_ty, SlotKind::Ref { mutable: false }, name);
+                    self.local_slots.insert(*local, slot);
+                    self.push(Inst::Bind {
+                        slot,
+                        place: source,
+                        mutable: false,
+                    });
+                }
+            }
+            hir::Pattern::Variant {
+                variant, fields, ..
+            } => {
+                let field_types = self.variant_field_types(ty, *variant);
+                for (index, (field, field_ty)) in fields.iter().zip(&field_types).enumerate() {
+                    let inner = place.project(Projection::VariantField {
+                        variant: *variant,
+                        field: index as u32,
+                    });
+                    self.bind_pattern(&inner, field_ty, field, take);
+                }
+            }
+            hir::Pattern::Member { member, inner } => {
+                let member = self.ty(member);
+                let tag = self.l.tag(&member);
+                let payload = place.project(Projection::Payload(tag));
+                self.bind_pattern(&payload, &member, inner, take);
+            }
+        }
+    }
+
+    fn variant_field_types(&self, ty: &Type, variant: u32) -> Vec<Type> {
+        match ty {
+            Type::Named(named) => {
+                sayon_check::types::variant_fields(&self.l.program.types, named, variant)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// An operand that reads the value at `place` without taking it.
+    fn read_operand(&self, place: &Place, ty: &Type) -> Operand {
+        if ty.is_copy() {
+            Operand::Copy(place.clone())
+        } else {
+            Operand::Borrow {
+                place: place.clone(),
+                mutable: false,
+            }
+        }
+    }
+
+    /// Continues in a new block when the flag is true, else jumps to `fail`.
+    fn branch_unless(&mut self, flag: SlotId, fail: BlockId) {
+        let next = self.new_block();
+        self.terminate(Terminator::Branch {
+            condition: Operand::Copy(Place::slot(flag)),
+            then_block: next,
+            else_block: fail,
+        });
+        self.switch_to(next);
     }
 
     fn for_loop(&mut self, bindings: &[LocalId], iterable: &'p hir::Expr, body: &'p hir::Block) {
@@ -907,30 +1112,22 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 target_ty,
                 index,
             } => {
+                // The value comes first, so that the positions checked on the
+                // way to the element are still valid when it is stored.
+                let value_operand = self.value_temp(value);
                 let target_ty = self.ty(target_ty);
-                let base = self.hir_place(target);
+                let base = self.hir_place_read(target);
                 match target_ty {
                     Type::Dict(..) => {
                         let key = self.operand(index, Want::Read);
-                        let value_ty = self.ty(&value.ty);
-                        let temp = self.temp(value_ty.clone());
-                        self.expr_into(value, Place::slot(temp));
-                        let value = if value_ty.is_copy() {
-                            Operand::Copy(Place::slot(temp))
-                        } else {
-                            Operand::Move(Place::slot(temp))
-                        };
                         self.push(Inst::DictSet {
                             dict: base,
                             key,
-                            value,
+                            value: value_operand,
                         });
                     }
                     _ => {
                         let index_operand = self.operand(index, Want::Owned);
-                        let value_ty = self.ty(&value.ty);
-                        let temp = self.temp(value_ty.clone());
-                        self.expr_into(value, Place::slot(temp));
                         let position = self.new_slot(Type::INTEGER, SlotKind::Value, None);
                         self.op(
                             Op::CheckIndex {
@@ -945,15 +1142,29 @@ impl<'l, 'p> FnLower<'l, 'p> {
                         );
                         let element = base.project(Projection::Index(position));
                         self.push(Inst::Drop(element.clone()));
-                        let value = if value_ty.is_copy() {
-                            Operand::Copy(Place::slot(temp))
-                        } else {
-                            Operand::Move(Place::slot(temp))
-                        };
-                        self.assign(element, Rvalue::Use(value));
+                        self.assign(element, Rvalue::Use(value_operand));
                     }
                 }
             }
+            hir::Place::Field { .. } | hir::Place::Narrow { .. } => {
+                let value_operand = self.value_temp(value);
+                let target = self.hir_place_read(place);
+                self.push(Inst::Drop(target.clone()));
+                self.assign(target, Rvalue::Use(value_operand));
+            }
+        }
+    }
+
+    /// Evaluates a value into a temporary and returns the operand that
+    /// transfers (or copies) it out.
+    fn value_temp(&mut self, value: &'p hir::Expr) -> Operand {
+        let ty = self.ty(&value.ty);
+        let temp = self.temp(ty.clone());
+        self.expr_into(value, Place::slot(temp));
+        if ty.is_copy() {
+            Operand::Copy(Place::slot(temp))
+        } else {
+            Operand::Move(Place::slot(temp))
         }
     }
 
@@ -964,9 +1175,9 @@ impl<'l, 'p> FnLower<'l, 'p> {
         value: &'p hir::Expr,
         span: Span,
     ) {
-        let target = self.hir_place_read(place);
         let ty = self.place_type(place);
         let rhs = self.operand(value, Want::Read);
+        let target = self.hir_place_read(place);
         let current = if ty.is_copy() {
             Operand::Copy(target.clone())
         } else {
@@ -994,13 +1205,21 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 Type::Dict(_, value) => *value,
                 other => other,
             },
+            hir::Place::Field {
+                target_ty, name, ..
+            } => self.field_of(&self.ty(target_ty), name).1,
+            hir::Place::Narrow { ty, .. } => self.ty(ty),
         }
     }
 
-    /// The place an assignment target refers to, without the final element
-    /// step (which assignment handles itself).
-    fn hir_place(&mut self, place: &'p hir::Place) -> Place {
-        self.hir_place_read(place)
+    /// The position and type of a structure's field.
+    fn field_of(&self, ty: &Type, name: &str) -> (u32, Type) {
+        let Type::Named(named) = ty else {
+            panic!("field `{name}` of {ty}");
+        };
+        let def = &self.l.program.types[named.id.0 as usize];
+        let index = def.field_index(name).expect("checked field");
+        (index as u32, def.fields()[index].ty.substitute(&named.args))
     }
 
     /// Resolves a HIR place, checking every index and key on the way.
@@ -1015,6 +1234,21 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 let base = self.hir_place_read(target);
                 let target_ty = self.ty(target_ty);
                 self.element_place(base, &target_ty, index, index.span)
+            }
+            hir::Place::Field {
+                target,
+                target_ty,
+                name,
+            } => {
+                let base = self.hir_place_read(target);
+                let (index, _) = self.field_of(&self.ty(target_ty), name);
+                base.project(Projection::Field(index))
+            }
+            hir::Place::Narrow { target, ty } => {
+                let from = self.place_type(target);
+                let base = self.hir_place_read(target);
+                let ty = self.ty(ty);
+                self.narrow(base, &from, &ty)
             }
         }
     }
@@ -1083,19 +1317,31 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 let base = self.place_of(target, Want::Read);
                 self.element_place(base, &target_ty, index, expr.span)
             }
+            hir::ExprKind::Field { value, name } => {
+                let value_ty = self.ty(&value.ty);
+                let base = self.place_of(value, Want::Read);
+                let (index, _) = self.field_of(&value_ty, name);
+                base.project(Projection::Field(index))
+            }
             _ => self.temp_place(expr, want),
         }
     }
 
-    /// The place of a local narrowed to `ty`: the payload for a single member,
-    /// or the union itself for a smaller union (tags are program-wide).
+    /// The place of a local narrowed to `ty`.
     fn narrowed_place(&mut self, local: Place, ty: &Type) -> Place {
         let local_ty = self.place_ty(&local);
-        if local_ty == *ty || matches!(ty, Type::Union(_)) || !matches!(local_ty, Type::Union(_)) {
-            return local;
+        self.narrow(local, &local_ty, ty)
+    }
+
+    /// A place holding a value of type `from`, seen as the narrower type
+    /// `to`: the payload for a single member of a union, or the union itself
+    /// for a smaller union (tags are program-wide).
+    fn narrow(&mut self, place: Place, from: &Type, to: &Type) -> Place {
+        if from == to || matches!(to, Type::Union(_)) || !matches!(from, Type::Union(_)) {
+            return place;
         }
-        let tag = self.l.tag(ty);
-        local.project(Projection::Payload(tag))
+        let tag = self.l.tag(to);
+        place.project(Projection::Payload(tag))
     }
 
     fn place_ty(&self, place: &Place) -> Type {
@@ -1125,7 +1371,8 @@ impl<'l, 'p> FnLower<'l, 'p> {
         let placeable = match &expr.kind {
             hir::ExprKind::Local { .. }
             | hir::ExprKind::Constant(_)
-            | hir::ExprKind::Index { .. } => true,
+            | hir::ExprKind::Index { .. }
+            | hir::ExprKind::Field { .. } => true,
             hir::ExprKind::Narrow(inner) => matches!(inner.kind, hir::ExprKind::Local { .. }),
             _ => false,
         };
@@ -1134,7 +1381,7 @@ impl<'l, 'p> FnLower<'l, 'p> {
             self.expr_into(expr, Place::slot(slot));
             let place = Place::slot(slot);
             return match want {
-                _ if ty.is_copy() => Operand::Copy(place),
+                _ if ty.is_copy() && want != Want::Mut => Operand::Copy(place),
                 Want::Owned => Operand::Move(place),
                 Want::Read => Operand::Borrow {
                     place,
@@ -1147,11 +1394,15 @@ impl<'l, 'p> FnLower<'l, 'p> {
             };
         }
         let place = self.place_of(expr, want);
-        if ty.is_copy() {
+        if ty.is_copy() && want != Want::Mut {
             return Operand::Copy(place);
         }
         match (usage, want) {
             (Some(Usage::Move), _) => Operand::Move(place),
+            // The checker only allows taking a field of a temporary.
+            (None, Want::Owned) if matches!(expr.kind, hir::ExprKind::Field { .. }) => {
+                Operand::Move(place)
+            }
             (Some(Usage::BorrowUpdate), _) | (_, Want::Mut) => Operand::Borrow {
                 place,
                 mutable: true,
@@ -1214,9 +1465,36 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 Rvalue::Use(Operand::Const(Constant::Str(text.clone()))),
             ),
             H::Nothing => self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing))),
-            H::Local { .. } | H::Constant(_) | H::Index { .. } | H::Narrow(_) => {
+            H::Local { .. } | H::Constant(_) | H::Index { .. } | H::Narrow(_) | H::Field { .. } => {
                 let operand = self.operand(expr, Want::Owned);
                 self.assign(dest, Rvalue::Use(operand));
+            }
+            H::Record(fields) => {
+                // Fields are evaluated in the order written, then laid out in
+                // declaration order.
+                let mut operands: Vec<Option<Operand>> = vec![None; fields.len()];
+                for (index, value) in fields {
+                    operands[*index as usize] = Some(self.operand(value, Want::Owned));
+                }
+                let fields = operands
+                    .into_iter()
+                    .map(|operand| operand.expect("every field"))
+                    .collect();
+                self.assign(dest, Rvalue::MakeRecord { ty, fields });
+            }
+            H::Variant { variant, args } => {
+                let fields = args
+                    .iter()
+                    .map(|arg| self.operand(arg, Want::Owned))
+                    .collect();
+                self.assign(
+                    dest,
+                    Rvalue::MakeVariant {
+                        ty,
+                        variant: *variant,
+                        fields,
+                    },
+                );
             }
             H::Call {
                 function,
@@ -1229,7 +1507,7 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 let mut operands = Vec::new();
                 for (index, arg) in args.iter().enumerate() {
                     let param_ty = callee_source.params[index].ty.substitute(&instance_args);
-                    let reference = arg.mode != ParamMode::Own && !param_ty.is_copy();
+                    let reference = by_reference(arg.mode, &param_ty);
                     let want = if !reference {
                         Want::Owned
                     } else if arg.mode == ParamMode::Update {

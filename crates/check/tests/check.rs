@@ -240,9 +240,187 @@ fn errors_and_try() {
 
 #[test]
 fn unavailable_features_name_their_milestone() {
-    fails("type Point = [\n    x: float\n]\n", "E_UNAVAILABLE");
     fails("f = function(x)\n    return x\n", "E_UNAVAILABLE");
     fails("unsafe\n    x = 1\n", "E_UNAVAILABLE");
+}
+
+// ----- structures and enums ---------------------------------------------------
+
+const POINT: &str = "type Point = [x: float, y: float]\n";
+const SHAPE: &str = "enum Shape\n    circle(radius: float)\n    point\n\n";
+
+#[test]
+fn structures_are_built_with_every_field() {
+    ok(&format!(
+        "{POINT}p = Point(x = 1.0, y = 2.0)\nq: Point = [x = 0.0, y = p.y]\np.x = 3.0\nprint(p == q)\n"
+    ));
+    fails(&format!("{POINT}p = Point(x = 1.0)\n"), "E_MISSING_FIELD");
+    fails(
+        &format!("{POINT}p = Point(x = 1.0, y = 2.0, z = 3.0)\n"),
+        "E_UNKNOWN_FIELD",
+    );
+    fails(
+        &format!("{POINT}p = Point(x = 1.0, x = 2.0, y = 0.0)\n"),
+        "E_DUPLICATE_FIELD",
+    );
+    fails(&format!("{POINT}p = Point(1.0, 2.0)\n"), "E_NAMED_FIELDS");
+    fails(
+        &format!("{POINT}p = Point(x = 1, y = 2.0)\n"),
+        "E_TYPE_MISMATCH",
+    );
+    fails(
+        &format!("{POINT}print(Point(x = 1.0, y = 2.0).z)\n"),
+        "E_UNKNOWN_FIELD",
+    );
+    fails("x = [a = 1]\n", "E_RECORD_TYPE");
+    fails(&format!("{POINT}print(Point)\n"), "E_TYPE_VALUE");
+}
+
+#[test]
+fn type_declarations_are_checked() {
+    fails("type Empty = []\n", "E_EMPTY_STRUCTURE");
+    fails("type Node = [next: Node or nothing]\n", "E_RECURSIVE_TYPE");
+    fails(
+        "type A = [b: B]\ntype B = [a: A or nothing]\n",
+        "E_RECURSIVE_TYPE",
+    );
+    ok("type Node = [value: integer, children: Array<Node>]\n");
+    fails("type P = [x: integer, x: integer]\n", "E_DUPLICATE_FIELD");
+    fails("enum E\n    a\n    a\n", "E_DUPLICATE_VARIANT");
+    fails("type P = [x: Missing]\n", "E_UNKNOWN_TYPE");
+    fails(
+        "function f()\n    type Local = [x: integer]\n",
+        "E_TYPE_POSITION",
+    );
+}
+
+#[test]
+fn field_access_infers_the_structure() {
+    let program = ok(&format!(
+        "{POINT}function norm(p)\n    return p.x * p.x + p.y * p.y\n\nprint(norm(Point(x = 3.0, y = 4.0)))\n"
+    ));
+    assert_eq!(function(&program, "norm").params[0].ty.to_string(), "Point");
+}
+
+#[test]
+fn structures_of_copy_fields_are_copied() {
+    ok(&format!(
+        "{POINT}a = Point(x = 1.0, y = 2.0)\nb = a\nprint(a)\n"
+    ));
+    let person = "type Person = [name: string]\n";
+    fails(
+        &format!("{person}a = Person(name = \"x\")\nb = a\nprint(a)\n"),
+        "E_MOVED_VALUE",
+    );
+    fails(
+        &format!("{person}a = Person(name = \"x\")\nn = a.name\n"),
+        "E_MOVE_OUT_OF_FIELD",
+    );
+    ok(&format!(
+        "{person}function make() -> Person\n    return Person(name = \"x\")\n\nn = make().name\n"
+    ));
+    fails(
+        &format!("{person}function rename(p: Person)\n    p.name = \"y\"\n"),
+        "E_MUTATE_BORROWED",
+    );
+    ok(&format!(
+        "{person}function rename(update p: Person)\n    p.name = \"y\"\n"
+    ));
+}
+
+#[test]
+fn update_parameters_reach_copy_values() {
+    ok("function bump(update n: integer)\n    n += 1\n\nx = 1\nbump(x)\nprint(x)\n");
+    fails(
+        "constant X = 1\nfunction bump(update n: integer)\n    n += 1\n\nbump(X)\n",
+        "E_MUTATE_CONSTANT",
+    );
+}
+
+#[test]
+fn variants_are_built_and_matched() {
+    ok(&format!(
+        "{SHAPE}s = circle(1.0)\nmatch s\n    case circle(r)\n        print(r)\n    case point\n        print(0)\n"
+    ));
+    ok(&format!("{SHAPE}s: Shape = point\nt = Shape.circle(2.0)\n"));
+    fails(&format!("{SHAPE}s = circle()\n"), "E_ARGUMENT_COUNT");
+    fails(&format!("{SHAPE}s = circle\n"), "E_VARIANT_FIELDS");
+    fails(
+        &format!("{SHAPE}s = Shape.square(1.0)\n"),
+        "E_UNKNOWN_VARIANT",
+    );
+    fails(
+        "enum A\n    same\n\nenum B\n    same\n\nx = same\n",
+        "E_AMBIGUOUS_VARIANT",
+    );
+}
+
+#[test]
+fn matches_must_be_exhaustive() {
+    fails(
+        &format!("{SHAPE}s = circle(1.0)\nmatch s\n    case circle(r)\n        print(r)\n"),
+        "E_NONEXHAUSTIVE",
+    );
+    fails(
+        &format!(
+            "{SHAPE}s = circle(1.0)\nmatch s\n    case circle(r) if r > 1.0\n        print(r)\n    case point\n        print(0)\n"
+        ),
+        "E_NONEXHAUSTIVE",
+    );
+    fails(
+        "n = 1\nmatch n\n    case 1\n        print(1)\n",
+        "E_NONEXHAUSTIVE",
+    );
+    ok(
+        "flag = true\nmatch flag\n    case true\n        print(1)\n    case false\n        print(0)\n",
+    );
+    fails(
+        &format!(
+            "{SHAPE}s = circle(1.0)\nmatch s\n    case circle\n        print(1)\n    case _\n        print(0)\n"
+        ),
+        "E_PATTERN_ARITY",
+    );
+    fails(
+        &format!(
+            "{SHAPE}s = circle(1.0)\nmatch s\n    case square(x)\n        print(1)\n    case _\n        print(0)\n"
+        ),
+        "E_UNKNOWN_VARIANT",
+    );
+    let (_, diagnostics) = check_source(
+        FileId(0),
+        "n = 1\nmatch n\n    case _\n        print(1)\n    case 2\n        print(2)\n",
+    );
+    assert!(diagnostics.iter().any(|d| d.code == "W_UNREACHABLE_CASE"));
+}
+
+#[test]
+fn case_bindings_narrow_unions() {
+    ok(
+        "function f(v: integer or nothing) -> integer\n    match v\n        case nothing\n            return 0\n        case n\n            return n + 1\n",
+    );
+}
+
+#[test]
+fn matches_borrow_or_take_their_value() {
+    let boxed = "enum Box\n    full(text: string)\n    empty\n\n";
+    fails(
+        &format!(
+            "{boxed}b = full(\"x\")\nmatch b\n    case full(text)\n        kept = text\n    case empty\n        print(0)\n"
+        ),
+        "E_MOVE_BORROWED",
+    );
+    ok(&format!(
+        "{boxed}b = full(\"x\")\nmatch move(b)\n    case full(text)\n        kept = text\n    case empty\n        print(0)\n"
+    ));
+    fails(
+        &format!(
+            "{boxed}b = full(\"x\")\nmatch b\n    case full(text)\n        b = empty\n    case empty\n        print(0)\n"
+        ),
+        "E_BORROW_CONFLICT",
+    );
+    ok(&format!(
+        "{boxed}b = full(\"x\")\nmatch b\n    case empty\n        b = full(\"y\")\n    case _\n        print(0)\n"
+    ));
 }
 
 #[test]

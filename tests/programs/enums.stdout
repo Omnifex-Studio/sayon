@@ -1,0 +1,17 @@
+circle(1.0) 3.0 a circle
+rectangle(2.0, 3.0) 6.0 a rectangle
+point 0.0 something else
+circle(20.0) 1200.0 a big circle
+rectangle(4.0, 4.0) 16.0 a square
+10
+node("root", [leaf(1), node("inner", [leaf(2), leaf(3)]), leaf(4)])
+failed: empty input
+parsed 3
+hello none
+nothing zero something: 5 the word zero something: x
+positive zero negative
+yes
+circle of 2.0
+true false Shape
+2.5 0.0 -1.0
+minus one

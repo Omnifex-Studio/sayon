@@ -296,6 +296,12 @@ pub enum ExprKind {
         generic_args: Vec<TypeExpr>,
         args: Vec<Expr>,
     },
+    /// `Point(x = 1.0, y = 2.0)`: a call whose arguments name fields.
+    Construct {
+        callee: Box<Expr>,
+        generic_args: Vec<TypeExpr>,
+        fields: Vec<(Ident, Expr)>,
+    },
     Index {
         target: Box<Expr>,
         index: Box<Expr>,
@@ -334,7 +340,12 @@ pub struct TypeExpr {
 
 #[derive(Clone, Debug)]
 pub enum TypeExprKind {
-    Named { name: Ident, args: Vec<TypeExpr> },
+    Named {
+        /// The import alias in `geometry.Point`.
+        module: Option<Ident>,
+        name: Ident,
+        args: Vec<TypeExpr>,
+    },
     Union(Vec<TypeExpr>),
     Error,
 }

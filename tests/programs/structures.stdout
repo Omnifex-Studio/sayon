@@ -1,0 +1,15 @@
+Point(x = 0.0, y = 0.0) Point(x = 3.0, y = 4.0)
+25.0
+3.0 10.0
+Point(x = 11.0, y = 3.0)
+true false
+Person(name = "Ada", age = 37, tags = ["math", "older"])
+Ada is 37
+Ada Grace false
+["math", "older"] 2
+Pair(first = 2, second = 1)
+right Pair<string>
+[Point(x = 1.0, y = 1.0), Point(x = 2.0, y = 8.0), Point(x = 5.0, y = 5.0)] 14.0
+40
+15.0
+Lin

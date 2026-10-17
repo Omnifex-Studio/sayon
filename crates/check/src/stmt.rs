@@ -237,18 +237,18 @@ impl<'a> Checker<'a> {
                     finally,
                 }
             }
-            ast::StmtKind::TypeDecl { name, .. } => {
-                self.unavailable(name.span, "structure types", "M2");
+            ast::StmtKind::TypeDecl { name, .. } | ast::StmtKind::EnumDecl { name, .. } => {
+                self.error(
+                    Diagnostic::error(
+                        "E_TYPE_POSITION",
+                        "types are declared at the top level of a file",
+                    )
+                    .primary(name.span, "")
+                    .help("move the declaration out of the block it is in"),
+                );
                 return None;
             }
-            ast::StmtKind::EnumDecl { name, .. } => {
-                self.unavailable(name.span, "enums", "M2");
-                return None;
-            }
-            ast::StmtKind::Match { .. } => {
-                self.unavailable(span, "`match` statements", "M2");
-                return None;
-            }
+            ast::StmtKind::Match { scrutinee, arms } => self.check_match(cx, scrutinee, arms),
             ast::StmtKind::Test { name_span, .. } => {
                 self.error(
                     Diagnostic::error(
@@ -411,6 +411,7 @@ impl<'a> Checker<'a> {
             let what = match item {
                 Item::Function(_) => "function",
                 Item::Constant(_) => "constant",
+                Item::Type(_) => "type",
             };
             self.error(
                 Diagnostic::error(
@@ -434,6 +435,12 @@ impl<'a> Checker<'a> {
             LocalKind::Constant => format!("`{}` is a constant and cannot change", info.name),
             LocalKind::LoopVariable => {
                 format!("the loop variable `{}` cannot be reassigned", info.name)
+            }
+            LocalKind::CaseBinding => {
+                format!(
+                    "`{}` is bound by a `case` and cannot be reassigned",
+                    info.name
+                )
             }
             _ => return true,
         };
@@ -468,7 +475,7 @@ impl<'a> Checker<'a> {
         }
         let annotation = decl.ty.as_ref().map(|ty| {
             let generics = cx.generics.clone();
-            self.resolve_type(ty, &generics)
+            self.resolve_type(cx.module, ty, &generics)
         });
         let value = match &annotation {
             Some(ty) => self.check_expr_as(
@@ -491,6 +498,17 @@ impl<'a> Checker<'a> {
 
     /// Resolves an assignment target to a place and the type stored there.
     pub fn check_place(&mut self, cx: &mut FnCtx, target: &ast::Expr) -> Option<(Place, Type)> {
+        self.check_place_in(cx, target, false)
+    }
+
+    /// `inner` is set for the base of an element or field target, where a
+    /// union local narrowed by a test is used with its narrowed type.
+    fn check_place_in(
+        &mut self,
+        cx: &mut FnCtx,
+        target: &ast::Expr,
+        inner: bool,
+    ) -> Option<(Place, Type)> {
         match &target.kind {
             ast::ExprKind::Name(name) => {
                 let Some(local) = cx.lookup(&name.name) else {
@@ -500,7 +518,10 @@ impl<'a> Checker<'a> {
                                 "E_ASSIGN_CONSTANT",
                                 format!("cannot change `{}`", name.name),
                             )
-                            .primary(name.span, "module constants and functions are fixed"),
+                            .primary(
+                                name.span,
+                                "module constants, functions, and types are fixed",
+                            ),
                         );
                     } else {
                         self.undefined_name(cx, name);
@@ -510,13 +531,51 @@ impl<'a> Checker<'a> {
                 if !self.assignable(cx, local, name.span) {
                     return None;
                 }
-                Some((Place::Local(local), cx.locals[local.0 as usize].ty.clone()))
+                let declared = cx.locals[local.0 as usize].ty.clone();
+                match cx.narrowed_type(local) {
+                    Some(narrowed) if inner => Some((
+                        Place::Narrow {
+                            target: Box::new(Place::Local(local)),
+                            ty: narrowed.clone(),
+                        },
+                        narrowed.clone(),
+                    )),
+                    _ => Some((Place::Local(local), declared)),
+                }
+            }
+            ast::ExprKind::Member { target: base, name } => {
+                if let ast::ExprKind::Name(alias) = &base.kind
+                    && cx.lookup(&alias.name).is_none()
+                    && self.import(cx.module, &alias.name).is_some()
+                {
+                    self.error(
+                        Diagnostic::error(
+                            "E_ASSIGN_CONSTANT",
+                            format!("cannot change `{}.{}`", alias.name, name.name),
+                        )
+                        .primary(target.span, "definitions of another module are fixed"),
+                    );
+                    return None;
+                }
+                let (place, base_ty) = self.check_place_in(cx, base, true)?;
+                let field_ty = self.field_type(&base_ty, name, target.span, cx.module);
+                if field_ty == Type::Unknown {
+                    return None;
+                }
+                Some((
+                    Place::Field {
+                        target: Box::new(place),
+                        target_ty: base_ty,
+                        name: name.name.clone(),
+                    },
+                    field_ty,
+                ))
             }
             ast::ExprKind::Index {
                 target: base,
                 index,
             } => {
-                let (place, base_ty) = self.check_place(cx, base)?;
+                let (place, base_ty) = self.check_place_in(cx, base, true)?;
                 let index_hir = self.check_expr(cx, index, None);
                 let element = self.index_type(&base_ty, &index_hir, target.span);
                 let index_hir = self.coerce_index(index_hir, &base_ty);
@@ -528,10 +587,6 @@ impl<'a> Checker<'a> {
                     },
                     element,
                 ))
-            }
-            ast::ExprKind::Member { .. } => {
-                self.unavailable(target.span, "structure fields", "M2");
-                None
             }
             _ => {
                 self.error(

@@ -1,0 +1,79 @@
+# Structures: construction, fields, copies and moves, equality, display
+type Point = [
+    x: float,
+    y: float
+]
+
+type Person = [
+    name: string,
+    age: integer,
+    tags: Array<string>
+]
+
+type Pair<T> = [first: T, second: T]
+
+function distance_squared(a: Point, b: Point) -> float
+    dx = a.x - b.x
+    dy = a.y - b.y
+    return dx * dx + dy * dy
+
+function translate(update p: Point, dx: float, dy: float)
+    p.x += dx
+    p.y += dy
+
+function birthday(update person: Person)
+    person.age += 1
+    push(person.tags, "older")
+
+function swap(pair)
+    return Pair(first = clone(pair.second), second = clone(pair.first))
+
+origin: Point = [x = 0.0, y = 0.0]
+corner = Point(x = 3.0, y = 4.0)
+print(origin, corner)
+print(distance_squared(origin, corner))
+
+# Points hold only numbers, so assignment copies them.
+moved = corner
+moved.x = 10.0
+print(corner.x, moved.x)
+translate(moved, 1.0, -1.0)
+print(moved)
+print(moved == Point(x = 11.0, y = 3.0), moved == corner)
+
+ada = Person(name = "Ada", age = 36, tags = ["math"])
+birthday(ada)
+print(ada)
+print("{ada.name} is {ada.age}")
+copy = clone(ada)
+copy.name = "Grace"
+print(ada.name, copy.name, ada == copy)
+
+# A person owns a string and an array, so assignment transfers it.
+keeper = ada
+print(keeper.tags, length(keeper.tags))
+
+numbers = Pair(first = 1, second = 2)
+print(swap(numbers))
+words = Pair<string>(first = "left", second = "right")
+print(swap(words).first, typeof(words))
+
+points = [Point(x = 1.0, y = 1.0), Point(x = 2.0, y = 4.0)]
+points[1].y = 8.0
+push(points, [x = 5.0, y = 5.0])
+total = 0.0
+for p in points
+    total += p.y
+print(points, total)
+
+people: Dict<string, Person> = ["ada" = keeper]
+people["ada"].age = 40
+print(people["ada"].age)
+
+maybe: Point or nothing = nothing
+if maybe == nothing
+    maybe = Point(x = 7.0, y = 7.0)
+if maybe != nothing
+    maybe.x = 8.0
+    print(maybe.x + maybe.y)
+print(Person(name = "Lin", age = 1, tags = []).name)

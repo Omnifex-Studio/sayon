@@ -1,5 +1,6 @@
 //! Runtime values and their display, equality, and ordering rules.
 
+use sayon_check::types::{TypeDef, TypeId};
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::rc::Rc;
@@ -19,6 +20,10 @@ pub enum Value {
     Dict(Box<Dict>),
     /// A union value: member tag (starting at 1) and payload.
     Union(u32, Box<Value>),
+    /// A structure value: its type and fields in declaration order.
+    Record(TypeId, Vec<Value>),
+    /// An enum value: its type, variant index, and the variant's fields.
+    Variant(TypeId, u32, Vec<Value>),
     Error(Box<ErrorValue>),
     Range {
         start: i64,
@@ -103,7 +108,10 @@ pub use sayon_runtime::text::{format_f32, format_f64};
 
 /// The text `tostring` and `print` produce. Strings nested inside collections
 /// are quoted so that `["a", "b"]` displays like the literal that made it.
-pub fn display(value: &Value, out: &mut String, nested: bool) {
+/// Structures and enum values display like the expressions that build them.
+pub fn display(value: &Value, out: &mut String, nested: bool, types: &[TypeDef]) {
+    let display =
+        |value: &Value, out: &mut String, nested: bool| display(value, out, nested, types);
     match value {
         Value::Int(number) => {
             let _ = write!(out, "{number}");
@@ -142,6 +150,33 @@ pub fn display(value: &Value, out: &mut String, nested: bool) {
             out.push(']');
         }
         Value::Union(_, payload) => display(payload, out, nested),
+        Value::Record(id, fields) => {
+            let def = &types[id.0 as usize];
+            out.push_str(&def.name);
+            out.push('(');
+            for (index, (field, value)) in def.fields().iter().zip(fields).enumerate() {
+                if index > 0 {
+                    out.push_str(", ");
+                }
+                out.push_str(&field.name);
+                out.push_str(" = ");
+                display(value, out, true);
+            }
+            out.push(')');
+        }
+        Value::Variant(id, variant, fields) => {
+            out.push_str(&types[id.0 as usize].variants()[*variant as usize].name);
+            if !fields.is_empty() {
+                out.push('(');
+                for (index, value) in fields.iter().enumerate() {
+                    if index > 0 {
+                        out.push_str(", ");
+                    }
+                    display(value, out, true);
+                }
+                out.push(')');
+            }
+        }
         Value::Error(error) => {
             if nested {
                 out.push_str("Error(");
@@ -163,9 +198,9 @@ pub fn display(value: &Value, out: &mut String, nested: bool) {
 
 use sayon_runtime::text::quote;
 
-pub fn to_display_string(value: &Value) -> String {
+pub fn to_display_string(value: &Value, types: &[TypeDef]) -> String {
     let mut out = String::new();
-    display(value, &mut out, false);
+    display(value, &mut out, false, types);
     out
 }
 
@@ -193,6 +228,12 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
                     })
         }
         (Value::Union(t1, p1), Value::Union(t2, p2)) => t1 == t2 && values_equal(p1, p2),
+        (Value::Record(_, x), Value::Record(_, y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| values_equal(p, q))
+        }
+        (Value::Variant(_, v1, x), Value::Variant(_, v2, y)) => {
+            v1 == v2 && x.len() == y.len() && x.iter().zip(y).all(|(p, q)| values_equal(p, q))
+        }
         (Value::Error(x), Value::Error(y)) => x.code == y.code && x.message == y.message,
         (
             Value::Range {
@@ -228,15 +269,15 @@ mod tests {
     #[test]
     fn collections_quote_nested_strings() {
         let array = Value::Array(vec![Value::Int(1), Value::str("text"), Value::Bool(true)]);
-        assert_eq!(to_display_string(&array), "[1, \"text\", true]");
+        assert_eq!(to_display_string(&array, &[]), "[1, \"text\", true]");
         let mut dict = Dict::default();
         dict.set("name", Value::str("Alice"));
         dict.set("age", Value::Int(30));
         assert_eq!(
-            to_display_string(&Value::Dict(Box::new(dict))),
+            to_display_string(&Value::Dict(Box::new(dict)), &[]),
             "[\"name\" = \"Alice\", \"age\" = 30]"
         );
-        assert_eq!(to_display_string(&Value::str("plain")), "plain");
+        assert_eq!(to_display_string(&Value::str("plain"), &[]), "plain");
     }
 
     #[test]

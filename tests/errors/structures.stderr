@@ -1,0 +1,49 @@
+error[E_RECURSIVE_TYPE]: `Loop` contains itself, so it would have no size
+  --> structures.sayon:6:6
+   |
+ 6 | type Loop = [next: Loop or nothing]
+   |      ^^^^
+   |
+   = help: store nested values in a collection, for example a field `children: Array<Loop>`
+
+error[E_MISSING_FIELD]: `Point` needs a value for `y`
+  --> structures.sayon:8:10
+   |
+ 8 | origin = Point(x = 0.0)
+   |          ^^^^^^^^^^^^^^
+   |
+   = help: every field must be given a value
+
+error[E_UNKNOWN_FIELD]: `Point` has no field `z`
+  --> structures.sayon:9:34
+   |
+ 9 | corner = Point(x = 1.0, y = 2.0, z = 3.0)
+   |                                  ^
+   |
+   = help: its fields are `x`, `y`
+
+error[E_UNKNOWN_FIELD]: `Point` has no field `width`
+   --> structures.sayon:10:14
+    |
+ 10 | print(corner.width)
+    |              ^^^^^
+    |
+    = help: its fields are `x`, `y`
+
+error[E_NAMED_FIELDS]: a `Point` is built with named fields
+   --> structures.sayon:11:8
+    |
+ 11 | flat = Point(1.0, 2.0)
+    |        ^^^^^^^^^^^^^^^
+    |
+    = help: write `Point(x = ..., y = ...)`
+
+error[E_RECORD_TYPE]: cannot tell which structure this field list builds
+   --> structures.sayon:12:11
+    |
+ 12 | unknown = [x = 1.0, label = "a"]
+    |           ^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: name the structure, for example `Point(x = 1.0, y = 2.0)`, or annotate the variable
+
+6 errors found; nothing was run

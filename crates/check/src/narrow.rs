@@ -232,6 +232,8 @@ pub(crate) fn stmt_exits(stmt: &hir::Stmt) -> bool {
         While { condition, body } => {
             matches!(condition.kind, hir::ExprKind::Boolean(true)) && !breaks_out(body)
         }
+        // Every value reaches some arm, so the match leaves when they all do.
+        Match { arms, .. } => !arms.is_empty() && arms.iter().all(|arm| block_exits(&arm.body)),
         _ => false,
     }
 }
@@ -256,6 +258,7 @@ fn breaks_out(block: &hir::Block) -> bool {
                 || catch.as_ref().is_some_and(|(_, b)| breaks_out(b))
                 || finally.as_ref().is_some_and(breaks_out)
         }
+        Match { arms, .. } => arms.iter().any(|arm| breaks_out(&arm.body)),
         _ => false,
     })
 }
@@ -294,6 +297,11 @@ pub(crate) fn assigned_names(block: &ast::Block, out: &mut Vec<String>) {
                 }
                 if let Some(block) = finally {
                     assigned_names(block, out);
+                }
+            }
+            ast::StmtKind::Match { arms, .. } => {
+                for arm in arms {
+                    assigned_names(&arm.body, out);
                 }
             }
             _ => {}

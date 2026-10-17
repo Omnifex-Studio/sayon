@@ -33,7 +33,9 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Ownership: moves, clones, borrows, loop borrows, mode inference | experimental | M1 |
 | `main` with integer exit status, scripts | experimental | M1 |
 | Static local modules and `import`, `private` | experimental | M1 |
-| Structures, enums, `match` with patterns and guards | planned | M2 |
+| Structures and enums, including generic ones; field access and assignment | experimental | M2 |
+| `match` with literal, variant, union-member, and nested patterns, guards, exhaustiveness and unreachable-case checks | experimental | M2 |
+| Record patterns (destructuring structures in `case`), `or` patterns | planned | M2 |
 | Function values, closures, captured state | planned | M2 |
 | `try` expressions, `is error`, `Outcome<T>` | planned | M2 |
 | Dictionary keys other than strings | planned | M2 |

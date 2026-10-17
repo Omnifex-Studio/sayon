@@ -42,8 +42,16 @@ while       = "while" expression block ;
 for         = "for" NAME [ "," NAME ] "in" expression block ;
 try         = "try" block [ "catch" NAME block ] [ "finally" block ] ;   (* at least one clause *)
 
+type_decl   = [ "public" | "private" ] "type" NAME [ generics ] "=" "[" field { "," field } [ "," ] "]" ;
+field       = NAME ":" type ;
+enum_decl   = [ "public" | "private" ] "enum" NAME [ generics ] NEWLINE INDENT variant { variant } DEDENT ;
+variant     = NAME [ "(" field { "," field } [ "," ] ")" ] ;
+match       = "match" expression NEWLINE INDENT arm { arm } DEDENT ;
+arm         = "case" pattern [ "if" expression ] block ;
+pattern     = "_" | NAME [ "(" pattern { "," pattern } ")" ] | literal ;
+
 type        = type_atom { "or" type_atom } ;
-type_atom   = NAME [ "<" type { "," type } ">" ] | "nothing" | "(" type ")" ;
+type_atom   = [ NAME "." ] NAME [ "<" type { "," type } ">" ] | "nothing" | "(" type ")" ;
 
 expression  = or ;
 or          = and { "or" and } ;
@@ -54,7 +62,9 @@ additive    = multiplicative { ( "+" | "-" ) multiplicative } ;
 multiplicative = unary { ( "*" | "/" | "%" ) unary } ;
 unary       = ( "-" | "not" ) unary | postfix ;
 postfix     = primary { call | "[" expression "]" | "." NAME } ;
-call        = [ "<" type { "," type } ">" ] "(" [ expression { "," expression } [ "," ] ] ")" ;
+call        = [ "<" type { "," type } ">" ] "(" [ arguments ] ")" ;
+arguments   = expression { "," expression } [ "," ]
+            | NAME "=" expression { "," NAME "=" expression } [ "," ] ;    (* building a structure *)
 primary     = INTEGER | FLOAT | STRING | "true" | "false" | "nothing" | NAME
             | "(" expression ")" | collection | "function" ... block
             | "try" unary | "import" "(" STRING ")" ;
@@ -64,18 +74,19 @@ collection  = "[" "]"
             | "[" NAME "=" expression { "," NAME "=" expression } [ "," ] "]" ;
 ```
 
-The type and enum declarations, `match`, function literals, `try` expressions, `is error`, and imports parse but are rejected by the checker until their milestones. The parser tests (`crates/syntax/src/parser.rs`) and the programs under `tests/` are the executable form of this grammar.
+Function literals, `try` expressions, and `is error` parse but are rejected by the checker until their milestones. The parser tests (`crates/syntax/src/parser.rs`) and the programs under `tests/` are the executable form of this grammar.
 
 ## Ownership rules
 
-A value's type is Copy when it is a number, `boolean`, `nothing`, `Range`, or a union of Copy types. Every other value has exactly one owner. Generic type parameters are treated as owned, so a generic function is checked for the strictest instantiation.
+A value's type is Copy when it is a number, `boolean`, `nothing`, `Range`, a union of Copy types, or a structure or enum whose fields are all Copy (for a generic one, with Copy type arguments). Every other value has exactly one owner. Generic type parameters are treated as owned, so a generic function is checked for the strictest instantiation.
 
 For each read of a local, the checker decides the use from the context:
 
 | Context | Owned value | Copy value |
 |---|---|---|
-| assignment source, `own` argument, returned value, collection element, `push` value | move | copy |
-| `update` argument, `push`/`pop` target, element assignment target | exclusive borrow | copy |
+| assignment source, `own` argument, returned value, collection element, structure field or variant value, `push` value | move | copy |
+| `update` argument | exclusive borrow | exclusive borrow |
+| `push`/`pop` target, element or field assignment target | exclusive borrow | copy |
 | anything else (operands, read arguments, `print`, conditions) | shared borrow | copy |
 | `move(x)` | move | copy |
 
@@ -84,15 +95,22 @@ The analysis tracks, along every control-flow path, whether each local holds a v
 | Code | Rule |
 |---|---|
 | `E_MOVED_VALUE` | A local is used after a move on some path, including an earlier loop iteration. Assigning a new value restores it. Inside `try`, a move in the body is uncertain in `catch` and `finally`. |
-| `E_MOVE_BORROWED` | Moving a read or update parameter, or a loop variable that borrows an element. |
-| `E_MUTATE_BORROWED` | Changing a read parameter or a borrowed loop variable. |
+| `E_MOVE_BORROWED` | Moving a read or update parameter, a loop variable that borrows an element, or a case binding that borrows part of the matched value. |
+| `E_MUTATE_BORROWED` | Changing a read parameter, a borrowed loop variable, or a borrowed case binding. |
 | `E_MUTATE_CONSTANT` | Changing a local or module constant. |
 | `E_MOVE_CONSTANT` | Moving a module constant. |
 | `E_MOVE_OUT_OF_ELEMENT` | Moving an owned element out of an array or dictionary. |
-| `E_BORROW_CONFLICT` | Moving, changing, or replacing a collection while a `for` loop reads it; or passing the same local to one call both exclusively and in any other way. |
+| `E_MOVE_OUT_OF_FIELD` | Moving an owned field out of a structure stored in a variable or constant. Fields of temporaries can be moved; the rest of the temporary is destroyed. |
+| `E_BORROW_CONFLICT` | Moving, changing, or replacing a collection while a `for` loop reads it, or a matched variable while a guard or a case with borrowing bindings runs; or passing the same local to one call both exclusively and in any other way. |
 | `E_BORROWED_UNION` | A borrowed owned value used where a union is expected, which would need a copy. |
 
-Parameter modes are inferred for unannotated parameters as the least of read, update, and own that the body needs, iterated to a fixed point over mutually recursive functions. Annotated parameters keep their declared mode (default read), and a body that needs more is an error.
+Parameter modes are inferred for unannotated parameters as the least of read, update, and own that the body needs, iterated to a fixed point over mutually recursive functions. Annotated parameters keep their declared mode (default read), and a body that needs more is an error. A field or element assignment needs update mode of the root parameter, except for a Copy parameter, which is the function's own copy.
+
+### Matches
+
+A `match` whose value is a place (a variable, element, field, or constant) reads it in place: case bindings of owned types are references into it, and Copy bindings are copies. A match on a temporary or on `move(x)` owns its value: it is held in a temporary, the bindings of cases without a guard are moved out of it, and what remains is destroyed when the match ends. Bindings of guarded cases always borrow, so a failed guard never leaves a value partly moved. A Copy value is matched on a copy.
+
+Coverage is computed with the usual pattern-matrix usefulness algorithm. A match is exhaustive when a wildcard is not useful after its unguarded cases; a case is unreachable when its pattern is not useful after the unguarded cases above it. Enums, unions, `boolean`, and `nothing` have finite constructor sets; numbers and strings do not. A binding at the top of a case on a union value gets the union of the members still useful there.
 
 ## Cleanup and control flow
 
@@ -122,8 +140,12 @@ A moved-from place is empty, and destroying an empty place does nothing, so clea
 | `Range` | `{ i64 start, i64 end, i64 step }` | 24 |
 | `Dict<string, T>`, `Error` | pointer to a runtime object | 8 |
 | union | `{ i32 tag, [N x i64] payload }`, payload at offset 8 | 8 + 8N |
+| structure | `{ fields... }` in declaration order, each at its natural alignment | sum of fields with padding |
+| enum | `{ i32 tag, [N x i64] payload }`; tag is the variant's position plus one; a variant's fields are laid out like a structure starting at offset 8 | 8 + 8N |
 
 Union tags are assigned per member type across the whole program (the module's union member table), so a value of a larger union is a valid value of every smaller union holding the same member. Narrowing and widening therefore never copy or re-tag. Tag zero means empty.
+
+Structures and enums are stored inline, so a type that contains itself without a collection in between is rejected (`E_RECURSIVE_TYPE`). Destroying a structure destroys its owned fields; destroying an enum destroys the fields of its current variant. Moving one field out zeroes just that field, which keeps the rest destroyable.
 
 ## Calls and parameter passing
 
@@ -131,9 +153,10 @@ Every compiled function has the signature `i32 f(ptr result, ptr error, i64 argu
 
 | Parameter | Passed as |
 |---|---|
-| Copy type, any mode | the value |
+| Copy type, read or `own` | the value |
+| any type, `update` | a pointer to the caller's place |
 | owned type, `own` | the value; the caller's place is cleared |
-| owned type, read or `update` | a pointer to the caller's place |
+| owned type, read | a pointer to the caller's place |
 
 ## Recoverable errors
 

@@ -3,7 +3,7 @@
 //! Generic functions keep `Type::Param` in their bodies; code generation
 //! instantiates them per concrete argument list.
 
-use crate::types::Type;
+use crate::types::{Type, TypeDef};
 use sayon_syntax::Span;
 use sayon_syntax::ast::{BinaryOp, ParamMode, UnaryOp};
 
@@ -25,6 +25,8 @@ pub struct Program {
     pub entry: FuncId,
     /// Test blocks of the entry module, run by `sayon test`.
     pub tests: Vec<(String, FuncId)>,
+    /// Declared structures and enums, indexed by `TypeId`.
+    pub types: Vec<TypeDef>,
 }
 
 impl Program {
@@ -54,6 +56,8 @@ pub enum LocalKind {
     Constant,
     LoopVariable,
     CaughtError,
+    /// A name bound by a `case` pattern.
+    CaseBinding,
 }
 
 #[derive(Debug, Clone)]
@@ -62,7 +66,8 @@ pub struct Local {
     pub ty: Type,
     pub span: Span,
     pub kind: LocalKind,
-    /// Loop variables over collections borrow their elements instead of owning them.
+    /// Loop variables over collections, and case bindings of a matched value
+    /// the match does not own, borrow what they name instead of owning it.
     pub borrowed: bool,
 }
 
@@ -154,6 +159,55 @@ pub enum StmtKind {
     },
     /// A nested lexical scope.
     Block(Block),
+    /// Runs the first arm whose pattern matches. `owned` means the match
+    /// owns the value (a temporary, or one transferred with `move`), so the
+    /// unguarded arms' bindings take ownership of its parts.
+    Match {
+        scrutinee: Expr,
+        owned: bool,
+        arms: Vec<MatchArm>,
+    },
+}
+
+#[derive(Debug)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub guard: Option<Expr>,
+    pub body: Block,
+}
+
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    Wildcard,
+    /// Binds the value to a new local. At the top of a pattern the local's
+    /// type can be a narrower union (or one member) than the value's, when
+    /// earlier arms handled the other members.
+    Binding(LocalId),
+    /// Equal to a literal.
+    Literal(Expr),
+    /// One variant of the enum `ty`, with a pattern for each field.
+    Variant {
+        ty: Type,
+        variant: u32,
+        fields: Vec<Pattern>,
+    },
+    /// A union holding `member`, with a pattern for that value.
+    Member {
+        member: Type,
+        inner: Box<Pattern>,
+    },
+}
+
+impl Pattern {
+    /// The locals the pattern binds, in order.
+    pub fn bindings(&self, out: &mut Vec<LocalId>) {
+        match self {
+            Pattern::Binding(local) => out.push(*local),
+            Pattern::Variant { fields, .. } => fields.iter().for_each(|f| f.bindings(out)),
+            Pattern::Member { inner, .. } => inner.bindings(out),
+            Pattern::Wildcard | Pattern::Literal(_) => {}
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -165,13 +219,26 @@ pub enum Place {
         target_ty: Type,
         index: Box<Expr>,
     },
+    /// `target.name` on a structure.
+    Field {
+        target: Box<Place>,
+        target_ty: Type,
+        name: String,
+    },
+    /// A union local known by narrowing to hold `ty`.
+    Narrow {
+        target: Box<Place>,
+        ty: Type,
+    },
 }
 
 impl Place {
     pub fn root(&self) -> LocalId {
         match self {
             Place::Local(local) => *local,
-            Place::Index { target, .. } => target.root(),
+            Place::Index { target, .. }
+            | Place::Field { target, .. }
+            | Place::Narrow { target, .. } => target.root(),
         }
     }
 }
@@ -286,6 +353,19 @@ pub enum ExprKind {
     },
     Array(Vec<Expr>),
     Dict(Vec<(Expr, Expr)>),
+    /// A structure value of type `ty`: each field's index and value, in the
+    /// order the source wrote them (which is the evaluation order).
+    Record(Vec<(u32, Expr)>),
+    /// A value of one variant of the enum in `ty`.
+    Variant {
+        variant: u32,
+        args: Vec<Expr>,
+    },
+    /// Reads the field `name` of a structure.
+    Field {
+        value: Box<Expr>,
+        name: String,
+    },
     /// Reads `target[index]`.
     Index {
         target: Box<Expr>,
@@ -330,9 +410,13 @@ pub fn visit_block_mut(block: &mut Block, f: &mut dyn FnMut(&mut Expr)) {
 }
 
 fn visit_place_mut(place: &mut Place, f: &mut dyn FnMut(&mut Expr)) {
-    if let Place::Index { target, index, .. } = place {
-        visit_place_mut(target, f);
-        visit_expr_mut(index, f);
+    match place {
+        Place::Local(_) => {}
+        Place::Index { target, index, .. } => {
+            visit_place_mut(target, f);
+            visit_expr_mut(index, f);
+        }
+        Place::Field { target, .. } | Place::Narrow { target, .. } => visit_place_mut(target, f),
     }
 }
 
@@ -381,6 +465,17 @@ pub fn visit_stmt_mut(stmt: &mut Stmt, f: &mut dyn FnMut(&mut Expr)) {
             }
         }
         StmtKind::Block(block) => visit_block_mut(block, f),
+        StmtKind::Match {
+            scrutinee, arms, ..
+        } => {
+            visit_expr_mut(scrutinee, f);
+            for arm in arms {
+                if let Some(guard) = &mut arm.guard {
+                    visit_expr_mut(guard, f);
+                }
+                visit_block_mut(&mut arm.body, f);
+            }
+        }
         StmtKind::Break | StmtKind::Continue => {}
     }
 }
@@ -398,7 +493,13 @@ pub fn visit_expr_mut(expr: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
             visit_expr_mut(rhs, f);
         }
         ExprKind::Unary { operand, .. } => visit_expr_mut(operand, f),
-        ExprKind::Array(items) => items.iter_mut().for_each(|item| visit_expr_mut(item, f)),
+        ExprKind::Array(items) | ExprKind::Variant { args: items, .. } => {
+            items.iter_mut().for_each(|item| visit_expr_mut(item, f))
+        }
+        ExprKind::Record(fields) => fields
+            .iter_mut()
+            .for_each(|(_, value)| visit_expr_mut(value, f)),
+        ExprKind::Field { value, .. } => visit_expr_mut(value, f),
         ExprKind::Dict(entries) => entries.iter_mut().for_each(|(key, value)| {
             visit_expr_mut(key, f);
             visit_expr_mut(value, f);

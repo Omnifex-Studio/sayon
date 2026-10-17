@@ -129,18 +129,20 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Boolean(value) => expr(ExprKind::Boolean(*value), Type::Boolean, span),
             ast::ExprKind::Nothing => expr(ExprKind::Nothing, Type::Nothing, span),
             ast::ExprKind::String(segments) => self.check_string(cx, segments, span),
-            ast::ExprKind::Name(name) => self.check_name(cx, name),
+            ast::ExprKind::Name(name) => self.check_name(cx, name, expected),
             ast::ExprKind::Array(items) => self.check_array(cx, items, expected, span),
             ast::ExprKind::Dict(entries) => self.check_dict(cx, entries, expected, span),
-            ast::ExprKind::Record(_) => {
-                self.unavailable(span, "structure literals", "M2");
-                expr(ExprKind::Nothing, Type::Unknown, span)
-            }
+            ast::ExprKind::Record(fields) => self.check_record(cx, fields, expected, span),
             ast::ExprKind::Call {
                 callee,
                 generic_args,
                 args,
             } => self.check_call(cx, callee, generic_args, args, expected, span),
+            ast::ExprKind::Construct {
+                callee,
+                generic_args,
+                fields,
+            } => self.check_construct(cx, callee, generic_args, fields, expected, span),
             ast::ExprKind::Index { target, index } => {
                 let target = self.check_expr(cx, target, None);
                 let index = self.check_expr(cx, index, None);
@@ -155,7 +157,9 @@ impl<'a> Checker<'a> {
                     span,
                 )
             }
-            ast::ExprKind::Member { target, name } => self.check_member(cx, target, name, span),
+            ast::ExprKind::Member { target, name } => {
+                self.check_member(cx, target, name, expected, span)
+            }
             ast::ExprKind::Unary { op, operand } => self.check_unary(cx, *op, operand, span),
             ast::ExprKind::Binary { op, lhs, rhs } => self.check_binary(cx, *op, lhs, rhs, span),
             ast::ExprKind::IsError(_) | ast::ExprKind::TryExpr(_) => {
@@ -232,13 +236,24 @@ impl<'a> Checker<'a> {
         }
     }
 
-    fn check_name(&mut self, cx: &mut FnCtx, name: &ast::Ident) -> hir::Expr {
+    fn check_name(
+        &mut self,
+        cx: &mut FnCtx,
+        name: &ast::Ident,
+        expected: Option<&Type>,
+    ) -> hir::Expr {
         let span = name.span;
         if let Some(local) = cx.lookup(&name.name) {
             return self.local_use(cx, local, span);
         }
         if let Some(item) = self.item(cx.module, &name.name) {
             return self.item_value(item, span);
+        }
+        if let Some((known, id, variant)) = self.variant_for_name(cx, &name.name, expected) {
+            return self.check_variant(cx, id, variant, known, name, None, expected, span);
+        }
+        if self.ambiguous_variant(cx, name) {
+            return expr(ExprKind::Nothing, Type::Unknown, span);
         }
         if self.import(cx.module, &name.name).is_some() {
             self.error(
@@ -506,6 +521,7 @@ impl<'a> Checker<'a> {
         cx: &mut FnCtx,
         target: &ast::Expr,
         name: &ast::Ident,
+        expected: Option<&Type>,
         span: Span,
     ) -> hir::Expr {
         if let Some(module) = self.module_alias(cx, target) {
@@ -513,6 +529,9 @@ impl<'a> Checker<'a> {
                 Some(item) => self.item_value(item, span),
                 None => expr(ExprKind::Nothing, Type::Unknown, span),
             };
+        }
+        if let Some(id) = self.type_reference(cx, target) {
+            return self.qualified_variant(cx, id, name, None, expected, span);
         }
         let value = self.check_expr(cx, target, None);
         match self.unifier.shallow(&value.ty) {
@@ -542,28 +561,7 @@ impl<'a> Checker<'a> {
                 )
             }
             Type::Unknown => expr(ExprKind::Nothing, Type::Unknown, span),
-            Type::Var(_) => {
-                self.error(
-                    Diagnostic::error(
-                        "E_AMBIGUOUS_TYPE",
-                        format!("cannot infer the type that has `.{}`", name.name),
-                    )
-                    .primary(span, "")
-                    .help("annotate the value's type"),
-                );
-                expr(ExprKind::Nothing, Type::Unknown, span)
-            }
-            other => {
-                self.error(
-                    Diagnostic::error(
-                        "E_UNKNOWN_FIELD",
-                        format!("{other} has no field `{}`", name.name),
-                    )
-                    .primary(name.span, "")
-                    .note("structures with named fields arrive in milestone M2"),
-                );
-                expr(ExprKind::Nothing, Type::Unknown, span)
-            }
+            _ => self.check_field(cx, value, name, span),
         }
     }
 
@@ -878,6 +876,7 @@ impl<'a> Checker<'a> {
                         );
                         expr(ExprKind::Nothing, Type::Unknown, span)
                     }
+                    Some(Item::Type(id)) => self.positional_construct(cx, id, args, span),
                     None => {
                         for arg in args {
                             self.check_expr(cx, arg, None);
@@ -885,6 +884,10 @@ impl<'a> Checker<'a> {
                         expr(ExprKind::Nothing, Type::Unknown, span)
                     }
                 };
+            }
+            ast::ExprKind::Member { target, name } if self.type_reference(cx, target).is_some() => {
+                let id = self.type_reference(cx, target).expect("type");
+                return self.qualified_variant(cx, id, name, Some(args), expected, span);
             }
             ast::ExprKind::Member { name, .. } => {
                 self.error(
@@ -925,7 +928,34 @@ impl<'a> Checker<'a> {
                 );
                 return expr(ExprKind::Nothing, Type::Unknown, span);
             }
+            Some(Item::Type(id)) => return self.positional_construct(cx, id, args, span),
             None => {}
+        }
+        // A variant of the expected enum comes before the prelude, so that an
+        // enum may have a variant called, for example, `error`.
+        if let Some((ty, variant)) = self.expected_variant(expected, &name.name) {
+            let id = ty.as_named().expect("enum").id;
+            return self.check_variant(cx, id, variant, Some(ty), name, Some(args), expected, span);
+        }
+        if builtins::lookup(&name.name, self.modules[cx.module.0 as usize].standard).is_none() {
+            if let Some((known, id, variant)) = self.variant_for_name(cx, &name.name, expected) {
+                return self.check_variant(
+                    cx,
+                    id,
+                    variant,
+                    known,
+                    name,
+                    Some(args),
+                    expected,
+                    span,
+                );
+            }
+            if self.ambiguous_variant(cx, name) {
+                for arg in args {
+                    self.check_expr(cx, arg, None);
+                }
+                return expr(ExprKind::Nothing, Type::Unknown, span);
+            }
         }
         if !generic_args.is_empty() {
             self.error(
@@ -997,7 +1027,51 @@ impl<'a> Checker<'a> {
                 self.unavailable(span, "function values", "M2");
                 expr(ExprKind::Nothing, Type::Unknown, span)
             }
+            Item::Type(id) => self.type_as_value(id, span),
         }
+    }
+
+    /// `Point(1.0, 2.0)`: structures need their field names.
+    fn positional_construct(
+        &mut self,
+        cx: &mut FnCtx,
+        id: crate::types::TypeId,
+        args: &[ast::Expr],
+        span: Span,
+    ) -> hir::Expr {
+        let def = self.type_def(id);
+        let name = def.name.clone();
+        let diagnostic = if def.is_enum() {
+            Diagnostic::error(
+                "E_NOT_CALLABLE",
+                format!("`{name}` is an enum; build one of its variants instead"),
+            )
+            .primary(span, "")
+            .help(format!(
+                "for example `{name}.{}(...)`",
+                def.variants()
+                    .first()
+                    .map(|v| v.name.as_str())
+                    .unwrap_or("variant")
+            ))
+        } else {
+            let fields: Vec<String> = def
+                .fields()
+                .iter()
+                .map(|f| format!("{} = ...", f.name))
+                .collect();
+            Diagnostic::error(
+                "E_NAMED_FIELDS",
+                format!("a `{name}` is built with named fields"),
+            )
+            .primary(span, "")
+            .help(format!("write `{name}({})`", fields.join(", ")))
+        };
+        self.error(diagnostic);
+        for arg in args {
+            self.check_expr(cx, arg, None);
+        }
+        expr(ExprKind::Nothing, Type::Unknown, span)
     }
 
     fn arity(
@@ -1044,7 +1118,7 @@ impl<'a> Checker<'a> {
     ) -> hir::Expr {
         let explicit: Vec<Type> = generic_args
             .iter()
-            .map(|g| self.resolve_type(g, &cx.generics))
+            .map(|g| self.resolve_type(cx.module, g, &cx.generics))
             .collect();
         let (signature, params, type_args, ret) = self.instantiate(id, &explicit, span);
         if !self.arity(name, args, signature.required, signature.params.len(), span) {

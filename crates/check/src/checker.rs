@@ -2,7 +2,7 @@
 
 use crate::hir::{self, ConstId, FuncId, LocalId, LocalKind};
 use crate::infer::{Bounds, LiteralKind, Traits, Unifier, UnifyError};
-use crate::types::{TyVar, Type};
+use crate::types::{FieldDef, NamedType, TyVar, Type, TypeDef, TypeDefKind, TypeId, VariantDef};
 use sayon_syntax::ast::{self, DeclKind, ParamMode, StmtKind};
 use sayon_syntax::{Diagnostic, Diagnostics, Span};
 use std::collections::{HashMap, HashSet};
@@ -11,6 +11,22 @@ use std::collections::{HashMap, HashSet};
 pub(crate) enum Item {
     Function(FuncId),
     Constant(ConstId),
+    Type(TypeId),
+}
+
+/// The source of a structure or enum declaration.
+pub(crate) enum TypeSource<'a> {
+    Structure(&'a [ast::Field]),
+    Enum(&'a [ast::Variant]),
+}
+
+pub(crate) struct TypeEntry<'a> {
+    pub module: ModuleId,
+    pub name: String,
+    pub span: Span,
+    pub visibility: ast::Visibility,
+    pub generics: &'a [ast::Ident],
+    pub source: TypeSource<'a>,
 }
 
 /// A source file being checked. Each file is a module.
@@ -87,6 +103,14 @@ pub(crate) enum Deferred {
     },
     /// `[]` must become an array or a dictionary.
     EmptyCollection { ty: Type, span: Span },
+    /// `target.name` producing `result`, in code of `module`.
+    Field {
+        target: Type,
+        name: String,
+        result: Type,
+        span: Span,
+        module: ModuleId,
+    },
 }
 
 pub(crate) struct Scope {
@@ -178,6 +202,9 @@ pub(crate) struct Checker<'a> {
     pub entry_module: ModuleId,
     pub functions: Vec<FunctionEntry<'a>>,
     pub constants: Vec<ConstantEntry<'a>>,
+    pub types: Vec<TypeEntry<'a>>,
+    /// The resolved definitions of `types`, indexed by `TypeId`.
+    pub type_defs: Vec<TypeDef>,
     /// Names bound by top-level script statements, for a clearer error when a
     /// function tries to use one.
     pub script_names: HashSet<String>,
@@ -205,6 +232,8 @@ impl<'a> Checker<'a> {
             entry_module: ModuleId(0),
             functions: Vec::new(),
             constants: Vec::new(),
+            types: Vec::new(),
+            type_defs: Vec::new(),
             script_names: HashSet::new(),
             deferred: Vec::new(),
             current_component: Vec::new(),
@@ -323,6 +352,15 @@ impl<'a> Checker<'a> {
         match item {
             Item::Function(id) => self.functions[id.0 as usize].module,
             Item::Constant(id) => self.constants[id.0 as usize].module,
+            Item::Type(id) => self.types[id.0 as usize].module,
+        }
+    }
+
+    fn item_span(&self, item: Item) -> Span {
+        match item {
+            Item::Function(id) => self.functions[id.0 as usize].span,
+            Item::Constant(id) => self.constants[id.0 as usize].span,
+            Item::Type(id) => self.types[id.0 as usize].span,
         }
     }
 
@@ -330,6 +368,7 @@ impl<'a> Checker<'a> {
         let visibility = match item {
             Item::Function(id) => self.functions[id.0 as usize].ast.map(|f| f.visibility),
             Item::Constant(id) => Some(self.constants[id.0 as usize].decl.visibility),
+            Item::Type(id) => Some(self.types[id.0 as usize].visibility),
         };
         visibility == Some(ast::Visibility::Private)
     }
@@ -409,6 +448,30 @@ impl<'a> Checker<'a> {
                         });
                     }
                 }
+                StmtKind::TypeDecl {
+                    visibility,
+                    name,
+                    generics,
+                    fields,
+                } => self.collect_type(
+                    module_id,
+                    name,
+                    *visibility,
+                    generics,
+                    TypeSource::Structure(fields),
+                ),
+                StmtKind::EnumDecl {
+                    visibility,
+                    name,
+                    generics,
+                    variants,
+                } => self.collect_type(
+                    module_id,
+                    name,
+                    *visibility,
+                    generics,
+                    TypeSource::Enum(variants),
+                ),
                 StmtKind::Declare(decl) if decl.kind == DeclKind::Constant => {
                     let id = ConstId(self.constants.len() as u32);
                     if self.define_item(
@@ -452,6 +515,27 @@ impl<'a> Checker<'a> {
         script
     }
 
+    fn collect_type(
+        &mut self,
+        module: ModuleId,
+        name: &'a ast::Ident,
+        visibility: ast::Visibility,
+        generics: &'a [ast::Ident],
+        source: TypeSource<'a>,
+    ) {
+        let id = TypeId(self.types.len() as u32);
+        if self.define_item(module, &name.name, name.span, Item::Type(id)) {
+            self.types.push(TypeEntry {
+                module,
+                name: name.name.clone(),
+                span: name.span,
+                visibility,
+                generics,
+                source,
+            });
+        }
+    }
+
     fn define_item(&mut self, module: ModuleId, name: &str, span: Span, item: Item) -> bool {
         if let Some((_, import_span)) = self.modules[module.0 as usize].imports.get(name) {
             let import_span = *import_span;
@@ -466,10 +550,7 @@ impl<'a> Checker<'a> {
             return false;
         }
         if let Some(existing) = self.modules[module.0 as usize].items.get(name) {
-            let previous = match existing {
-                Item::Function(id) => self.functions[id.0 as usize].span,
-                Item::Constant(id) => self.constants[id.0 as usize].span,
-            };
+            let previous = self.item_span(*existing);
             self.error(
                 Diagnostic::error(
                     "E_DUPLICATE_DEFINITION",
@@ -517,6 +598,7 @@ impl<'a> Checker<'a> {
                 Item::Constant(id) => {
                     collect_expr_names(&self.constants[id.0 as usize].decl.value, &mut names)
                 }
+                Item::Type(_) => {}
             }
             for name in names {
                 // Qualified references are recorded as `alias.member`.
@@ -526,11 +608,11 @@ impl<'a> Checker<'a> {
                         .and_then(|target| self.item(target, member)),
                     None => self.item(module, &name),
                 };
-                if let Some(item) = found {
-                    let target = index_of[&item];
-                    if !edges[index].contains(&target) {
-                        edges[index].push(target);
-                    }
+                // Types are not checked as items, so they add no dependency.
+                if let Some(&target) = found.and_then(|item| index_of.get(&item))
+                    && !edges[index].contains(&target)
+                {
+                    edges[index].push(target);
                 }
             }
         }
@@ -544,16 +626,60 @@ impl<'a> Checker<'a> {
 
     // ----- type annotations -----------------------------------------------------
 
-    pub fn resolve_type(&mut self, ty: &ast::TypeExpr, generics: &HashMap<String, u32>) -> Type {
+    /// Resolves a type annotation written in `module`.
+    pub fn resolve_type(
+        &mut self,
+        module: ModuleId,
+        ty: &ast::TypeExpr,
+        generics: &HashMap<String, u32>,
+    ) -> Type {
         match &ty.kind {
             ast::TypeExprKind::Error => Type::Unknown,
             ast::TypeExprKind::Union(members) => Type::union(
                 members
                     .iter()
-                    .map(|m| self.resolve_type(m, generics))
+                    .map(|m| self.resolve_type(module, m, generics))
                     .collect::<Vec<_>>(),
             ),
-            ast::TypeExprKind::Named { name, args } => {
+            ast::TypeExprKind::Named {
+                module: Some(alias),
+                name,
+                args,
+            } => {
+                let Some(target) = self.import(module, &alias.name) else {
+                    self.error(
+                        Diagnostic::error(
+                            "E_UNKNOWN_TYPE",
+                            format!("`{}` is not an imported module", alias.name),
+                        )
+                        .primary(alias.span, "")
+                        .help(format!(
+                            "import it first, for example `{} = import(\"...\")`",
+                            alias.name
+                        )),
+                    );
+                    return Type::Unknown;
+                };
+                match self.module_member(module, target, name) {
+                    Some(Item::Type(id)) => self.named_annotation(module, id, ty, args, generics),
+                    Some(_) => {
+                        self.error(
+                            Diagnostic::error(
+                                "E_UNKNOWN_TYPE",
+                                format!("`{}.{}` is not a type", alias.name, name.name),
+                            )
+                            .primary(ty.span, ""),
+                        );
+                        Type::Unknown
+                    }
+                    None => Type::Unknown,
+                }
+            }
+            ast::TypeExprKind::Named {
+                module: None,
+                name,
+                args,
+            } => {
                 let arity = |checker: &mut Checker, expected: usize| {
                     if args.len() != expected {
                         checker.error(
@@ -597,14 +723,14 @@ impl<'a> Checker<'a> {
                         if !arity(self, 1) {
                             return Type::Unknown;
                         }
-                        Type::array(self.resolve_type(&args[0], generics))
+                        Type::array(self.resolve_type(module, &args[0], generics))
                     }
                     "Dict" => {
                         if !arity(self, 2) {
                             return Type::Unknown;
                         }
-                        let key = self.resolve_type(&args[0], generics);
-                        let value = self.resolve_type(&args[1], generics);
+                        let key = self.resolve_type(module, &args[0], generics);
+                        let value = self.resolve_type(module, &args[1], generics);
                         if key != Type::String && key != Type::Unknown {
                             self.error(
                                 Diagnostic::error(
@@ -619,19 +745,43 @@ impl<'a> Checker<'a> {
                         }
                         Type::dict(key, value)
                     }
-                    "File" | "Path" | "Outcome" | "List" | "Map" | "Set" | "Queue" | "Stack"
-                    | "Channel" => {
-                        self.unavailable(ty.span, &format!("the `{}` type", name.name), "M2");
-                        Type::Unknown
-                    }
                     other => {
-                        if let Some((feature, milestone)) = crate::builtins::planned(other) {
+                        match self.item(module, other) {
+                            Some(Item::Type(id)) => {
+                                return self.named_annotation(module, id, ty, args, generics);
+                            }
+                            Some(_) => {
+                                self.error(
+                                    Diagnostic::error(
+                                        "E_UNKNOWN_TYPE",
+                                        format!("`{other}` is not a type"),
+                                    )
+                                    .primary(name.span, "a function or constant"),
+                                );
+                                return Type::Unknown;
+                            }
+                            None => {}
+                        }
+                        if matches!(
+                            other,
+                            "File"
+                                | "Path"
+                                | "Outcome"
+                                | "List"
+                                | "Map"
+                                | "Set"
+                                | "Queue"
+                                | "Stack"
+                                | "Channel"
+                        ) {
+                            self.unavailable(ty.span, &format!("the `{other}` type"), "M2");
+                        } else if let Some((feature, milestone)) = crate::builtins::planned(other) {
                             self.unavailable(ty.span, feature, milestone);
                         } else {
                             self.error(
                                 Diagnostic::error("E_UNKNOWN_TYPE", format!("unknown type `{other}`"))
                                     .primary(name.span, "not a known type")
-                                    .help("built-in types include integer, float, boolean, string, nothing, Array<T> and Dict<string, T>"),
+                                    .help("built-in types include integer, float, boolean, string, nothing, Array<T> and Dict<string, T>; declare your own with `type` or `enum`"),
                             );
                         }
                         Type::Unknown
@@ -641,12 +791,276 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A declared structure or enum named in an annotation.
+    fn named_annotation(
+        &mut self,
+        module: ModuleId,
+        id: TypeId,
+        ty: &ast::TypeExpr,
+        args: &[ast::TypeExpr],
+        generics: &HashMap<String, u32>,
+    ) -> Type {
+        let expected = self.types[id.0 as usize].generics.len();
+        if args.len() != expected {
+            let name = self.types[id.0 as usize].name.clone();
+            self.error(
+                Diagnostic::error(
+                    "E_TYPE_ARGUMENTS",
+                    format!(
+                        "`{name}` takes {expected} type argument{}, found {}",
+                        if expected == 1 { "" } else { "s" },
+                        args.len()
+                    ),
+                )
+                .primary(ty.span, ""),
+            );
+            return Type::Unknown;
+        }
+        let args = args
+            .iter()
+            .map(|arg| self.resolve_type(module, arg, generics))
+            .collect();
+        self.named_type(id, args)
+    }
+
+    /// The type of a declared structure or enum with the given arguments.
+    pub fn named_type(&self, id: TypeId, args: Vec<Type>) -> Type {
+        Type::named(NamedType {
+            id,
+            name: self.types[id.0 as usize].name.clone(),
+            args,
+            copy: self
+                .type_defs
+                .get(id.0 as usize)
+                .is_some_and(|def| def.copy),
+        })
+    }
+
+    /// The type of a declared structure or enum with fresh type arguments.
+    pub fn instantiate_named(&mut self, id: TypeId, span: Span) -> Type {
+        let count = self.types[id.0 as usize].generics.len();
+        let args = (0..count).map(|_| self.fresh_var(span)).collect();
+        self.named_type(id, args)
+    }
+
+    pub fn type_def(&self, id: TypeId) -> &TypeDef {
+        &self.type_defs[id.0 as usize]
+    }
+
+    /// Resolves the field types of every declared structure and enum, decides
+    /// which are Copy, and rejects types that contain themselves.
+    pub fn resolve_type_defs(&mut self) {
+        // Placeholders so that named types can be built while fields resolve.
+        self.type_defs = self
+            .types
+            .iter()
+            .map(|entry| TypeDef {
+                name: entry.name.clone(),
+                generics: entry.generics.len() as u32,
+                kind: TypeDefKind::Structure(Vec::new()),
+                copy: true,
+            })
+            .collect();
+        for index in 0..self.types.len() {
+            let entry = &self.types[index];
+            let module = entry.module;
+            let generics: HashMap<String, u32> = entry
+                .generics
+                .iter()
+                .enumerate()
+                .map(|(i, g)| (g.name.clone(), i as u32))
+                .collect();
+            let kind = match entry.source {
+                TypeSource::Structure(fields) => {
+                    if fields.is_empty() {
+                        let span = entry.span;
+                        self.error(
+                            Diagnostic::error(
+                                "E_EMPTY_STRUCTURE",
+                                "a structure needs at least one field",
+                            )
+                            .primary(span, "")
+                            .help("for a value without fields, use an enum variant such as `enum Marker` with `ready`"),
+                        );
+                    }
+                    TypeDefKind::Structure(self.resolve_fields(module, fields, &generics))
+                }
+                TypeSource::Enum(variants) => {
+                    let mut seen: Vec<&ast::Ident> = Vec::new();
+                    let mut resolved = Vec::new();
+                    for variant in variants {
+                        if let Some(first) = seen.iter().find(|v| v.name == variant.name.name) {
+                            let first = first.span;
+                            self.error(
+                                Diagnostic::error(
+                                    "E_DUPLICATE_VARIANT",
+                                    format!(
+                                        "the variant `{}` is declared twice",
+                                        variant.name.name
+                                    ),
+                                )
+                                .primary(variant.name.span, "")
+                                .secondary(first, "first declared here"),
+                            );
+                            continue;
+                        }
+                        seen.push(&variant.name);
+                        resolved.push(VariantDef {
+                            name: variant.name.name.clone(),
+                            fields: self.resolve_fields(module, &variant.fields, &generics),
+                        });
+                    }
+                    TypeDefKind::Enum(resolved)
+                }
+            };
+            self.type_defs[index].kind = kind;
+        }
+
+        // A definition is Copy when all its fields are; decreasing to a fixed point.
+        loop {
+            let mut changed = false;
+            for index in 0..self.type_defs.len() {
+                if !self.type_defs[index].copy {
+                    continue;
+                }
+                let copy = all_field_types(&self.type_defs[index])
+                    .iter()
+                    .all(|ty| self.copy_assuming_params(ty));
+                if !copy {
+                    self.type_defs[index].copy = false;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let flags: Vec<bool> = self.type_defs.iter().map(|def| def.copy).collect();
+        for def in &mut self.type_defs {
+            match &mut def.kind {
+                TypeDefKind::Structure(fields) => fields
+                    .iter_mut()
+                    .for_each(|f| set_copy_flags(&mut f.ty, &flags)),
+                TypeDefKind::Enum(variants) => variants
+                    .iter_mut()
+                    .flat_map(|v| v.fields.iter_mut())
+                    .for_each(|f| set_copy_flags(&mut f.ty, &flags)),
+            }
+        }
+        self.unifier.field_types = self.type_defs.iter().map(all_field_types).collect();
+
+        for index in 0..self.type_defs.len() {
+            let id = TypeId(index as u32);
+            let args = (0..self.type_defs[index].generics)
+                .map(Type::Param)
+                .collect();
+            let start = self.named_type(id, args);
+            if let Some(path) = self.inline_cycle(&start, &mut vec![id]) {
+                let name = self.types[index].name.clone();
+                let span = self.types[index].span;
+                let through = if path.len() > 1 {
+                    let names: Vec<String> = path[1..]
+                        .iter()
+                        .map(|id| format!("`{}`", self.types[id.0 as usize].name))
+                        .collect();
+                    format!(" (through {})", names.join(", "))
+                } else {
+                    String::new()
+                };
+                self.error(
+                    Diagnostic::error(
+                        "E_RECURSIVE_TYPE",
+                        format!("`{name}` contains itself{through}, so it would have no size"),
+                    )
+                    .primary(span, "")
+                    .help(format!(
+                        "store nested values in a collection, for example a field `children: Array<{name}>`"
+                    )),
+                );
+            }
+        }
+    }
+
+    fn resolve_fields(
+        &mut self,
+        module: ModuleId,
+        fields: &[ast::Field],
+        generics: &HashMap<String, u32>,
+    ) -> Vec<FieldDef> {
+        let mut resolved: Vec<FieldDef> = Vec::new();
+        let mut seen: Vec<&ast::Ident> = Vec::new();
+        for field in fields {
+            if let Some(first) = seen.iter().find(|f| f.name == field.name.name) {
+                let first = first.span;
+                self.error(
+                    Diagnostic::error(
+                        "E_DUPLICATE_FIELD",
+                        format!("the field `{}` is declared twice", field.name.name),
+                    )
+                    .primary(field.name.span, "")
+                    .secondary(first, "first declared here"),
+                );
+                continue;
+            }
+            seen.push(&field.name);
+            resolved.push(FieldDef {
+                name: field.name.name.clone(),
+                ty: self.resolve_type(module, &field.ty, generics),
+            });
+        }
+        resolved
+    }
+
+    /// Whether a field type is Copy when type parameters are.
+    fn copy_assuming_params(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Param(_) => true,
+            Type::Union(members) => members.iter().all(|m| self.copy_assuming_params(m)),
+            Type::Named(named) => {
+                self.type_defs[named.id.0 as usize].copy
+                    && named.args.iter().all(|a| self.copy_assuming_params(a))
+            }
+            other => other.is_copy(),
+        }
+    }
+
+    /// Follows the fields a value of `ty` stores inline (not through a
+    /// collection), looking for a type already on `stack`. Returns the chain
+    /// of types that leads back.
+    fn inline_cycle(&self, ty: &Type, stack: &mut Vec<TypeId>) -> Option<Vec<TypeId>> {
+        let Type::Named(named) = ty else {
+            return None;
+        };
+        let def = &self.type_defs[named.id.0 as usize];
+        for field in all_field_types(def) {
+            let field = field.substitute(&named.args);
+            for inner in inline_named(&field) {
+                if stack.first() == Some(&inner.id) {
+                    return Some(stack.clone());
+                }
+                if stack.contains(&inner.id) {
+                    // A cycle that does not include the starting type is
+                    // reported when that type is checked.
+                    continue;
+                }
+                stack.push(inner.id);
+                let found = self.inline_cycle(&Type::Named(Box::new(inner.clone())), stack);
+                stack.pop();
+                if found.is_some() {
+                    return found;
+                }
+            }
+        }
+        None
+    }
+
     // ----- signatures and instantiation ---------------------------------------
 
     /// Creates the monomorphic signature used while a function's component is
     /// being inferred.
     pub fn initial_signature(&mut self, id: FuncId) -> Signature {
         let function = self.functions[id.0 as usize].ast.expect("function source");
+        let module = self.functions[id.0 as usize].module;
         let generics: HashMap<String, u32> = function
             .generics
             .iter()
@@ -659,7 +1073,7 @@ impl<'a> Checker<'a> {
         let mut seen_default = false;
         for param in &function.params {
             let ty = match &param.ty {
-                Some(annotation) => self.resolve_type(annotation, &generics),
+                Some(annotation) => self.resolve_type(module, annotation, &generics),
                 None => self.fresh_var(param.name.span),
             };
             params.push(ty);
@@ -679,7 +1093,7 @@ impl<'a> Checker<'a> {
             }
         }
         let ret = match &function.ret {
-            Some(annotation) => self.resolve_type(annotation, &generics),
+            Some(annotation) => self.resolve_type(module, annotation, &generics),
             None => self.fresh_var(function.header_span),
         };
         Signature {
@@ -814,6 +1228,22 @@ impl<'a> Checker<'a> {
                         }
                     }
                     Deferred::EmptyCollection { .. } => {}
+                    Deferred::Field {
+                        target,
+                        name,
+                        module,
+                        span,
+                        ..
+                    } => {
+                        // The one structure of the module with this field.
+                        if let Type::Var(_) = self.unifier.shallow(target) {
+                            let candidates = self.structures_with_field(*module, name);
+                            if let [id] = candidates.as_slice() {
+                                let shape = self.instantiate_named(*id, *span);
+                                defaulted |= self.unifier.unify(target, &shape).is_ok();
+                            }
+                        }
+                    }
                 }
             }
             self.deferred = pending;
@@ -839,12 +1269,124 @@ impl<'a> Checker<'a> {
                         "cannot infer the type of this empty collection",
                         "annotate the binding, for example `names: Array<string> = []`",
                     ),
+                    Deferred::Field {
+                        name, module, span, ..
+                    } => {
+                        let count = self.structures_with_field(*module, name).len();
+                        let message = if count > 1 {
+                            format!(
+                                "several structures have a field `{name}`, so the type of this value is unclear"
+                            )
+                        } else {
+                            format!("cannot infer the type that has `.{name}`")
+                        };
+                        self.error(
+                            Diagnostic::error("E_AMBIGUOUS_TYPE", message)
+                                .primary(*span, "")
+                                .help("annotate the value's type, for example a parameter `point: Point`"),
+                        );
+                        continue;
+                    }
                 };
                 self.error(
                     Diagnostic::error("E_AMBIGUOUS_TYPE", message)
                         .primary(span, "")
                         .help(help),
                 );
+            }
+        }
+    }
+
+    /// Structures declared in `module` that have a field called `name`.
+    pub fn structures_with_field(&self, module: ModuleId, name: &str) -> Vec<TypeId> {
+        (0..self.types.len())
+            .map(|i| TypeId(i as u32))
+            .filter(|id| {
+                self.types[id.0 as usize].module == module
+                    && self.type_defs[id.0 as usize].field_index(name).is_some()
+            })
+            .collect()
+    }
+
+    /// The type of `target.name` when `target` has type `target_ty`; reports
+    /// unknown fields and defers the decision while the type is unknown.
+    pub fn field_type(
+        &mut self,
+        target_ty: &Type,
+        name: &ast::Ident,
+        span: Span,
+        module: ModuleId,
+    ) -> Type {
+        match self.unifier.shallow(target_ty) {
+            Type::Var(_) => {
+                let result = self.fresh_var(span);
+                self.deferred.push(Deferred::Field {
+                    target: target_ty.clone(),
+                    name: name.name.clone(),
+                    result: result.clone(),
+                    span,
+                    module,
+                });
+                result
+            }
+            resolved => self.known_field_type(&resolved, &name.name, name.span),
+        }
+    }
+
+    fn known_field_type(&mut self, ty: &Type, name: &str, span: Span) -> Type {
+        match ty {
+            Type::Unknown => Type::Unknown,
+            Type::Named(named) if !self.type_def(named.id).is_enum() => {
+                let def = self.type_def(named.id);
+                match def.field_index(name) {
+                    Some(index) => def.fields()[index].ty.substitute(&named.args),
+                    None => {
+                        let names: Vec<String> = def
+                            .fields()
+                            .iter()
+                            .map(|f| format!("`{}`", f.name))
+                            .collect();
+                        let structure = def.name.clone();
+                        self.error(
+                            Diagnostic::error(
+                                "E_UNKNOWN_FIELD",
+                                format!("`{structure}` has no field `{name}`"),
+                            )
+                            .primary(span, "")
+                            .help(format!("its fields are {}", names.join(", "))),
+                        );
+                        Type::Unknown
+                    }
+                }
+            }
+            Type::Named(named) => {
+                self.error(
+                    Diagnostic::error(
+                        "E_UNKNOWN_FIELD",
+                        format!("the enum `{}` has no fields", named.name),
+                    )
+                    .primary(span, "")
+                    .help("use `match` to read the values inside a variant"),
+                );
+                Type::Unknown
+            }
+            Type::Union(_) => {
+                self.error(
+                    Diagnostic::error(
+                        "E_UNKNOWN_FIELD",
+                        format!("{ty} has no field `{name}`"),
+                    )
+                    .primary(span, "")
+                    .help("check which kind of value it holds first, for example `if value != nothing`"),
+                );
+                Type::Unknown
+            }
+            other => {
+                self.error(
+                    Diagnostic::error("E_UNKNOWN_FIELD", format!("{other} has no field `{name}`"))
+                        .primary(span, ""),
+                );
+                Type::Unknown
             }
         }
     }
@@ -888,6 +1430,20 @@ impl<'a> Checker<'a> {
             Deferred::EmptyCollection { ty, .. } => {
                 !matches!(self.unifier.shallow(ty), Type::Var(_))
             }
+            Deferred::Field {
+                target,
+                name,
+                result,
+                span,
+                ..
+            } => match self.unifier.shallow(target) {
+                Type::Var(_) => false,
+                resolved => {
+                    let field = self.known_field_type(&resolved, name, *span);
+                    self.unify_at(result, &field, *span, "");
+                    true
+                }
+            },
         }
     }
 
@@ -1033,15 +1589,42 @@ impl<'a> Checker<'a> {
     }
 
     fn finalize_place(&mut self, place: &mut hir::Place) {
-        if let hir::Place::Index {
-            target,
-            target_ty,
-            index,
-        } = place
-        {
-            self.finalize_place(target);
-            *target_ty = self.finalize_type(target_ty);
-            self.finalize_expr(index);
+        match place {
+            hir::Place::Local(_) => {}
+            hir::Place::Index {
+                target,
+                target_ty,
+                index,
+            } => {
+                self.finalize_place(target);
+                *target_ty = self.finalize_type(target_ty);
+                self.finalize_expr(index);
+            }
+            hir::Place::Field {
+                target, target_ty, ..
+            } => {
+                self.finalize_place(target);
+                *target_ty = self.finalize_type(target_ty);
+            }
+            hir::Place::Narrow { target, ty } => {
+                self.finalize_place(target);
+                *ty = self.finalize_type(ty);
+            }
+        }
+    }
+
+    fn finalize_pattern(&mut self, pattern: &mut hir::Pattern) {
+        match pattern {
+            hir::Pattern::Wildcard | hir::Pattern::Binding(_) => {}
+            hir::Pattern::Literal(value) => self.finalize_expr(value),
+            hir::Pattern::Variant { ty, fields, .. } => {
+                *ty = self.finalize_type(ty);
+                fields.iter_mut().for_each(|f| self.finalize_pattern(f));
+            }
+            hir::Pattern::Member { member, inner } => {
+                *member = self.finalize_type(member);
+                self.finalize_pattern(inner);
+            }
         }
     }
 
@@ -1091,6 +1674,18 @@ impl<'a> Checker<'a> {
                 }
             }
             Block(block) => self.finalize_block(block),
+            Match {
+                scrutinee, arms, ..
+            } => {
+                self.finalize_expr(scrutinee);
+                for arm in arms {
+                    self.finalize_pattern(&mut arm.pattern);
+                    if let Some(guard) = &mut arm.guard {
+                        self.finalize_expr(guard);
+                    }
+                    self.finalize_block(&mut arm.body);
+                }
+            }
             Break | Continue => {}
         }
     }
@@ -1141,11 +1736,17 @@ impl<'a> Checker<'a> {
                 self.finalize_expr(rhs);
             }
             Unary { operand, .. } => self.finalize_expr(operand),
-            Array(items) => {
+            Array(items) | Variant { args: items, .. } => {
                 for item in items {
                     self.finalize_expr(item);
                 }
             }
+            Record(fields) => {
+                for (_, value) in fields {
+                    self.finalize_expr(value);
+                }
+            }
+            Field { value, .. } => self.finalize_expr(value),
             Dict(entries) => {
                 for (key, value) in entries {
                     self.finalize_expr(key);
@@ -1189,6 +1790,44 @@ fn conversion_help(expected: &Type, found: &Type) -> Option<String> {
             Some("parse text with tonumber(...)".to_string())
         }
         _ => None,
+    }
+}
+
+/// Every field type of a structure, or of all variants of an enum.
+fn all_field_types(def: &TypeDef) -> Vec<Type> {
+    match &def.kind {
+        TypeDefKind::Structure(fields) => fields.iter().map(|f| f.ty.clone()).collect(),
+        TypeDefKind::Enum(variants) => variants
+            .iter()
+            .flat_map(|v| v.fields.iter().map(|f| f.ty.clone()))
+            .collect(),
+    }
+}
+
+/// Updates the Copy flag carried by every named type inside `ty`.
+fn set_copy_flags(ty: &mut Type, flags: &[bool]) {
+    match ty {
+        Type::Named(named) => {
+            named.copy = flags[named.id.0 as usize];
+            named.args.iter_mut().for_each(|a| set_copy_flags(a, flags));
+        }
+        Type::Array(element) => set_copy_flags(element, flags),
+        Type::Dict(key, value) => {
+            set_copy_flags(key, flags);
+            set_copy_flags(value, flags);
+        }
+        Type::Union(members) => members.iter_mut().for_each(|m| set_copy_flags(m, flags)),
+        _ => {}
+    }
+}
+
+/// The named types a value of `ty` stores inline: itself, or the members of
+/// a union. Collections store their elements elsewhere.
+fn inline_named(ty: &Type) -> Vec<&NamedType> {
+    match ty {
+        Type::Named(named) => vec![named],
+        Type::Union(members) => members.iter().flat_map(inline_named).collect(),
+        _ => Vec::new(),
     }
 }
 
@@ -1266,6 +1905,9 @@ fn collect_stmt_names(stmt: &ast::Stmt, names: &mut Vec<String>) {
         StmtKind::Match { scrutinee, arms } => {
             collect_expr_names(scrutinee, names);
             for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_expr_names(guard, names);
+                }
                 collect_block_names(&arm.body, names);
             }
         }
@@ -1297,6 +1939,12 @@ pub(crate) fn collect_expr_names(expr: &ast::Expr, names: &mut Vec<String>) {
         Call { callee, args, .. } => {
             collect_expr_names(callee, names);
             args.iter().for_each(|arg| collect_expr_names(arg, names));
+        }
+        Construct { callee, fields, .. } => {
+            collect_expr_names(callee, names);
+            fields
+                .iter()
+                .for_each(|(_, value)| collect_expr_names(value, names));
         }
         Index { target, index } => {
             collect_expr_names(target, names);

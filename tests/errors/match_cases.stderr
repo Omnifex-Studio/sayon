@@ -1,0 +1,26 @@
+error[E_NONEXHAUSTIVE]: `match` does not handle every possible value
+  --> match_cases.sayon:7:11
+   |
+ 7 |     match shape
+   |           ^^^^^ not handled: `rectangle(_, _)`, `point`
+   |
+   = note: cases with an `if` guard do not count, since the guard can fail
+   = help: add a `case` for each, or end with `case _` to handle everything else
+
+warning[W_UNREACHABLE_CASE]: this case is never reached
+   --> match_cases.sayon:19:14
+    |
+ 19 |         case 0
+    |              ^
+    |
+    = note: the cases above it already match every value it would
+
+error[E_PATTERN_ARITY]: `circle` has 1 field
+   --> match_cases.sayon:24:14
+    |
+ 24 |         case circle
+    |              ^^^^^^
+    |
+    = help: write `circle(_)` to match any values
+
+2 errors found; nothing was run

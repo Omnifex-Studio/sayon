@@ -90,7 +90,7 @@ ratio: float = 0.5         # introduces ratio with a fixed type
 - `constant` at the top level of a file declares a module constant, which every function can read. Module constants are initialized before the program starts, in dependency order. A constant cannot depend on itself.
 - Other top-level bindings belong to the script and are not visible inside functions; pass them as arguments.
 
-Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) evaluates its target once.
+Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) evaluates its target once. In an assignment to an element or field, the value is computed before the place it is stored in.
 
 ## Types
 
@@ -109,6 +109,8 @@ Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) evaluates its target once.
 | `A or B` | A value of one of the member types |
 | `Range` | The result of `range(...)` |
 | `Error` | A recoverable error value |
+| structures | Declared with `type`: named fields |
+| enums | Declared with `enum`: one of several variants, each with its own fields |
 
 ### Type inference
 
@@ -160,6 +162,52 @@ else
 The recognized tests are `value == nothing`, `value != nothing`, `typeof(value) == "type name"`, and `typeof(value) != "type name"`, combined with `not`, `and`, and `or`. A test followed by a block that always leaves (`return`, `break`, `continue`, or an error) narrows the rest of the enclosing block. Assigning to the variable ends its narrowing.
 
 A union compared with one of its members is equal when it holds that member with an equal value.
+
+### Structures
+
+A structure type has named fields. Build a value by naming every field, either with the type's name or, where the type is known, with a field list:
+
+```sayon
+type Point = [
+    x: float,
+    y: float
+]
+
+origin: Point = [x = 0.0, y = 0.0]
+corner = Point(x = 3.0, y = 4.0)
+corner.x = 5.0
+print(corner.x + origin.y)        # 5.0
+```
+
+- Every field must be given exactly once; missing, repeated, and unknown fields are errors. Fields are evaluated in the order written.
+- A field list without a known type builds the one structure of the module with exactly those fields.
+- Fields are read with `value.field` and changed with `value.field = ...` or `value.field += ...`, through a variable, an element, or an `update` parameter.
+- A function can use a field of a parameter with no annotation; the parameter's type is the one structure of the module with that field.
+- Structures are generic when they declare type parameters: `type Pair<T> = [first: T, second: T]`. The arguments are inferred, as in `Pair(first = 1, second = 2)`, or written: `Pair<string>(first = "a", second = "b")`.
+- A structure cannot contain itself directly; store nested values in a collection, such as `children: Array<Node>`.
+- Types are declared at the top level of a file and are exported unless marked `private`. Another module names them with its import alias: `geometry.Point`.
+
+Two structures are equal when their fields are equal.
+
+### Enums
+
+An enum value is one of several variants. A variant can carry fields:
+
+```sayon
+enum Shape
+    circle(radius: float)
+    rectangle(width: float, height: float)
+    point
+
+shapes = [circle(1.0), Shape.rectangle(2.0, 3.0), point]
+```
+
+- A variant is built by passing its fields in order, or named alone when it has none.
+- A variant can be written without its enum's name when the expected type is that enum, or when only one enum of the module has a variant of that name. `Shape.circle(...)` always works.
+- A variant of the expected enum takes precedence over a built-in function of the same name, so `enum Result<T>` may have a variant `error(message: string)` and a function returning `Result<integer>` can `return error("...")`.
+- Enums can be generic and may contain themselves through a collection.
+
+Two enum values are equal when they are the same variant with equal fields.
 
 ## Operators
 
@@ -217,6 +265,49 @@ for key, value in ["a" = 1]
 
 `range(end)`, `range(start, end)`, and `range(start, end, step)` count from `start` (default 0) up to, but not including, `end`. A zero step is an error. A loop over a dictionary visits keys in insertion order, either keys alone (`for key in dict`) or keys with values (`for key, value in dict`). `break` and `continue` apply to the innermost loop.
 
+### Matching
+
+`match` runs the first `case` whose pattern matches the value, and whose guard, if it has one, is true:
+
+```sayon
+function area(shape: Shape) -> float
+    match shape
+        case circle(radius)
+            return 3.0 * radius * radius
+        case rectangle(width, height) if width == height
+            return width * width
+        case rectangle(width, height)
+            return width * height
+        case point
+            return 0.0
+```
+
+| Pattern | Matches |
+|---|---|
+| `_` | anything |
+| a name | anything, binding it to the name (unless it names a variant without fields) |
+| a literal: `0`, `-1`, `2.5`, `"text"`, `true`, `nothing` | an equal value |
+| `variant(pattern, ...)` | that variant, with each field matching its pattern |
+
+Patterns nest: `case some(circle(r))`. On a union, a literal or variant pattern selects the member it belongs to, and a name after cases that handled some members holds only the remaining ones:
+
+```sayon
+function describe(value: integer or string or nothing) -> string
+    match value
+        case nothing
+            return "nothing"
+        case 0
+            return "zero"
+        case other
+            return "something: {other}"     # other is integer or string
+```
+
+- A `match` must handle every possible value; the error lists what is missing. End with `case _` to handle everything else. Cases with a guard do not count toward this, since the guard can fail.
+- A case that can never run, because the cases above it match everything it would, is reported as a warning.
+- Matching a variable borrows its value, and names bound by a case borrow its parts: copy them with `clone`, and do not change the variable while such a case runs. Matching `move(variable)` or a computed value gives the match ownership, so the names bound by cases without a guard own their parts.
+
+## Operators
+
 ## Functions
 
 ```sayon
@@ -244,13 +335,13 @@ How a function uses a parameter decides what the call does with the argument:
 | update | `update name` | change it in place | stays with the caller, changed |
 | own | `own name` | keep, return, or store it | is transferred to the function |
 
-Values of Copy types (numbers, booleans, `nothing`, ranges, and unions of these) are always passed as copies, so modes only matter for strings, arrays, dictionaries, errors, and unions containing them.
+Values of Copy types (numbers, booleans, `nothing`, ranges, structures and enums whose fields are all Copy, and unions of these) are passed to read and own parameters as copies; a function may change its copy without affecting the caller. An `update` parameter always receives the caller's variable, so `function translate(update p: Point)` moves the caller's point.
 
 An annotated parameter defaults to read; changing or keeping it requires `update` or `own`. An unannotated parameter's mode is inferred from the function's body: the least mode it needs.
 
 ## Ownership
 
-Each string, array, dictionary, and error has exactly one owner, and is destroyed when its owner's scope ends. Sayon checks ownership while compiling; there is no garbage collector, and nothing is copied unless you ask.
+Each string, array, dictionary, and error, and each structure or enum value that holds one, has exactly one owner, and is destroyed when its owner's scope ends. Sayon checks ownership while compiling; there is no garbage collector, and nothing is copied unless you ask.
 
 - Assigning or passing an owned value to an `own` parameter transfers it. The previous owner can no longer use it, until it is assigned a new value.
 - `clone(value)` makes an independent copy. `move(value)` makes a transfer explicit.
@@ -258,6 +349,7 @@ Each string, array, dictionary, and error has exactly one owner, and is destroye
 - A collection cannot change while a `for` loop over it is running.
 - A loop variable over a collection of owned values borrows each element: copy it with `clone` to keep it.
 - Elements of a collection cannot be moved out; use `clone(...)` or `pop(...)`.
+- An owned field cannot be moved out of a structure held by a variable, which would leave it incomplete: clone the field, or move the whole structure. A field of a computed value, such as `make_person().name`, can be taken.
 - Module constants cannot be moved or changed.
 
 ```sayon
@@ -346,7 +438,7 @@ String positions count Unicode characters. File and directory failures raise `IO
 
 ### Display
 
-`print` and `tostring` display values as follows. Floats always show a decimal point or an exponent (`3.0`, `0.1`, `1e20`, `inf`, `nan`), and integers never do. Strings appear as text at the top level and quoted inside collections, so collections look like the literals that build them: `[1, "text", true]` and `["name" = "Ada"]`.
+`print` and `tostring` display values as follows. Floats always show a decimal point or an exponent (`3.0`, `0.1`, `1e20`, `inf`, `nan`), and integers never do. Strings appear as text at the top level and quoted inside collections, so collections look like the literals that build them: `[1, "text", true]` and `["name" = "Ada"]`. Structures and enum values look like the calls that build them: `Point(x = 1.0, y = 2.0)`, `circle(5.0)`, `point`. `typeof` names a structure or enum by its type name, such as `Point`.
 
 ## Modules
 

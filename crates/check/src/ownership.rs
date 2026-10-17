@@ -19,6 +19,7 @@ enum MoveReason {
     Call(String),
     Return,
     Element,
+    Structure,
     Explicit,
 }
 
@@ -115,9 +116,13 @@ enum Access {
     Update,
 }
 
+/// A local read in place by a statement that runs other code meanwhile: a
+/// loop over a collection, or a match that binds parts of its value.
 struct LoopBorrow {
     local: LocalId,
     span: Span,
+    /// "loop" or "match".
+    by: &'static str,
 }
 
 #[derive(Default)]
@@ -221,6 +226,7 @@ impl<'p> Analyzer<'p> {
             MoveReason::Call(callee) => format!(" to `{callee}`"),
             MoveReason::Return => " by `return`".to_string(),
             MoveReason::Element => " into a collection".to_string(),
+            MoveReason::Structure => " into a structure".to_string(),
             MoveReason::Explicit => String::new(),
         };
         let message = if site.earlier_iteration {
@@ -266,18 +272,27 @@ impl<'p> Analyzer<'p> {
             return true;
         };
         let loop_span = borrow.span;
+        let by = borrow.by;
         let name = self.local(local).name.clone();
+        let (secondary, help) = if by == "loop" {
+            (
+                format!("the loop reads `{name}` here until it finishes"),
+                "collect the changes in another collection and apply them after the loop",
+            )
+        } else {
+            (
+                format!("the match reads `{name}` here while its case runs"),
+                "make the change after the match, or bind a copy with clone(...)",
+            )
+        };
         self.emit("E_BORROW_CONFLICT", span, || {
             Diagnostic::error(
                 "E_BORROW_CONFLICT",
-                format!("cannot {action} `{name}` while the loop is reading it"),
+                format!("cannot {action} `{name}` while the {by} is reading it"),
             )
             .primary(span, "")
-            .secondary(
-                loop_span,
-                format!("the loop reads `{name}` here until it finishes"),
-            )
-            .help("collect the changes in another collection and apply them after the loop")
+            .secondary(loop_span, secondary)
+            .help(help)
         });
         false
     }
@@ -307,7 +322,7 @@ impl<'p> Analyzer<'p> {
         state: &mut State,
     ) {
         let explicit_move = *usage == Usage::Move;
-        let decided = if copy {
+        let decided = if copy && ctx != Ctx::Update {
             Usage::Copy
         } else if explicit_move || ctx == Ctx::Consume {
             Usage::Move
@@ -342,6 +357,23 @@ impl<'p> Analyzer<'p> {
                     });
                     return;
                 }
+                if info.kind == LocalKind::CaseBinding && info.borrowed {
+                    let name = info.name.clone();
+                    self.emit("E_MOVE_BORROWED", span, || {
+                        Diagnostic::error(
+                            "E_MOVE_BORROWED",
+                            format!(
+                                "cannot transfer `{name}`: it borrows part of the matched value"
+                            ),
+                        )
+                        .primary(span, "")
+                        .secondary(info.span, "bound here")
+                        .help(format!(
+                            "use clone({name}) for a copy, or match on move(...) to take the value apart (in a case without an `if` guard)"
+                        ))
+                    });
+                    return;
+                }
                 if !self.require_param_mode(local, ParamMode::Own, span) {
                     return;
                 }
@@ -350,6 +382,8 @@ impl<'p> Analyzer<'p> {
                 }
                 self.mark_moved(local, span, state);
             }
+            // An `update` parameter receives a reference even to a Copy value.
+            Usage::BorrowUpdate if copy => self.check_update_copy(local, span),
             Usage::BorrowUpdate => self.check_update(local, span),
             _ => {}
         }
@@ -385,6 +419,19 @@ impl<'p> Analyzer<'p> {
                 });
                 return;
             }
+            LocalKind::CaseBinding if info.borrowed => {
+                let name = info.name.clone();
+                self.emit("E_MUTATE_BORROWED", span, || {
+                    Diagnostic::error(
+                        "E_MUTATE_BORROWED",
+                        format!("cannot change `{name}`: it borrows part of the matched value"),
+                    )
+                    .primary(span, "")
+                    .secondary(info.span, "bound here")
+                    .help("change the matched value itself after the match")
+                });
+                return;
+            }
             _ => {}
         }
         if !self.require_param_mode(local, ParamMode::Update, span) {
@@ -398,8 +445,23 @@ impl<'p> Analyzer<'p> {
         match &expr.kind {
             ExprKind::Local { local, .. } => Some(*local),
             ExprKind::Narrow(inner) | ExprKind::Inject(inner) => Self::root(inner),
-            ExprKind::Index { target, .. } => Self::root(target),
+            ExprKind::Index { target, .. } | ExprKind::Field { value: target, .. } => {
+                Self::root(target)
+            }
             _ => None,
+        }
+    }
+
+    /// Whether the expression reads storage that outlives it (a variable,
+    /// constant, or part of one), rather than a temporary value.
+    fn is_place(expr: &Expr) -> bool {
+        match &expr.kind {
+            ExprKind::Local { .. } | ExprKind::Constant(_) => true,
+            ExprKind::Narrow(inner) | ExprKind::Inject(inner) => Self::is_place(inner),
+            ExprKind::Index { target, .. } | ExprKind::Field { value: target, .. } => {
+                Self::is_place(target)
+            }
+            _ => false,
         }
     }
 
@@ -473,6 +535,49 @@ impl<'p> Analyzer<'p> {
                     self.expr(value, Ctx::Consume, state);
                 }
                 self.reason = saved;
+            }
+            ExprKind::Record(fields) => {
+                let saved = std::mem::replace(&mut self.reason, MoveReason::Structure);
+                for (_, value) in fields {
+                    self.expr(value, Ctx::Consume, state);
+                }
+                self.reason = saved;
+            }
+            ExprKind::Variant { args, .. } => {
+                let saved = std::mem::replace(&mut self.reason, MoveReason::Structure);
+                for value in args {
+                    self.expr(value, Ctx::Consume, state);
+                }
+                self.reason = saved;
+            }
+            ExprKind::Field { value, name } => {
+                if ctx == Ctx::Consume && !ty.is_copy() && Self::is_place(value) {
+                    // Taking one field would leave the structure incomplete.
+                    let field_value = Analyzer::describe_value(&ty);
+                    let owner = Self::root(value)
+                        .map(|local| format!("`{}`", self.local(local).name))
+                        .unwrap_or_else(|| "a constant".to_string());
+                    let name = name.clone();
+                    self.emit("E_MOVE_OUT_OF_FIELD", span, || {
+                        Diagnostic::error(
+                            "E_MOVE_OUT_OF_FIELD",
+                            format!(
+                                "cannot transfer {field_value} out of the field `{name}` of {owner}"
+                            ),
+                        )
+                        .primary(span, "the field stays owned by its structure")
+                        .help("use clone(...) for a copy, or transfer the whole structure")
+                    });
+                    self.expr(value, Ctx::Read, state);
+                } else {
+                    // A field of a temporary can be taken; the rest is destroyed.
+                    let inner_ctx = match ctx {
+                        Ctx::Consume if !Self::is_place(value) => Ctx::Consume,
+                        Ctx::Update => Ctx::Update,
+                        _ => Ctx::Read,
+                    };
+                    self.expr(value, inner_ctx, state);
+                }
             }
             ExprKind::Index { target, index } => {
                 self.expr(index, Ctx::Read, state);
@@ -603,15 +708,26 @@ impl<'p> Analyzer<'p> {
                 self.expr(index, Ctx::Read, state);
                 self.update_place(target, state, span);
             }
+            Place::Field { target, .. } | Place::Narrow { target, .. } => {
+                self.update_place(target, state, span)
+            }
         }
     }
 
-    /// The place is changed in place (an element assignment or compound update).
+    /// The place is changed in place (an element or field assignment, or a
+    /// compound update).
     fn update_place(&mut self, place: &mut Place, state: &mut State, span: Span) {
         match place {
             Place::Local(local) => {
                 let local = *local;
-                if self.check_initialized(local, span, state) {
+                if !self.check_initialized(local, span, state) {
+                    return;
+                }
+                if self.local(local).ty.is_copy() {
+                    // A Copy value (such as a structure of numbers) belongs to
+                    // this function even when it arrived as a parameter.
+                    self.check_update_copy(local, span);
+                } else {
                     self.check_update(local, span);
                 }
             }
@@ -619,7 +735,47 @@ impl<'p> Analyzer<'p> {
                 self.expr(index, Ctx::Read, state);
                 self.update_place(target, state, span);
             }
+            Place::Field { target, .. } | Place::Narrow { target, .. } => {
+                self.update_place(target, state, span)
+            }
         }
+    }
+
+    fn check_update_copy(&mut self, local: LocalId, span: Span) {
+        let info = self.local(local).clone();
+        if info.kind == LocalKind::Constant {
+            let name = info.name.clone();
+            self.emit("E_MUTATE_CONSTANT", span, || {
+                Diagnostic::error(
+                    "E_MUTATE_CONSTANT",
+                    format!("`{name}` is a constant and cannot be changed"),
+                )
+                .primary(span, "")
+                .secondary(info.span, "declared as a constant here")
+                .help(format!(
+                    "declare it with `variable {name} = ...` to allow changes"
+                ))
+            });
+            return;
+        }
+        if matches!(info.kind, LocalKind::LoopVariable | LocalKind::CaseBinding) {
+            let name = info.name.clone();
+            let what = if info.kind == LocalKind::LoopVariable {
+                "the loop variable"
+            } else {
+                "the case binding"
+            };
+            self.emit("E_ASSIGN_CONSTANT", span, || {
+                Diagnostic::error(
+                    "E_ASSIGN_CONSTANT",
+                    format!("{what} `{name}` cannot be changed"),
+                )
+                .primary(span, "")
+                .help(format!("copy it into a variable first: `copy = {name}`"))
+            });
+            return;
+        }
+        self.loop_conflict(local, span, "change");
     }
 
     fn place_name(&self, place: &Place) -> String {
@@ -668,7 +824,7 @@ impl<'p> Analyzer<'p> {
                             }
                         }
                     }
-                    Place::Index { .. } => self.update_place(place, state, span),
+                    _ => self.update_place(place, state, span),
                 }
             }
             StmtKind::Expr(value) => {
@@ -733,6 +889,7 @@ impl<'p> Analyzer<'p> {
                     self.loop_borrows.push(LoopBorrow {
                         local,
                         span: iterable.span,
+                        by: "loop",
                     });
                 }
                 let bindings = bindings.clone();
@@ -817,7 +974,73 @@ impl<'p> Analyzer<'p> {
                 }
             }
             StmtKind::Block(block) => self.block(block, state),
+            StmtKind::Match {
+                scrutinee,
+                owned,
+                arms,
+            } => self.match_stmt(scrutinee, *owned, arms, state),
         }
+    }
+
+    /// A match reads its value in place, binding parts by reference, unless
+    /// it owns the value (a temporary or `move(...)`): then the bindings of
+    /// arms without a guard own their parts. Copy values are matched on a
+    /// copy. While a guard runs, and while an arm with borrowing bindings
+    /// runs, the matched variable cannot change.
+    fn match_stmt(
+        &mut self,
+        scrutinee: &mut Expr,
+        owned: bool,
+        arms: &mut [MatchArm],
+        state: &mut State,
+    ) {
+        let copy = scrutinee.ty.is_copy();
+        let consuming = owned && !copy;
+        let saved = std::mem::replace(&mut self.reason, MoveReason::Explicit);
+        let ctx = if owned { Ctx::Consume } else { Ctx::Read };
+        self.expr(scrutinee, ctx, state);
+        self.reason = saved;
+        let root = if owned || copy {
+            None
+        } else {
+            Self::root(scrutinee)
+        };
+        let mut after: State = None;
+        for arm in arms {
+            let mut arm_state = state.clone();
+            let mut bindings = Vec::new();
+            arm.pattern.bindings(&mut bindings);
+            let guarded = arm.guard.is_some();
+            let mut borrows = false;
+            for binding in bindings {
+                let borrowed = !self.local(binding).ty.is_copy() && (!consuming || guarded);
+                self.locals[binding.0 as usize].borrowed = borrowed;
+                borrows |= borrowed;
+                if let Some(map) = &mut arm_state {
+                    map.insert(binding, Status::Init);
+                }
+            }
+            if let Some(local) = root {
+                self.loop_borrows.push(LoopBorrow {
+                    local,
+                    span: scrutinee.span,
+                    by: "match",
+                });
+            }
+            if let Some(guard) = &mut arm.guard {
+                self.expr(guard, Ctx::Read, &mut arm_state);
+            }
+            let borrowed_body = root.is_some() && borrows;
+            if root.is_some() && !borrowed_body {
+                self.loop_borrows.pop();
+            }
+            self.block(&mut arm.body, &mut arm_state);
+            if borrowed_body {
+                self.loop_borrows.pop();
+            }
+            after = join(&after, &arm_state);
+        }
+        *state = after;
     }
 
     /// Runs a loop body to a fixed point. `body` analyses one iteration from

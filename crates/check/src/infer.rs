@@ -6,7 +6,7 @@
 //! Remaining literal kinds are defaulted; remaining variables in a function
 //! signature are generalized together with their bounds.
 
-use crate::types::{FloatType, IntType, TyVar, Type};
+use crate::types::{FloatType, IntType, NamedType, TyVar, Type};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LiteralKind {
@@ -170,6 +170,12 @@ struct VarState {
 #[derive(Default)]
 pub struct Unifier {
     vars: Vec<VarState>,
+    /// Every field type of each declared structure or enum, in terms of its
+    /// type parameters; used to decide which operations it supports.
+    pub field_types: Vec<Vec<Type>>,
+    /// Named types whose equality support is being decided, so that a type
+    /// reaching itself through a collection does not recurse forever.
+    in_progress: Vec<Type>,
 }
 
 impl Unifier {
@@ -216,6 +222,10 @@ impl Unifier {
             Type::Array(element) => Type::array(self.resolve(&element)),
             Type::Dict(key, value) => Type::dict(self.resolve(&key), self.resolve(&value)),
             Type::Union(members) => Type::union(members.iter().map(|m| self.resolve(m))),
+            Type::Named(named) => Type::named(NamedType {
+                args: named.args.iter().map(|a| self.resolve(a)).collect(),
+                ..*named
+            }),
             other => other,
         }
     }
@@ -236,6 +246,14 @@ impl Unifier {
             Type::Union(members) => {
                 Type::union(members.iter().map(|m| self.resolve_for_display(m)))
             }
+            Type::Named(named) => Type::named(NamedType {
+                args: named
+                    .args
+                    .iter()
+                    .map(|a| self.resolve_for_display(a))
+                    .collect(),
+                ..*named
+            }),
             other => other,
         }
     }
@@ -301,6 +319,28 @@ impl Unifier {
                     }
                     return Ok(());
                 }
+                Type::Named(named) => {
+                    // Comparable when every field is; a type reached again
+                    // through its own fields is assumed comparable.
+                    let whole = Type::Named(named.clone());
+                    if self.in_progress.contains(&whole) {
+                        return Ok(());
+                    }
+                    let fields: Vec<Type> = self
+                        .field_types
+                        .get(named.id.0 as usize)
+                        .map(|fields| fields.iter().map(|f| f.substitute(&named.args)).collect())
+                        .unwrap_or_default();
+                    self.in_progress.push(whole);
+                    let result = fields
+                        .iter()
+                        .try_for_each(|field| self.require_trait(field, Traits::EQUALITY));
+                    self.in_progress.pop();
+                    return result.map_err(|_| UnifyError::Unsupported {
+                        ty: ty.clone(),
+                        traits: one,
+                    });
+                }
                 Type::Range | Type::Param(_) => false,
                 _ => true,
             },
@@ -319,6 +359,7 @@ impl Unifier {
             Type::Array(element) => self.occurs(var, &element),
             Type::Dict(key, value) => self.occurs(var, &key) || self.occurs(var, &value),
             Type::Union(members) => members.iter().any(|m| self.occurs(var, m)),
+            Type::Named(named) => named.args.iter().any(|a| self.occurs(var, a)),
             _ => false,
         }
     }
@@ -364,6 +405,12 @@ impl Unifier {
                 }
                 Ok(())
             }
+            (Type::Named(x), Type::Named(y)) if x.id == y.id => {
+                for (p, q) in x.args.iter().zip(&y.args) {
+                    self.unify(p, q).map_err(|_| self.mismatch(&a, &b))?;
+                }
+                Ok(())
+            }
             _ if a == b => Ok(()),
             _ => Err(self.mismatch(&a, &b)),
         }
@@ -405,6 +452,11 @@ impl Unifier {
             Type::Union(members) => {
                 for member in &members {
                     self.free_vars(member, out);
+                }
+            }
+            Type::Named(named) => {
+                for arg in &named.args {
+                    self.free_vars(arg, out);
                 }
             }
             _ => {}

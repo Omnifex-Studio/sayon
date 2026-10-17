@@ -43,6 +43,8 @@ enum Step {
     DictValue(usize),
     DictKey(usize),
     Payload,
+    /// A field of a structure, or of an enum value's variant.
+    Field(usize),
 }
 
 #[derive(Clone, Debug)]
@@ -299,6 +301,9 @@ impl<'m> Machine<'m> {
                 Projection::DictValue(slot) => Step::DictValue(self.slot_int(frame, *slot)),
                 Projection::DictKey(slot) => Step::DictKey(self.slot_int(frame, *slot)),
                 Projection::Payload(_) => Step::Payload,
+                Projection::Field(field) | Projection::VariantField { field, .. } => {
+                    Step::Field(*field as usize)
+                }
             });
         }
         Ref { root, path }
@@ -325,6 +330,9 @@ impl<'m> Machine<'m> {
                     return f(&Value::Str(dict.keys[*i].clone()));
                 }
                 (Step::Payload, Value::Union(_, payload)) => payload,
+                (Step::Field(i), Value::Record(_, fields) | Value::Variant(_, _, fields)) => {
+                    &fields[*i]
+                }
                 (step, value) => panic!("invalid path step {step:?} into {value:?}"),
             };
         }
@@ -345,6 +353,9 @@ impl<'m> Machine<'m> {
                 (Step::Index(i), Value::Array(items)) => &mut items[*i],
                 (Step::DictValue(i), Value::Dict(dict)) => &mut dict.values[*i],
                 (Step::Payload, Value::Union(_, payload)) => payload,
+                (Step::Field(i), Value::Record(_, fields) | Value::Variant(_, _, fields)) => {
+                    &mut fields[*i]
+                }
                 (step, value) => panic!("invalid mutable path step {step:?} into {value:?}"),
             };
         }
@@ -366,10 +377,27 @@ impl<'m> Machine<'m> {
     }
 
     fn take_place(&mut self, place: &Place) -> Value {
-        let reference = self.resolve(place);
+        let mut reference = self.resolve(place);
         let payload_only = matches!(reference.path.as_slice(), [Step::Payload]);
         if !reference.path.is_empty() && !payload_only {
-            panic!("cannot move out of {place:?}");
+            // Taking part of a value (a binding of a match that owns it, or
+            // a field of a temporary). Moving a union's payload empties the
+            // union; the rest is never read again.
+            let last = reference.path.pop().expect("path");
+            return self.with_mut(&reference, |parent| {
+                if let Step::Payload = last {
+                    return match std::mem::replace(parent, Value::Nothing) {
+                        Value::Union(_, payload) => *payload,
+                        other => panic!("payload of {other:?}"),
+                    };
+                }
+                match (last, parent) {
+                    (Step::Field(i), Value::Record(_, fields) | Value::Variant(_, _, fields)) => {
+                        std::mem::replace(&mut fields[i], Value::Nothing)
+                    }
+                    (step, value) => panic!("cannot move out of {step:?} in {value:?}"),
+                }
+            });
         }
         let taken = match reference.root {
             Root::Slot { frame, slot } => {
@@ -539,7 +567,9 @@ impl<'m> Machine<'m> {
                         FormatPart::Text(literal) => text.push_str(literal),
                         FormatPart::Value(operand, _) => {
                             let source = self.source(operand);
-                            self.with_source(&source, |v| display(v, &mut text, false));
+                            self.with_source(&source, |v| {
+                                display(v, &mut text, false, &self.module.types)
+                            });
                         }
                     }
                 }
@@ -565,6 +595,29 @@ impl<'m> Machine<'m> {
                 Value::Dict(Box::new(dict))
             }
             Rvalue::MakeUnion { tag, value } => Value::Union(*tag, Box::new(self.take(value))),
+            Rvalue::MakeRecord { ty, fields } => {
+                let id = ty.as_named().expect("structure type").id;
+                Value::Record(id, fields.iter().map(|field| self.take(field)).collect())
+            }
+            Rvalue::MakeVariant {
+                ty,
+                variant,
+                fields,
+            } => {
+                let id = ty.as_named().expect("enum type").id;
+                Value::Variant(
+                    id,
+                    *variant,
+                    fields.iter().map(|field| self.take(field)).collect(),
+                )
+            }
+            Rvalue::VariantIs { value, variant } => {
+                let source = self.source(value);
+                Value::Bool(self.with_source(
+                    &source,
+                    |v| matches!(v, Value::Variant(_, current, _) if current == variant),
+                ))
+            }
             Rvalue::TagIs { value, tag } => {
                 let source = self.source(value);
                 Value::Bool(
@@ -765,7 +818,9 @@ impl<'m> Machine<'m> {
                         line.push(' ');
                     }
                     let source = self.source(operand);
-                    self.with_source(&source, |v| display(v, &mut line, false));
+                    self.with_source(&source, |v| {
+                        display(v, &mut line, false, &self.module.types)
+                    });
                 }
                 line.push('\n');
                 self.out.write_all(line.as_bytes()).map_err(|error| {

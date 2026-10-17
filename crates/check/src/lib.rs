@@ -9,7 +9,9 @@ pub mod hir;
 pub mod infer;
 mod narrow;
 mod ownership;
+mod patterns;
 mod stmt;
+mod structures;
 pub mod types;
 
 use checker::{Checker, ModuleInfo};
@@ -69,6 +71,7 @@ pub fn check_program(modules: &[ModuleSource], entry: usize, span: Span) -> Chec
             script = statements;
         }
     }
+    checker.resolve_type_defs();
     let order = checker.dependency_order();
     let mut init_order = Vec::new();
     for component in &order {
@@ -108,6 +111,7 @@ pub fn check_program(modules: &[ModuleSource], entry: usize, span: Span) -> Chec
         init_order,
         entry,
         tests,
+        types: std::mem::take(&mut checker.type_defs),
     };
 
     let components = checker.scc_order.clone();
