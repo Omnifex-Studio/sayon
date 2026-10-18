@@ -1576,6 +1576,23 @@ impl<'a> Checker<'a> {
                 }
                 (checked, Type::view(element, mutable))
             }
+            Builtin::TypedDecode | Builtin::TypedEncode => {
+                let Some(Item::Type(json_id)) = self.item(cx.module, "Json") else {
+                    panic!("typed JSON conversion outside standard/json");
+                };
+                let json = self.named_type(json_id, Vec::new());
+                let context = "JSON holds numbers, booleans, text, nothing, and arrays, dictionaries with string keys, structures, enums, and unions of those";
+                if builtin == Builtin::TypedDecode {
+                    let value = self.check_expr_as(cx, &args[0], &json, "a Json value");
+                    let ty = expected.cloned().unwrap_or_else(|| self.fresh_var(span));
+                    self.require_traits(&ty, Traits::JSON, span, context);
+                    (vec![read(value)], ty)
+                } else {
+                    let value = self.check_expr(cx, &args[0], None);
+                    self.require_traits(&value.ty, Traits::JSON, args[0].span, context);
+                    (vec![read(value)], json)
+                }
+            }
             Builtin::SplitView => {
                 let rest = self.check_expr(cx, &args[0], None);
                 let ty = match self.unifier.resolve(&rest.ty) {
@@ -1793,6 +1810,7 @@ pub(crate) fn host_type(ty: sayon_runtime::host::HostType) -> Type {
         HostType::StringArray => Type::array(Type::String),
         HostType::OptionalString => Type::union([Type::String, Type::Nothing]),
         HostType::Stream => Type::Stream,
+        HostType::Unsigned => Type::Int(crate::types::IntType::U64),
         HostType::Bytes => Type::array(Type::Int(crate::types::IntType::U8)),
     }
 }

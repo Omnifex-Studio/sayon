@@ -1446,7 +1446,7 @@ pub unsafe extern "C" fn sayon_host_call(
                     };
                     HostArg::Bytes(bytes)
                 }
-                HostType::Nothing | HostType::OptionalString => {
+                HostType::Nothing | HostType::OptionalString | HostType::Unsigned => {
                     panic!("unsupported host parameter")
                 }
             });
@@ -1485,6 +1485,7 @@ pub unsafe extern "C" fn sayon_host_call(
                 allocated();
                 *(out as *mut i64) = id;
             }
+            Ok(HostValue::Unsigned(value)) => *(out as *mut u64) = value,
             Ok(HostValue::Bytes(bytes)) => {
                 let array = out as *mut SayonArray;
                 *array = SayonArray {

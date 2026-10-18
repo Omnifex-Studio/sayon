@@ -90,7 +90,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Standard input as a file (`io.input`), running programs and capturing their output (`os.run`) | experimental | M2 |
 | Standard output and error as files, other text encodings, streaming to and from running programs, environments for them | planned | M3 |
 | `standard/json`: `Json` values, parse with positions in errors, compact and pretty encoding, exact number text, duplicate-field and depth limits | experimental | M2 |
-| `standard/json` typed decoding and encoding into structures | planned | M2 to M3 |
+| `standard/json` typed values: `decode`, `encode_value`, `from_json`, `to_json` for numbers, text, arrays, dictionaries, structures, enums, and unions, with paths in errors | experimental | M2 |
+| `standard/json` streaming reading and writing | planned | M3 |
 | `standard/collections`: stable sorting, `Set`, `Queue`; `remove` and `swap` built-ins | experimental | M2 |
 | `standard/time`: durations, monotonic clock, sleep, UTC dates, ISO 8601 | experimental | M2 |
 | `standard/time` time zones, timers, deadlines | planned | M3 |

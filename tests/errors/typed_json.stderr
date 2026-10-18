@@ -1,0 +1,42 @@
+error[E_UNSUPPORTED_OPERATION]: Button does not support JSON conversion
+  --> typed_json.sayon:8:18
+   |
+ 8 | button: Button = json.decode("{{}}")
+   |                  ^^^^^^^^^^^^^^^^^^^ `button` is declared as Button
+   |
+   = help: JSON holds numbers, booleans, text, nothing, and arrays, dictionaries with string keys, structures, enums, and unions of those
+
+error[E_UNSUPPORTED_OPERATION]: Point or Line does not support JSON conversion
+  --> typed_json.sayon:9:25
+   |
+ 9 | either: Point or Line = json.decode("{{}}")
+   |                         ^^^^^^^^^^^^^^^^^^^ `either` is declared as Point or Line
+   |
+   = help: each kind of JSON value (null, boolean, number, text, list, object) must belong to one member of a union; an integer and a float member may share numbers, and an enum takes both text and objects
+
+error[E_UNSUPPORTED_OPERATION]: Dict<integer, string> does not support JSON conversion
+   --> typed_json.sayon:10:9
+    |
+ 10 | keyed = json.decode<Dict<integer, string>>("{{}}")
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ explicit type argument
+    |
+    = help: JSON holds numbers, booleans, text, nothing, and arrays, dictionaries with string keys, structures, enums, and unions of those
+
+error[E_UNSUPPORTED_OPERATION]: integer8 or integer does not support JSON conversion
+   --> typed_json.sayon:11:32
+    |
+ 11 | numbers: integer or integer8 = json.decode("1")
+    |                                ^^^^^^^^^^^^^^^^ `numbers` is declared as integer8 or integer
+    |
+    = help: each kind of JSON value (null, boolean, number, text, list, object) must belong to one member of a union; an integer and a float member may share numbers, and an enum takes both text and objects
+
+error[E_UNSUPPORTED_OPERATION]: function() -> _ does not support JSON conversion
+   --> typed_json.sayon:12:25
+    |
+ 12 | print(json.encode_value(function() return 1))
+    |                         ^^^^^^^^^^^^^^^^^^^ argument for `value`
+    |
+    = help: JSON holds numbers, booleans, text, nothing, and arrays, dictionaries with string keys, structures, enums, and unions of those
+
+5 errors found; nothing was run
+run `sayon explain E_UNSUPPORTED_OPERATION` to learn more about an error

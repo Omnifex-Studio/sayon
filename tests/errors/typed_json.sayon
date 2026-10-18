@@ -1,0 +1,12 @@
+# Types JSON cannot hold
+json = import("standard/json.sayon")
+
+type Button = [label: string, press: function() -> string]
+type Point = [x: float, y: float]
+type Line = [from: Point, to: Point]
+
+button: Button = json.decode("{{}}")
+either: Point or Line = json.decode("{{}}")
+keyed = json.decode<Dict<integer, string>>("{{}}")
+numbers: integer or integer8 = json.decode("1")
+print(json.encode_value(function() return 1))

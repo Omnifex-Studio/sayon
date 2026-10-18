@@ -1,0 +1,89 @@
+# Reading typed values from JSON and writing them back
+json = import("standard/json.sayon")
+
+type Point = [x: float, y: float]
+type Shape = [name: string, points: Array<Point>, closed: boolean, note: string or nothing]
+
+shape: Shape = json.decode("{{\"name\": \"triangle\", \"points\": [{{\"x\": 0, \"y\": 0.5}}, {{\"x\": 1.5, \"y\": -2e1}}], \"closed\": true, \"extra\": [1]}}")
+print(shape)
+print(json.encode_value(shape))
+again: Shape = json.decode(json.encode_value(shape))
+print(again == shape)
+
+# Integers of every width, kept exactly.
+type Sizes = [tiny: integer8, small: unsigned8, big: unsigned, huge: integer]
+sizes: Sizes = json.decode("{{\"tiny\": -128, \"small\": 255, \"big\": 18446744073709551615, \"huge\": -9223372036854775808}}")
+print(sizes)
+print(json.encode_value(sizes))
+print(json.decode<float32>("0.1"), json.encode_value(json.decode<float32>("0.1")))
+
+# Dictionaries, nested arrays, and unions.
+counts = json.decode<Dict<string, integer>>("{{\"a\": 1, \"b two\": 2}}")
+print(counts, json.encode_value(counts))
+grid = json.decode<Array<Array<integer>>>("[[1, 2], [], [3]]")
+print(grid)
+mixed: Array<integer or float or string or nothing> = json.decode("[1, 2.5, \"three\", null, -4]")
+print(mixed)
+for item in mixed
+    print(typeof(item))
+print(json.encode_value(mixed))
+
+# Enums: a variant without fields is its name; one with fields an object.
+enum Figure
+    dot
+    circle(radius: float)
+    box(width: float, height: float)
+
+figures = json.decode<Array<Figure>>("[\"dot\", {{\"circle\": {{\"radius\": 2}}}}, {{\"box\": {{\"width\": 1, \"height\": 3}}}}]")
+print(figures)
+print(json.encode_value(figures))
+
+enum Answer<T>
+    none
+    some(value: T)
+
+print(json.decode<Array<Answer<string>>>("[\"none\", {{\"some\": {{\"value\": \"yes\"}}}}]"))
+
+# Recursive types.
+type Tree = [label: string, children: Array<Tree>]
+tree: Tree = json.decode("{{\"label\": \"root\", \"children\": [{{\"label\": \"leaf\", \"children\": []}}]}}")
+print(tree.children[0].label, json.encode_value(tree))
+
+# Json itself is any value.
+type Message = [kind: string, body: json.Json]
+message: Message = json.decode("{{\"kind\": \"raw\", \"body\": {{\"anything\": [true, null]}}}}")
+print(json.encode(message.body))
+
+# Generic code converts the type it is given.
+function load<T>(text: string) -> T
+    return json.decode(text)
+
+point: Point = load("{{\"x\": 3, \"y\": 4}}")
+print(point)
+
+# Errors name the place and what was expected.
+function show_error(text: string)
+    outcome = try json.decode<Shape>(text)
+    if outcome is error
+        print(outcome.code, outcome.message)
+
+show_error("{{\"name\": \"a\", \"points\": [{{\"x\": 1, \"y\": \"two\"}}], \"closed\": false}}")
+show_error("{{\"name\": \"a\", \"points\": [], \"closed\": 1}}")
+show_error("{{\"points\": [], \"closed\": true}}")
+show_error("[1]")
+show_error("{{\"name\": \"a\", \"points\": [{{\"x\": 1}}], \"closed\": true}}")
+small = try json.decode<unsigned8>("256")
+if small is error
+    print(small.message)
+whole = try json.decode<integer>("1.5")
+if whole is error
+    print(whole.message)
+unknown = try json.decode<Figure>("\"square\"")
+if unknown is error
+    print(unknown.message)
+quoted = try json.decode<Dict<string, integer>>("{{\"two words\": true}}")
+if quoted is error
+    print(quoted.message)
+infinite = try json.to_json(1.0 / 0.0)
+if infinite is error
+    print(infinite.code, infinite.message)

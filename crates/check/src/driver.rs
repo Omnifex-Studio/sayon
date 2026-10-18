@@ -2,7 +2,6 @@
 
 use crate::checker::{Checker, ConstState, FnCtx, FunctionEntry, Item, Signature};
 use crate::hir::{self, ConstId, FuncId, LocalKind};
-use crate::infer::Traits;
 use crate::narrow::block_exits;
 use crate::types::Type;
 use sayon_syntax::Diagnostic;
@@ -148,25 +147,26 @@ impl<'a> Checker<'a> {
             }
         }
         self.current_component = functions.to_vec();
-        self.unifier.cloned_params.clear();
+        self.unifier.param_traits.clear();
         let mut bodies = Vec::new();
         for id in functions {
             bodies.push(self.check_function_body(*id));
         }
         self.current_component.clear();
         self.solve_deferred(true);
-        // A body that clones a value of an explicit type parameter requires
-        // callers to give a type that can be cloned. (A component with
-        // explicit type parameters has one function.)
-        let cloned = std::mem::take(&mut self.unifier.cloned_params);
+        // A body that clones values of an explicit type parameter, or
+        // converts them to or from JSON, requires callers to give a type
+        // that supports it. (A component with explicit type parameters has
+        // one function.)
+        let required = std::mem::take(&mut self.unifier.param_traits);
         if let [id] = functions
             && let Some(signature) = &mut self.functions[id.0 as usize].signature
         {
-            for index in cloned {
+            for (index, traits) in required {
                 if index < signature.explicit_generics
                     && let Some(bounds) = signature.bounds.get_mut(index as usize)
                 {
-                    bounds.traits = bounds.traits.union(Traits::CLONE);
+                    bounds.traits = bounds.traits.union(traits);
                 }
             }
         }

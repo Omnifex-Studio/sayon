@@ -469,6 +469,14 @@ impl<'a> Checker<'a> {
                 };
                 ("E_TYPE_MISMATCH", error.describe(), help)
             }
+            UnifyError::Unsupported { ty, traits } if *traits == Traits::JSON => {
+                let help = if matches!(ty, Type::Union(_)) {
+                    "each kind of JSON value (null, boolean, number, text, list, object) must belong to one member of a union; an integer and a float member may share numbers, and an enum takes both text and objects"
+                } else {
+                    "JSON holds numbers, booleans, text, nothing, and arrays, dictionaries with string keys, structures, enums, and unions of those"
+                };
+                ("E_UNSUPPORTED_OPERATION", error.describe(), Some(help.to_string()))
+            }
             UnifyError::Unsupported { ty, .. } => {
                 let help = match ty {
                     Type::Union(members) if members.contains(&Type::Nothing) => Some(
@@ -554,6 +562,34 @@ impl<'a> Checker<'a> {
             Some(Item::Type(ty)) if self.types[ty.0 as usize].module == entry.module => Some(ty),
             _ => None,
         }
+    }
+
+    /// `standard/json`, when the program uses it.
+    fn json_module(&self) -> Option<ModuleId> {
+        self.modules
+            .iter()
+            .position(|module| module.standard && module.name == "standard/json.sayon")
+            .map(|index| ModuleId(index as u32))
+    }
+
+    /// What typed JSON conversion needs from `standard/json`.
+    pub fn json_support(&self) -> Option<hir::JsonSupport> {
+        let module = self.json_module()?;
+        let function = |name: &str| match self.item(module, name) {
+            Some(Item::Function(id)) => Some(id),
+            _ => None,
+        };
+        let Some(Item::Type(json)) = self.item(module, "Json") else {
+            return None;
+        };
+        Some(hir::JsonSupport {
+            json,
+            mismatch: function("decode_mismatch")?,
+            missing_field: function("missing_field")?,
+            unknown_variant: function("unknown_variant")?,
+            member_path: function("member_path")?,
+            index_path: function("index_path")?,
+        })
     }
 
     /// The method `name` of a type, which `value.name(...)` calls: the
@@ -1241,6 +1277,15 @@ impl<'a> Checker<'a> {
             }
         }
         self.unifier.field_types = self.type_defs.iter().map(all_field_types).collect();
+        self.unifier.enum_types = (0..self.type_defs.len() as u32)
+            .filter(|&index| self.type_defs[index as usize].is_enum())
+            .collect();
+        self.unifier.json_type =
+            self.json_module()
+                .and_then(|module| match self.item(module, "Json") {
+                    Some(Item::Type(id)) => Some(id.0),
+                    _ => None,
+                });
 
         for index in 0..self.type_defs.len() {
             let id = TypeId(index as u32);

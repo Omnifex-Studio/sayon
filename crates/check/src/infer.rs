@@ -7,7 +7,7 @@
 //! signature are generalized together with their bounds.
 
 use crate::types::{FloatType, IntType, NamedType, TyVar, Type};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LiteralKind {
@@ -55,7 +55,7 @@ impl LiteralKind {
 
 /// Operations a type must support.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Traits(u8);
+pub struct Traits(u16);
 
 impl Traits {
     pub const NONE: Traits = Traits(0);
@@ -75,6 +75,8 @@ impl Traits {
     pub const NUMERIC: Traits = Traits(64);
     /// `clone`: every type but open resources and what holds them.
     pub const CLONE: Traits = Traits(128);
+    /// Reading from and writing to JSON (`json.decode`, `json.to_json`).
+    pub const JSON: Traits = Traits(256);
 
     pub fn contains(self, other: Traits) -> bool {
         self.0 & other.0 == other.0
@@ -89,7 +91,7 @@ impl Traits {
     }
 
     fn each(self) -> impl Iterator<Item = Traits> {
-        (0..8)
+        (0..9)
             .map(|bit| Traits(1 << bit))
             .filter(move |t| self.contains(*t))
     }
@@ -104,6 +106,7 @@ impl Traits {
             Traits::NEGATE => "negation",
             Traits::NUMERIC => "numeric conversion",
             Traits::CLONE => "cloning",
+            Traits::JSON => "JSON conversion",
             _ => "these operations",
         }
     }
@@ -189,10 +192,26 @@ pub struct Unifier {
     /// Named types whose equality support is being decided, so that a type
     /// reaching itself through a collection does not recurse forever.
     in_progress: Vec<Type>,
-    /// The explicit type parameters of the function being checked that its
-    /// body clones values of; callers must then give clonable types.
-    pub cloned_params: HashSet<u32>,
+    /// The explicit type parameters of the function being checked whose
+    /// values its body clones or converts to or from JSON; callers must
+    /// then give types that support it.
+    pub param_traits: HashMap<u32, Traits>,
+    /// The declared types that are enums.
+    pub enum_types: HashSet<u32>,
+    /// `standard/json`'s `Json`, which stands for any JSON value.
+    pub json_type: Option<u32>,
 }
+
+// The kinds of JSON value a type is read from, for telling the members of
+// a union apart.
+const JSON_NULL: u8 = 1;
+const JSON_FLAG: u8 = 2;
+const JSON_INTEGER: u8 = 4;
+const JSON_FLOAT: u8 = 8;
+const JSON_TEXT: u8 = 16;
+const JSON_LIST: u8 = 32;
+const JSON_OBJECT: u8 = 64;
+const JSON_ANY: u8 = 127;
 
 impl Unifier {
     pub fn new() -> Unifier {
@@ -370,10 +389,46 @@ impl Unifier {
                 // An open file is closed once, so it has one owner.
                 Type::Stream => false,
                 Type::Param(index) => {
-                    self.cloned_params.insert(*index);
+                    self.record_param_trait(*index, one);
                     true
                 }
                 _ => true,
+            },
+            Traits::JSON => match &ty {
+                Type::Int(_) | Type::Float(_) | Type::Boolean | Type::String | Type::Nothing => {
+                    true
+                }
+                Type::Array(element) => return self.require_trait(element, Traits::JSON),
+                // Object keys are text.
+                Type::Dict(key, value) => {
+                    let (key, value) = ((**key).clone(), (**value).clone());
+                    if self.unify(&key, &Type::String).is_err() {
+                        return Err(UnifyError::Unsupported { ty, traits: one });
+                    }
+                    return self.require_trait(&value, Traits::JSON);
+                }
+                Type::Union(members) => {
+                    let members = members.clone();
+                    for member in &members {
+                        self.require_trait(member, Traits::JSON)?;
+                    }
+                    // Each kind of JSON value must belong to one member.
+                    let mut seen = 0u8;
+                    for member in &members {
+                        let kinds = self.json_kinds(member);
+                        if kinds & seen != 0 {
+                            return Err(UnifyError::Unsupported { ty, traits: one });
+                        }
+                        seen |= kinds;
+                    }
+                    return Ok(());
+                }
+                Type::Named(named) => return self.fields_support(named, &ty, one),
+                Type::Param(index) => {
+                    self.record_param_trait(*index, one);
+                    true
+                }
+                _ => false,
             },
             _ => true,
         };
@@ -381,6 +436,29 @@ impl Unifier {
             Ok(())
         } else {
             Err(UnifyError::Unsupported { ty, traits: one })
+        }
+    }
+
+    fn record_param_trait(&mut self, index: u32, one: Traits) {
+        let traits = self.param_traits.entry(index).or_default();
+        *traits = traits.union(one);
+    }
+
+    /// The kinds of JSON value a type is read from: an enum is read from
+    /// text (a variant without fields) or an object, and `Json` from any.
+    fn json_kinds(&self, ty: &Type) -> u8 {
+        match self.shallow(ty) {
+            Type::Nothing => JSON_NULL,
+            Type::Boolean => JSON_FLAG,
+            Type::Int(_) => JSON_INTEGER,
+            Type::Float(_) => JSON_FLOAT,
+            Type::String => JSON_TEXT,
+            Type::Array(_) => JSON_LIST,
+            Type::Dict(..) => JSON_OBJECT,
+            Type::Named(named) if self.json_type == Some(named.id.0) => JSON_ANY,
+            Type::Named(named) if self.enum_types.contains(&named.id.0) => JSON_TEXT | JSON_OBJECT,
+            Type::Named(_) => JSON_OBJECT,
+            _ => 0,
         }
     }
 

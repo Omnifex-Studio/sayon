@@ -1227,6 +1227,7 @@ impl<'m> Machine<'m> {
                 Ok(Value::Array(items.iter().map(|s| Value::str(s)).collect()))
             }
             Ok(HostValue::Stream(id)) => Ok(Value::Stream(StreamRef::adopt(id))),
+            Ok(HostValue::Unsigned(value)) => Ok(Value::Int(value as i128)),
             Ok(HostValue::Bytes(bytes)) => Ok(Value::Array(
                 bytes
                     .into_iter()

@@ -27,6 +27,26 @@ pub struct Program {
     pub tests: Vec<(String, FuncId)>,
     /// Declared structures and enums, indexed by `TypeId`.
     pub types: Vec<TypeDef>,
+    /// What typed JSON conversion uses, when the program imports
+    /// `standard/json`.
+    pub json: Option<JsonSupport>,
+}
+
+/// `standard/json`'s `Json` type and the functions the generated readers
+/// and writers of typed values call.
+#[derive(Debug, Clone, Copy)]
+pub struct JsonSupport {
+    pub json: crate::types::TypeId,
+    /// `(value, path, expected)`: fails, naming what was found instead.
+    pub mismatch: FuncId,
+    /// `(path, name)`: fails for a missing structure field.
+    pub missing_field: FuncId,
+    /// `(path, name, type name)`: fails for a name that is no variant.
+    pub unknown_variant: FuncId,
+    /// `(path, name) -> string`: the path of an object's member.
+    pub member_path: FuncId,
+    /// `(path, index) -> string`: the path of a list's item.
+    pub index_path: FuncId,
 }
 
 impl Program {
@@ -325,6 +345,11 @@ pub enum Builtin {
     /// `split_view(update view, count)`: the first `count` elements as a view
     /// of their own; the view keeps the rest.
     SplitView,
+    /// `typed_decode(value)` in `standard/json`: a `Json` value read into the
+    /// expression's type.
+    TypedDecode,
+    /// `typed_encode(value)` in `standard/json`: a value as `Json`.
+    TypedEncode,
     HasKey,
     ReadFile,
     WriteFile,
@@ -353,6 +378,8 @@ impl Builtin {
             Builtin::Remove => "remove",
             Builtin::Swap => "swap",
             Builtin::SplitView => "split_view",
+            Builtin::TypedDecode => "typed_decode",
+            Builtin::TypedEncode => "typed_encode",
             Builtin::View => "view",
             Builtin::MutableView => "mutable_view",
             Builtin::HasKey => "haskey",

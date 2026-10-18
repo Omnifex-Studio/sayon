@@ -644,7 +644,7 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 | `standard/os.sayon` | `arguments` (the words after `--` with `sayon run`), `environment`, `platform`, `current_directory`, `exit`, `run` (a `Completed` with `status`, `output`, and `errors`) |
 | `standard/filesystem.sayon` | `exists`, `is_file`, `is_directory`, `is_link`, `list` (sorted names), `walk` (everything below a directory), `size`, `create_directory`, `remove`, `rename`, `copy`, `join`, `name`, `parent`, `extension` |
 | `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters`, `code` (a character's Unicode code), `character` (the character with a code), `graphemes`, `grapheme_count`, `bytes`, `byte_view`, `from_bytes` (strict UTF-8), `from_bytes_lossy` |
-| `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer` |
+| `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer`; typed values: `decode`, `encode_value`, `from_json`, `to_json` |
 | `standard/time.sayon` | `Duration` (`nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `add`, `subtract`, `scale`, `in_seconds`, `in_milliseconds`, `describe`), the monotonic clock (`start`, `elapsed`, `between`, `sleep`), and UTC dates (`DateTime`, `now`, `unix_seconds`, `from_unix`, `to_unix`, `shift`, `difference`, `weekday`, `is_leap_year`, `days_in_month`, `format` and `parse` for ISO 8601) |
 | `standard/collections.sayon` | `sort` and `sort_by` (stable), `reverse`; `Set<T>` with `new_set`, `set_add`, `set_contains`, `set_remove`, `set_size`, `set_values` (as methods: `set.add(value)`); `Queue<T>` with `new_queue`, `queue_add`, `queue_take`, `queue_size` |
 | `standard/math.sayon` | `PI`, `E`, `TAU`, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `log`, `log10`, `log2`, `pow`, `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`, `clamp`, `random` |
@@ -716,6 +716,32 @@ if born != nothing
 - `parse` raises a `ParseError` naming the line and column for text that is not JSON, including anything but whitespace after the value, a field name repeated in one object, an unpaired surrogate escape, a raw control character in a string, and nesting deeper than 512 levels.
 - Build values with the variants, written through the module: `json.Json.text("hi")`, `json.Json.list([...])`, or `json.from_integer(3)`.
 - Braces in a Sayon string start interpolation, so JSON written as a literal doubles them: `"{{\"a\": 1}}"`.
+
+`json.decode(text)` reads JSON straight into a value of the type it is used as, and `json.encode_value(value)` writes one; `json.from_json` and `json.to_json` do the same between typed values and `Json`.
+
+```sayon
+type Point = [x: float, y: float]
+type Shape = [name: string, points: Array<Point>, note: string or nothing]
+
+shape: Shape = json.decode("{{\"name\": \"line\", \"points\": [{{\"x\": 0, \"y\": 1.5}}]}}")
+print(shape.points[0].y)             # 1.5
+print(json.encode_value(shape))      # {"name":"line","points":[{"x":0.0,"y":1.5}],"note":null}
+points = json.decode<Array<Point>>("[]")
+```
+
+| Type | JSON |
+|---|---|
+| numbers, `boolean`, `string`, `nothing` | a number, `true` or `false`, text, `null` |
+| `Array<T>` | a list |
+| `Dict<string, T>`, structures | an object; a structure's field missing from the object is `nothing` when its type allows it, and other members are ignored |
+| enums | a variant without fields is its name, `"dot"`; one with fields is an object with one member named after the variant, `{"circle": {"radius": 2.0}}` |
+| unions | whichever member reads that kind of value; a number written as an integer reads as the integer member and another as the float member |
+| `Json` | any value, unchanged |
+
+- An integer must be written without a fraction or exponent and fit its type; all 64 bits of `unsigned` and `integer` are kept exactly.
+- JSON that does not fit raises `DecodeError`, starting with the path to the place: `$.points[0].y: expected float, found text`.
+- Types JSON cannot hold, such as function values or dictionaries with integer keys, are compile errors, and so are unions where two members read the same kind of JSON value, such as `Point or Line` (both objects). A generic function that decodes its type parameter passes this requirement on to its callers.
+- Writing a float that is infinite or not a number raises `ValueError`, since JSON has no number for it.
 
 ### Time
 

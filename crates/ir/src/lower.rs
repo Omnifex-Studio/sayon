@@ -14,6 +14,8 @@ use sayon_syntax::ast::{BinaryOp, ParamMode, UnaryOp};
 use sayon_syntax::{Diagnostic, Span};
 use std::collections::HashMap;
 
+mod json;
+
 pub struct LowerOutput {
     pub module: Module,
     pub diagnostics: Vec<Diagnostic>,
@@ -40,6 +42,8 @@ fn lower_program(program: &hir::Program, include_tests: bool) -> LowerOutput {
         types: program.types.clone(),
         envs: HashMap::new(),
         thunks: HashMap::new(),
+        decoders: HashMap::new(),
+        encoders: HashMap::new(),
     };
     let globals = program
         .constants
@@ -171,6 +175,9 @@ struct Lowerer<'p> {
     envs: HashMap<(hir::FuncId, Vec<Type>), Option<Type>>,
     /// The code behind each named function used as a value.
     thunks: HashMap<(hir::FuncId, Vec<Type>), FunctionId>,
+    /// The generated functions reading each type from JSON, and writing it.
+    decoders: HashMap<Type, FunctionId>,
+    encoders: HashMap<Type, FunctionId>,
 }
 
 impl<'p> Lowerer<'p> {
@@ -2536,6 +2543,36 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 let start = args.get(1).map(|arg| self.operand(&arg.expr, Want::Owned));
                 let end = args.get(2).map(|arg| self.operand(&arg.expr, Want::Owned));
                 self.op(Op::MakeView { base, start, end }, Some(dest), span);
+            }
+            Builtin::TypedDecode => {
+                let value = self.place_of(&args[0].expr, Want::Read);
+                let path = self.temp(Type::String);
+                self.assign(
+                    Place::slot(path),
+                    Rvalue::Use(Operand::Const(Constant::Str("$".to_string()))),
+                );
+                let function = self.l.decoder(ty, span);
+                let args = vec![
+                    Operand::Borrow {
+                        place: value,
+                        mutable: false,
+                    },
+                    Operand::Borrow {
+                        place: Place::slot(path),
+                        mutable: false,
+                    },
+                ];
+                self.op(Op::Call { function, args }, Some(dest), span);
+            }
+            Builtin::TypedEncode => {
+                let value_ty = self.ty(&args[0].expr.ty);
+                let value = self.place_of(&args[0].expr, Want::Read);
+                let function = self.l.encoder(&value_ty, span);
+                let args = vec![Operand::Borrow {
+                    place: value,
+                    mutable: false,
+                }];
+                self.op(Op::Call { function, args }, Some(dest), span);
             }
             Builtin::SplitView => {
                 let view = self.place_of(&args[0].expr, Want::Mut);

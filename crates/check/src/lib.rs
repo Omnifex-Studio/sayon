@@ -110,6 +110,7 @@ pub fn check_program(modules: &[ModuleSource], entry: usize, span: Span) -> Chec
             locals: Vec::new(),
         })
         .collect();
+    let json = checker.json_support();
     let mut program = hir::Program {
         functions,
         constants,
@@ -117,6 +118,7 @@ pub fn check_program(modules: &[ModuleSource], entry: usize, span: Span) -> Chec
         entry,
         tests,
         types: std::mem::take(&mut checker.type_defs),
+        json,
     };
 
     let components = checker.scc_order.clone();

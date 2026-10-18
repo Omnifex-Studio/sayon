@@ -104,6 +104,89 @@ function item(value: Json, position: integer) -> Json or nothing
 function from_integer(value: integer) -> Json
     return number(tostring(value))
 
+# ----- typed values ------------------------------------------------------------
+
+# Reads JSON text into a value of the type it is used as, such as
+# `point: Point = json.decode(text)` or `json.decode<Array<Point>>(text)`.
+# Fails with ParseError for text that is not JSON, and with DecodeError,
+# naming where in the value, such as `$.points[2].x`, and what was expected,
+# for JSON that does not fit the type.
+#
+# Numbers, booleans, text, and nothing (null) are the JSON values of the same
+# kind. An array is a list. A dictionary with string keys, and a structure,
+# are objects; a structure's field missing from the object is nothing when
+# its type allows it, and the object's other members are ignored. An enum
+# variant without fields is its name as text, and one with fields is an
+# object with one member, named after the variant, holding an object of its
+# fields. A union is whichever member reads that kind of JSON value, so each
+# kind must belong to one member; a number written as an integer reads as
+# the union's integer member, and another as its float member. `Json` is any
+# value. Integers must be written without a fraction or exponent and fit
+# their type.
+function decode<T>(text: string) -> T
+    return from_json(parse(text))
+
+# A Json value read into a value of the type it is used as, as `decode` reads
+# text.
+function from_json<T>(value: Json) -> T
+    return typed_decode(value)
+
+# A value as Json, in the form `decode` reads. Fails with ValueError for a
+# float that is not a number JSON can hold (infinite or not a number).
+function to_json<T>(value: T) -> Json
+    return typed_encode(value)
+
+# A value as compact JSON text, in the form `decode` reads.
+function encode_value<T>(value: T) -> string
+    return encode(to_json(value))
+
+# ----- reading typed values ------------------------------------------------------
+# The generated readers call these; each fails with DecodeError.
+
+private function decode_mismatch(value: Json, path: string, expected: string)
+    found = "an object"
+    match value
+        case null
+            found = "null"
+        case flag(_)
+            found = "a boolean"
+        case number(digits)
+            found = "the number {digits}"
+        case text(_)
+            found = "text"
+        case list(_)
+            found = "a list"
+        case object(_)
+            found = "an object"
+    host_json_fail("{path}: expected {expected}, found {found}")
+
+private function missing_field(path: string, name: string)
+    host_json_fail("{path}: the field `{name}` is missing")
+
+private function unknown_variant(path: string, name: string, type_name: string)
+    host_json_fail("{path}: `{name}` is not a variant of {type_name}")
+
+# The path of an object's member: `$.name`, or `$["two words"]` for a name
+# that is not a plain word.
+private function member_path(path: string, name: string) -> string
+    plain = name != ""
+    for character in name
+        code = strings.code(character)
+        letter = code >= 97 and code <= 122 or code >= 65 and code <= 90 or character == "_"
+        digit = code >= 48 and code <= 57
+        if not (letter or digit)
+            plain = false
+    if plain and strings.code(name[0]) >= 48 and strings.code(name[0]) <= 57
+        plain = false
+    if plain
+        return "{path}.{name}"
+    parts: Array<string> = []
+    write_string(parts, name)
+    return path + "[" + strings.join(parts, "") + "]"
+
+private function index_path(path: string, index: integer) -> string
+    return "{path}[{index}]"
+
 # ----- reading -----------------------------------------------------------------
 
 private function fail(reader: Reader, message: string)

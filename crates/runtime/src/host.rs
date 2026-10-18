@@ -24,6 +24,8 @@ pub enum HostType {
     Stream,
     /// `Array<byte>`.
     Bytes,
+    /// `unsigned` (64 bits), for results only.
+    Unsigned,
 }
 
 macro_rules! hosts {
@@ -126,6 +128,12 @@ hosts! {
     IsLink = "is_link"(String) -> Boolean;
     StandardInput = "standard_input"() -> Stream;
     Run = "run"(String, StringArray, String) -> StringArray;
+    JsonInteger = "json_integer"(String, String, Integer) -> Integer;
+    JsonUnsigned = "json_unsigned"(String, String, Integer) -> Unsigned;
+    JsonFloat = "json_float"(String, String, Integer) -> Float;
+    JsonIntegral = "json_integral"(String) -> Boolean;
+    JsonFloatText = "json_float_text"(Float, Integer) -> String;
+    JsonFail = "json_fail"(String) -> Nothing;
     Graphemes = "graphemes"(String) -> StringArray;
     GraphemeCount = "grapheme_count"(String) -> Integer;
     Bytes = "bytes"(String) -> Bytes;
@@ -186,6 +194,7 @@ pub enum HostValue {
     /// A new stream, with one reference.
     Stream(i64),
     Bytes(Vec<u8>),
+    Unsigned(u64),
 }
 
 /// A recoverable error: code and message.
@@ -320,6 +329,31 @@ fn walk_entries(
     Ok(found)
 }
 
+/// Whether JSON number text is an integer: no fraction and no exponent.
+fn json_integral(digits: &str) -> bool {
+    !digits.contains(['.', 'e', 'E'])
+}
+
+/// A JSON number read as an integer of the type with `code` (see
+/// `text::INTEGER_TYPE_NAMES`), or the error to report at `path`.
+fn json_integer(digits: &str, path: &str, code: i64) -> Result<i128, HostError> {
+    let name = crate::text::INTEGER_TYPE_NAMES[code as usize];
+    if !json_integral(digits) {
+        return Err((
+            "DecodeError",
+            format!("{path}: expected {name}, found the number {digits}"),
+        ));
+    }
+    let (low, high) = crate::text::integer_type_range(code as u32);
+    match digits.parse::<i128>() {
+        Ok(value) if (low..=high).contains(&value) => Ok(value),
+        _ => Err((
+            "DecodeError",
+            format!("{path}: {digits} is outside the range of {name}, {low} to {high}"),
+        )),
+    }
+}
+
 /// Runs a program with an argument vector, without a shell, and waits for
 /// it: its status, standard output, and standard error, as three strings.
 /// Its standard input is empty.
@@ -451,6 +485,41 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
         }
         Host::StandardInput => Ok(V::Stream(crate::streams::standard_input())),
         Host::Run => run(string(args, 0), &args[1], string(args, 2)),
+        Host::JsonInteger => json_integer(string(args, 0), string(args, 1), integer(args, 2))
+            .map(|value| V::Integer(value as i64)),
+        Host::JsonUnsigned => json_integer(string(args, 0), string(args, 1), integer(args, 2))
+            .map(|value| V::Unsigned(value as u64)),
+        Host::JsonFloat => {
+            let (digits, path) = (string(args, 0), string(args, 1));
+            let value = if integer(args, 2) == 32 {
+                digits.parse::<f32>().map(f64::from)
+            } else {
+                digits.parse::<f64>()
+            };
+            match value {
+                Ok(value) if value.is_finite() => Ok(V::Float(value)),
+                _ => Err((
+                    "DecodeError",
+                    format!("{path}: {digits} is too large for a float"),
+                )),
+            }
+        }
+        Host::JsonIntegral => Ok(V::Boolean(json_integral(string(args, 0)))),
+        Host::JsonFloatText => {
+            let value = float(args, 0);
+            if !value.is_finite() {
+                return Err((
+                    "ValueError",
+                    format!("JSON has no number for {}", crate::text::format_f64(value)),
+                ));
+            }
+            Ok(V::String(if integer(args, 1) == 32 {
+                crate::text::format_f32(value as f32)
+            } else {
+                crate::text::format_f64(value)
+            }))
+        }
+        Host::JsonFail => Err(("DecodeError", string(args, 0).to_string())),
         Host::Graphemes => Ok(V::Strings(
             crate::graphemes::clusters(string(args, 0))
                 .into_iter()

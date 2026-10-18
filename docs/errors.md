@@ -498,6 +498,10 @@ A numeric conversion cannot represent its value, such as a float that is not fin
 
 Text could not be read as what was asked for: `tonumber(text)` was given text that is not a number (the whole text must be a number, without spaces), or `json.parse` was given text that is not JSON. A JSON error names the line and column where reading stopped.
 
+### DecodeError
+
+JSON did not fit the type `json.decode` or `json.from_json` was reading it into: a value of the wrong kind, a structure field that is missing, a name that is not a variant of the enum, or an integer with a fraction or outside its type's range. The message starts with the path to the place in the JSON value, such as `$.points[2].x`, and says what was expected and what was found.
+
 ### RangeError
 
 `range(...)` was called with a step of zero.

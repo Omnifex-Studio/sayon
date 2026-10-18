@@ -1,0 +1,31 @@
+Shape(name = "triangle", points = [Point(x = 0.0, y = 0.5), Point(x = 1.5, y = -20.0)], closed = true, note = nothing)
+{"name":"triangle","points":[{"x":0.0,"y":0.5},{"x":1.5,"y":-20.0}],"closed":true,"note":null}
+true
+Sizes(tiny = -128, small = 255, big = 18446744073709551615, huge = -9223372036854775808)
+{"tiny":-128,"small":255,"big":18446744073709551615,"huge":-9223372036854775808}
+0.1 0.1
+["a" = 1, "b two" = 2] {"a":1,"b two":2}
+[[1, 2], [], [3]]
+[1, 2.5, "three", nothing, -4]
+integer
+float
+string
+nothing
+integer
+[1,2.5,"three",null,-4]
+[dot, circle(2.0), box(1.0, 3.0)]
+["dot",{"circle":{"radius":2.0}},{"box":{"width":1.0,"height":3.0}}]
+[none, some("yes")]
+leaf {"label":"root","children":[{"label":"leaf","children":[]}]}
+{"anything":[true,null]}
+Point(x = 3.0, y = 4.0)
+DecodeError $.points[0].y: expected float, found text
+DecodeError $.closed: expected a boolean, found the number 1
+DecodeError $: the field `name` is missing
+DecodeError $: expected a Shape, found a list
+DecodeError $.points[0]: the field `y` is missing
+$: 256 is outside the range of unsigned8, 0 to 255
+$: expected integer, found the number 1.5
+$: `square` is not a variant of Figure
+$["two words"]: expected integer, found a boolean
+ValueError JSON has no number for inf

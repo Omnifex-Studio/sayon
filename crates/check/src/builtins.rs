@@ -18,6 +18,13 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
     if host && let Some(primitive) = sayon_runtime::host::Host::lookup(name) {
         return Some(PreludeItem::Builtin(Builtin::Host(primitive)));
     }
+    if host {
+        match name {
+            "typed_decode" => return Some(PreludeItem::Builtin(Builtin::TypedDecode)),
+            "typed_encode" => return Some(PreludeItem::Builtin(Builtin::TypedEncode)),
+            _ => {}
+        }
+    }
     let builtin = match name {
         "print" => Builtin::Print,
         "length" => Builtin::Length,
