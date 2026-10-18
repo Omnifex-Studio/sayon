@@ -540,6 +540,7 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 | `standard/filesystem.sayon` | `exists`, `is_file`, `is_directory`, `list` (sorted names), `size`, `create_directory`, `remove`, `rename`, `copy`, `join`, `name`, `parent`, `extension` |
 | `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters`, `code` (a character's Unicode code), `character` (the character with a code) |
 | `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer` |
+| `standard/time.sayon` | `Duration` (`nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `add`, `subtract`, `scale`, `in_seconds`, `in_milliseconds`, `describe`), the monotonic clock (`start`, `elapsed`, `between`, `sleep`), and UTC dates (`DateTime`, `now`, `unix_seconds`, `from_unix`, `to_unix`, `shift`, `difference`, `weekday`, `is_leap_year`, `days_in_month`, `format` and `parse` for ISO 8601) |
 | `standard/collections.sayon` | `sort` and `sort_by` (stable), `reverse`; `Set<T>` with `new_set`, `set_add`, `set_contains`, `set_remove`, `set_size`, `set_values`; `Queue<T>` with `new_queue`, `queue_add`, `queue_take`, `queue_size` |
 | `standard/math.sayon` | `PI`, `E`, `TAU`, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `log`, `log10`, `log2`, `pow`, `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`, `clamp`, `random` |
 
@@ -579,6 +580,21 @@ if born != nothing
 - `parse` raises a `ParseError` naming the line and column for text that is not JSON, including anything but whitespace after the value, a field name repeated in one object, an unpaired surrogate escape, a raw control character in a string, and nesting deeper than 512 levels.
 - Build values with the variants, written through the module: `json.Json.text("hi")`, `json.Json.list([...])`, or `json.from_integer(3)`.
 - Braces in a Sayon string start interpolation, so JSON written as a literal doubles them: `"{{\"a\": 1}}"`.
+
+### Time
+
+The monotonic clock measures intervals and never goes backwards; the wall clock gives the date and time and can jump when the system clock is set. Dates and times are in UTC, on the Gregorian calendar extended backwards; time zones other than UTC are planned. Durations count whole nanoseconds, and their arithmetic is checked like any integer arithmetic.
+
+```sayon
+time = import("standard/time.sayon")
+
+start = time.start()
+time.sleep(time.milliseconds(50))
+print(time.describe(time.elapsed(start)))     # such as 50.12ms
+print(time.format(time.now()))                # such as 2026-10-18T09:30:00Z
+moment = time.parse("2026-10-18T09:30:00+02:00")
+print(time.format(moment), time.weekday(moment))   # 2026-10-18T07:30:00Z 7
+```
 
 ### Display
 

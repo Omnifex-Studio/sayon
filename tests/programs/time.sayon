@@ -1,0 +1,26 @@
+time = import("standard/time.sayon")
+
+print(time.describe(time.milliseconds(350)), time.describe(time.seconds(125)), time.describe(time.nanoseconds(1_250_000_000)), time.describe(time.microseconds(12)), time.describe(time.hours(2)), time.describe(time.nanoseconds(-40)))
+print(time.in_seconds(time.milliseconds(1500)), time.in_milliseconds(time.seconds(3)))
+
+epoch = time.from_unix(0)
+print(time.format(epoch), time.weekday(epoch))
+moment = time.parse("2026-10-18T09:30:00.250+02:00")
+print(time.format(moment), time.to_unix(moment), time.weekday(moment))
+print(time.format(time.parse("2024-02-29")), time.is_leap_year(2024), time.days_in_month(2023, 2))
+print(time.format(time.from_unix(-86_401)))
+later = time.shift(moment, time.hours(36))
+print(time.format(later), time.describe(time.difference(moment, later)))
+print(time.format(time.from_unix(253_402_300_799)))
+
+for bad in ["2026-13-01", "2026-02-30", "2026-10-18T25:00:00Z", "2026-10-18T09:30:00", "18/10/2026"]
+    outcome = try time.parse(bad)
+    if outcome is error
+        print(outcome.message)
+
+start = time.start()
+time.sleep(time.milliseconds(20))
+waited = time.elapsed(start)
+print(time.in_milliseconds(waited) >= 20)
+now = time.now()
+print(now.year >= 2026, time.unix_seconds() > 1_700_000_000)

@@ -82,6 +82,9 @@ hosts! {
     Code = "code"(String) -> Integer;
     Character = "character"(Integer) -> String;
     ParseError = "parse_error"(String) -> Nothing;
+    Monotonic = "monotonic"() -> Integer;
+    UnixTime = "unix_time"() -> Integer;
+    Sleep = "sleep"(Integer) -> Nothing;
     Sqrt = "sqrt"(Float) -> Float;
     Sin = "sin"(Float) -> Float;
     Cos = "cos"(Float) -> Float;
@@ -468,6 +471,33 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
             }
         }
         Host::ParseError => Err(("ParseError", string(args, 0).to_string())),
+        Host::Monotonic => {
+            // Nanoseconds since the clock was first read in this process.
+            static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            let start = START.get_or_init(std::time::Instant::now);
+            Ok(V::Integer(
+                start.elapsed().as_nanos().min(i64::MAX as u128) as i64
+            ))
+        }
+        Host::UnixTime => {
+            let now = std::time::SystemTime::now();
+            let nanoseconds = match now.duration_since(std::time::UNIX_EPOCH) {
+                Ok(after) => after.as_nanos().min(i64::MAX as u128) as i64,
+                Err(before) => -(before.duration().as_nanos().min(i64::MAX as u128) as i64),
+            };
+            Ok(V::Integer(nanoseconds))
+        }
+        Host::Sleep => {
+            let nanoseconds = integer(args, 0);
+            if nanoseconds < 0 {
+                return Err((
+                    "ValueError",
+                    format!("cannot sleep for a negative time ({nanoseconds} nanoseconds)"),
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_nanos(nanoseconds as u64));
+            Ok(V::Nothing)
+        }
         Host::Sqrt => unary(f64::sqrt),
         Host::Sin => unary(f64::sin),
         Host::Cos => unary(f64::cos),

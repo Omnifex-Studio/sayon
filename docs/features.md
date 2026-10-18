@@ -85,7 +85,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `standard/json`: `Json` values, parse with positions in errors, compact and pretty encoding, exact number text, duplicate-field and depth limits | experimental | M2 |
 | `standard/json` typed decoding and encoding into structures | planned | M2 to M3 |
 | `standard/collections`: stable sorting, `Set`, `Queue`; `remove` and `swap` built-ins | experimental | M2 |
-| `standard.time` | planned | M1 to M3 |
+| `standard/time`: durations, monotonic clock, sleep, UTC dates, ISO 8601 | experimental | M2 |
+| `standard/time` time zones, timers, deadlines | planned | M3 |
 | `standard.network`, `standard.threads` | planned | M3 |
 | `standard.graphics` | planned | M4 baseline |
 

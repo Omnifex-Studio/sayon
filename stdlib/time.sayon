@@ -1,0 +1,327 @@
+# Clocks, durations, and dates.
+#
+#     time = import("standard/time.sayon")
+#     start = time.start()
+#     time.sleep(time.milliseconds(50))
+#     print(time.describe(time.elapsed(start)))
+#     print(time.format(time.now()))            # such as 2026-10-18T09:30:00Z
+#
+# A monotonic clock measures intervals: it never goes backwards, but its
+# readings mean nothing on their own. The wall clock tells the date and time,
+# and can jump when the system's clock is set. Dates and times are in UTC.
+# Durations count whole nanoseconds, and arithmetic on them is checked.
+
+strings = import("standard/strings.sayon")
+
+# A length of time, which may be negative.
+type Duration = [nanoseconds: integer]
+
+# A reading of the monotonic clock.
+type Instant = [nanoseconds: integer]
+
+# A moment of the wall clock, as a date and time in UTC.
+type DateTime = [
+    year: integer,
+    month: integer,
+    day: integer,
+    hour: integer,
+    minute: integer,
+    second: integer,
+    nanosecond: integer
+]
+
+private constant NANOSECONDS_PER_SECOND = 1_000_000_000
+private constant SECONDS_PER_DAY = 86_400
+
+# ----- durations --------------------------------------------------------------
+
+function nanoseconds(count: integer) -> Duration
+    return Duration(nanoseconds = count)
+
+function microseconds(count: integer) -> Duration
+    return Duration(nanoseconds = count * 1_000)
+
+function milliseconds(count: integer) -> Duration
+    return Duration(nanoseconds = count * 1_000_000)
+
+function seconds(count: integer) -> Duration
+    return Duration(nanoseconds = count * NANOSECONDS_PER_SECOND)
+
+function minutes(count: integer) -> Duration
+    return seconds(count * 60)
+
+function hours(count: integer) -> Duration
+    return seconds(count * 3_600)
+
+function add(a: Duration, b: Duration) -> Duration
+    return Duration(nanoseconds = a.nanoseconds + b.nanoseconds)
+
+function subtract(a: Duration, b: Duration) -> Duration
+    return Duration(nanoseconds = a.nanoseconds - b.nanoseconds)
+
+function scale(duration: Duration, factor: integer) -> Duration
+    return Duration(nanoseconds = duration.nanoseconds * factor)
+
+# The duration in seconds, with a fraction.
+function in_seconds(duration: Duration) -> float
+    return float(duration.nanoseconds) / 1_000_000_000.0
+
+# The duration in whole milliseconds, rounded toward zero.
+function in_milliseconds(duration: Duration) -> integer
+    return duration.nanoseconds / 1_000_000
+
+# Readable text for a duration, in the largest unit that keeps it at least 1:
+# `2h 5m 3s`, `1.25s`, `350ms`, `12µs`, or `40ns`.
+function describe(duration: Duration) -> string
+    total = duration.nanoseconds
+    sign = ""
+    if total < 0
+        sign = "-"
+        total = -total
+    if total >= 60 * NANOSECONDS_PER_SECOND
+        whole = total / NANOSECONDS_PER_SECOND
+        parts: Array<string> = []
+        if whole >= 3_600
+            push(parts, "{whole / 3_600}h")
+        if whole / 60 % 60 > 0
+            push(parts, "{whole / 60 % 60}m")
+        if whole % 60 > 0
+            push(parts, "{whole % 60}s")
+        return sign + strings.join(parts, " ")
+    if total >= NANOSECONDS_PER_SECOND
+        return "{sign}{decimal(total, NANOSECONDS_PER_SECOND)}s"
+    if total >= 1_000_000
+        return "{sign}{decimal(total, 1_000_000)}ms"
+    if total >= 1_000
+        return "{sign}{decimal(total, 1_000)}µs"
+    return "{sign}{total}ns"
+
+# `value / unit` with up to two decimals, without trailing zeros.
+private function decimal(value: integer, unit: integer) -> string
+    hundredths = value * 100 / unit
+    whole = hundredths / 100
+    fraction = hundredths % 100
+    if fraction == 0
+        return tostring(whole)
+    if fraction % 10 == 0
+        return "{whole}.{fraction / 10}"
+    return "{whole}.{pad(fraction, 2)}"
+
+# ----- the monotonic clock ----------------------------------------------------
+
+# Reads the monotonic clock.
+function start() -> Instant
+    return Instant(nanoseconds = host_monotonic())
+
+# The time since an earlier reading of the monotonic clock.
+function elapsed(since: Instant) -> Duration
+    return Duration(nanoseconds = host_monotonic() - since.nanoseconds)
+
+# The time from one reading to a later one.
+function between(earlier: Instant, later: Instant) -> Duration
+    return Duration(nanoseconds = later.nanoseconds - earlier.nanoseconds)
+
+# Waits for at least a duration. The program does nothing else meanwhile.
+function sleep(duration: Duration)
+    if duration.nanoseconds > 0
+        host_sleep(duration.nanoseconds)
+
+# ----- the wall clock and dates ------------------------------------------------
+
+# The current date and time, in UTC.
+function now() -> DateTime
+    total = host_unix_time()
+    return from_seconds(floor_divide(total, NANOSECONDS_PER_SECOND), floor_modulo(total, NANOSECONDS_PER_SECOND))
+
+# Seconds since 1970-01-01T00:00:00Z, the Unix epoch.
+function unix_seconds() -> integer
+    return floor_divide(host_unix_time(), NANOSECONDS_PER_SECOND)
+
+# The date and time a number of seconds after the Unix epoch.
+function from_unix(count: integer) -> DateTime
+    return from_seconds(count, 0)
+
+# Seconds from the Unix epoch to a date and time, ignoring its nanoseconds.
+function to_unix(moment: DateTime) -> integer
+    days = days_from_civil(moment.year, moment.month, moment.day)
+    return days * SECONDS_PER_DAY + moment.hour * 3_600 + moment.minute * 60 + moment.second
+
+# A date and time moved by a duration.
+function shift(moment: DateTime, by: Duration) -> DateTime
+    nanosecond = moment.nanosecond + floor_modulo(by.nanoseconds, NANOSECONDS_PER_SECOND)
+    carry = nanosecond / NANOSECONDS_PER_SECOND
+    whole_seconds = to_unix(moment) + floor_divide(by.nanoseconds, NANOSECONDS_PER_SECOND) + carry
+    return from_seconds(whole_seconds, nanosecond - carry * NANOSECONDS_PER_SECOND)
+
+# The duration from one date and time to another.
+function difference(earlier: DateTime, later: DateTime) -> Duration
+    apart = to_unix(later) - to_unix(earlier)
+    return Duration(nanoseconds = apart * NANOSECONDS_PER_SECOND + later.nanosecond - earlier.nanosecond)
+
+# The day of the week, from 1 for Monday to 7 for Sunday.
+function weekday(moment: DateTime) -> integer
+    days = days_from_civil(moment.year, moment.month, moment.day)
+    # 1970-01-01 was a Thursday.
+    return floor_modulo(days + 3, 7) + 1
+
+function is_leap_year(year: integer) -> boolean
+    return year % 4 == 0 and year % 100 != 0 or year % 400 == 0
+
+function days_in_month(year: integer, month: integer) -> integer
+    if month == 2
+        if is_leap_year(year)
+            return 29
+        return 28
+    if month == 4 or month == 6 or month == 9 or month == 11
+        return 30
+    return 31
+
+# ISO 8601 text in UTC, such as `2026-10-18T09:30:00Z`. Fractions of a
+# second are written only when there are any, with as few digits as needed.
+function format(moment: DateTime) -> string
+    date = "{pad(moment.year, 4)}-{pad(moment.month, 2)}-{pad(moment.day, 2)}"
+    clock = "{pad(moment.hour, 2)}:{pad(moment.minute, 2)}:{pad(moment.second, 2)}"
+    fraction = ""
+    if moment.nanosecond > 0
+        digits = pad(moment.nanosecond, 9)
+        while strings.ends_with(digits, "0")
+            digits = strings.slice(digits, 0, length(digits) - 1)
+        fraction = "." + digits
+    return "{date}T{clock}{fraction}Z"
+
+# Reads ISO 8601 text: a date, `2026-10-18`, or a date and time with `Z` or
+# an offset from UTC, `2026-10-18T09:30:00.5+02:00`. The result is in UTC.
+# Text that is not such a date raises a ParseError.
+function parse(text: string) -> DateTime
+    year = number_at(text, 0, 4)
+    expect(text, 4, "-")
+    month = number_at(text, 5, 2)
+    expect(text, 7, "-")
+    day = number_at(text, 8, 2)
+    if month < 1 or month > 12 or day < 1 or day > days_in_month(year, month)
+        host_parse_error("\"{text}\" is not a valid date")
+    if length(text) == 10
+        return DateTime(year = year, month = month, day = day, hour = 0, minute = 0, second = 0, nanosecond = 0)
+    expect(text, 10, "T")
+    hour = number_at(text, 11, 2)
+    expect(text, 13, ":")
+    minute = number_at(text, 14, 2)
+    expect(text, 16, ":")
+    second = number_at(text, 17, 2)
+    if hour > 23 or minute > 59 or second > 59
+        host_parse_error("\"{text}\" is not a valid time of day")
+    variable position = 19
+    variable nanosecond = 0
+    if position < length(text) and strings.slice(text, position, position + 1) == "."
+        position += 1
+        variable count = 0
+        while position < length(text) and is_digit(strings.slice(text, position, position + 1))
+            if count < 9
+                nanosecond = nanosecond * 10 + number_at(text, position, 1)
+                count += 1
+            position += 1
+        if count == 0
+            host_parse_error("\"{text}\" has no digits after the decimal point")
+        while count < 9
+            nanosecond *= 10
+            count += 1
+    variable offset = 0
+    rest = strings.slice(text, position, length(text))
+    if rest == "Z"
+        offset = 0
+    elseif length(rest) == 6 and (strings.starts_with(rest, "+") or strings.starts_with(rest, "-"))
+        expect(rest, 3, ":")
+        offset = number_at(rest, 1, 2) * 3_600 + number_at(rest, 4, 2) * 60
+        if strings.starts_with(rest, "-")
+            offset = -offset
+    else
+        host_parse_error("\"{text}\" needs `Z` or an offset such as `+02:00` after the time")
+    local = DateTime(year = year, month = month, day = day, hour = hour, minute = minute, second = second, nanosecond = nanosecond)
+    return shift(local, seconds(-offset))
+
+# ----- calendar arithmetic ------------------------------------------------------
+
+# The date and time a number of seconds, and nanoseconds below a second,
+# after the Unix epoch.
+private function from_seconds(whole_seconds: integer, nanosecond: integer) -> DateTime
+    days = floor_divide(whole_seconds, SECONDS_PER_DAY)
+    of_day = whole_seconds - days * SECONDS_PER_DAY
+    date = civil_from_days(days)
+    return DateTime(
+        year = date[0],
+        month = date[1],
+        day = date[2],
+        hour = of_day / 3_600,
+        minute = of_day / 60 % 60,
+        second = of_day % 60,
+        nanosecond = nanosecond
+    )
+
+# Days from 1970-01-01 to a date of the proleptic Gregorian calendar.
+private function days_from_civil(year: integer, month: integer, day: integer) -> integer
+    y = year
+    if month <= 2
+        y -= 1
+    era = floor_divide(y, 400)
+    year_of_era = y - era * 400
+    shifted_month = month + 9
+    if month > 2
+        shifted_month = month - 3
+    day_of_year = (153 * shifted_month + 2) / 5 + day - 1
+    day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year
+    return era * 146_097 + day_of_era - 719_468
+
+# The date `[year, month, day]` a number of days after 1970-01-01.
+private function civil_from_days(days: integer) -> Array<integer>
+    z = days + 719_468
+    era = floor_divide(z, 146_097)
+    day_of_era = z - era * 146_097
+    year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365
+    day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100)
+    shifted_month = (5 * day_of_year + 2) / 153
+    day = day_of_year - (153 * shifted_month + 2) / 5 + 1
+    month = shifted_month + 3
+    if shifted_month >= 10
+        month = shifted_month - 9
+    year = year_of_era + era * 400
+    if month <= 2
+        year += 1
+    return [year, month, day]
+
+# Division rounding toward negative infinity.
+private function floor_divide(value: integer, divisor: integer) -> integer
+    quotient = value / divisor
+    if value % divisor != 0 and (value < 0) != (divisor < 0)
+        quotient -= 1
+    return quotient
+
+private function floor_modulo(value: integer, divisor: integer) -> integer
+    return value - floor_divide(value, divisor) * divisor
+
+# ----- text ----------------------------------------------------------------------
+
+# A non-negative number with leading zeros to at least `width` digits.
+private function pad(value: integer, width: integer) -> string
+    text = tostring(value)
+    while length(text) < width
+        text = "0" + text
+    return text
+
+private function is_digit(character: string) -> boolean
+    return strings.contains("0123456789", character) and length(character) == 1
+
+# The number written by `count` digits at a position of the text.
+private function number_at(text: string, position: integer, count: integer) -> integer
+    if position + count > length(text)
+        host_parse_error("\"{text}\" is not an ISO 8601 date")
+    variable value = 0
+    for index in range(position, position + count)
+        digit = strings.slice(text, index, index + 1)
+        if not is_digit(digit)
+            host_parse_error("\"{text}\" is not an ISO 8601 date")
+        value = value * 10 + strings.code(digit) - 48
+    return value
+
+private function expect(text: string, position: integer, separator: string)
+    if position >= length(text) or strings.slice(text, position, position + 1) != separator
+        host_parse_error("\"{text}\" is not an ISO 8601 date: expected `{separator}` at position {position}")
