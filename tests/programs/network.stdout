@@ -1,0 +1,13 @@
+HELLO SAYON
+true 127.0.0.1
+nothing
+200 OK Hello, HTTP Hi
+Hello, again
+200 Hello, HTTP true
+201 POST some text true
+404 missing false
+ping true
+TimeoutError no answer within 50 milliseconds
+TimeoutError no answer within 50 milliseconds
+HttpError https://127.0.0.1/ needs TLS, which this release does not have yet
+ValueError 70000 is not a port; ports are 0 to 65535

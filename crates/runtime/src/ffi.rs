@@ -1587,6 +1587,38 @@ pub extern "C" fn sayon_runtime_init() {
     crate::host::set_arguments(std::env::args().skip(1).collect());
 }
 
+/// Runs a primitive, letting other tasks run while it waits for a socket:
+/// it runs again whenever the socket may be ready, until it finishes or
+/// waits longer than the socket's timeout.
+fn call_waiting(
+    host: crate::host::Host,
+    values: &[crate::host::HostArg],
+) -> Result<crate::host::HostValue, crate::host::HostError> {
+    use crate::network::{BLOCKED_CODE, take_blocked, timeout_message};
+    let mut started = None;
+    loop {
+        match crate::host::invoke(host, values) {
+            Err((code, _)) if code == BLOCKED_CODE => {
+                let blocked = take_blocked().expect("what the primitive waits for");
+                let started = *started.get_or_insert_with(std::time::Instant::now);
+                let deadline = blocked.timeout.map(|timeout| started + timeout);
+                match crate::tasks::wait_io(blocked.wait, deadline) {
+                    Ok(()) => {}
+                    Err(crate::tasks::IoStop::TimedOut) => {
+                        let timeout = blocked.timeout.unwrap_or_default();
+                        return Err(("TimeoutError", timeout_message(timeout)));
+                    }
+                    Err(crate::tasks::IoStop::Cancelled) => {
+                        let code = crate::host::CANCELLED_CODE;
+                        return Err((code, "the task was cancelled".to_string()));
+                    }
+                }
+            }
+            other => return other,
+        }
+    }
+}
+
 /// Calls a host primitive. `args` points to one pointer per argument value,
 /// in the primitive's parameter order. The result is written through `out`;
 /// for an optional string, whether it is present is written through
@@ -1600,7 +1632,7 @@ pub unsafe extern "C" fn sayon_host_call(
     present: *mut bool,
     location: *const c_char,
 ) -> i32 {
-    use crate::host::{Host, HostArg, HostType, HostValue, invoke};
+    use crate::host::{Host, HostArg, HostType, HostValue};
     let host = Host::from_code(code).expect("known host primitive");
     // SAFETY: the generated code passes valid pointers matching the
     // primitive's parameter and result types.
@@ -1639,7 +1671,7 @@ pub unsafe extern "C" fn sayon_host_call(
                 }
             });
         }
-        match invoke(host, &values) {
+        match call_waiting(host, &values) {
             Ok(HostValue::String(text)) => *(out as *mut SayonStr) = owned(text),
             Ok(HostValue::Integer(value)) => *(out as *mut i64) = value,
             Ok(HostValue::Float(value)) => *(out as *mut f64) = value,

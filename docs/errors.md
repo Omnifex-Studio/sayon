@@ -540,6 +540,26 @@ A numeric conversion cannot represent its value, such as a float that is not fin
 
 Text could not be read as what was asked for: `tonumber(text)` was given text that is not a number (the whole text must be a number, without spaces), or `json.parse` was given text that is not JSON. A JSON error names the line and column where reading stopped.
 
+### ConnectionError
+
+A connection could not be made or went wrong: nothing accepted it on that port, the other side closed or reset it, or the network cannot reach the host. The message names the host and port.
+
+### AddressError
+
+A host has no address the system can find, a port is already in use by another socket, or an address is not one of this computer's (for `network.listen` or `network.bind`).
+
+### TimeoutError
+
+A network operation waited longer than its timeout: `network.connect`'s, or the one a connection, listener, or datagram socket was given with `set_timeout`. The message says how long it waited.
+
+### NetworkError
+
+The system reported a network failure that is none of the others; the message has its description.
+
+### HttpError
+
+An HTTP request went wrong in a way HTTP itself defines: the URL is not an `http://` URL (`https://` needs TLS, which is not available yet), the other side's answer is not HTTP, its body ended early or is longer than the request's limit, or it redirected more times than the request allows. A response with a failing status, such as 404, is not an error; `response.succeeded()` tells it apart.
+
 ### ChannelClosedError
 
 A `threads.send` on a closed channel, whose message is then destroyed, or a `threads.receive` (or `select`) on a closed channel that has no messages left. `threads.receive_result` tells the end of a channel apart without an error.

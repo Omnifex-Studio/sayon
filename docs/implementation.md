@@ -226,6 +226,14 @@ The interpreter loads a library with `LoadLibraryW` the first time one of its fu
 
 `memory.read` and `memory.write` load and store with alignment 1, after checking for `null_pointer`. The checker allows them only the types that have the `RAW` trait: numbers and pointers.
 
+## Sockets
+
+Sockets are entries of the stream table, beside files, so a connection is released and shared like a file, and the stream primitives read and write both. Every socket is non-blocking. An operation that cannot finish yet records what it waits for (a socket to read or write, or a connection being made) and returns the internal error `Blocked`; the scheduler then lets the task wait, as for a channel, and runs the operation again when the socket may be ready. So each operation is written to be run again: a read takes data out of the connection's buffer only when it returns it, and a write appends its bytes to the connection's output only once, when less than a megabyte is waiting. The output goes out as the socket takes it, on each operation of the connection and whenever the scheduler waits; what is left when a connection is dropped is sent with a short wait.
+
+When no task can go on but some wait for sockets, the scheduler waits in the system's `poll` (`WSAPoll` on Windows) for any of their sockets, and those with output, until the earliest timer or socket deadline. A socket's timeout counts from when its operation first waited; past it, the operation fails with `TimeoutError`. Making a connection blocks, to find the host's addresses and then to connect, so it runs on a thread of its own, which wakes the scheduler through a loopback datagram socket of the scheduler's poll. In the interpreter a waiting primitive leaves its frame at the operation, as a channel operation does; in compiled programs `sayon_host_call` waits in a loop on the task's own stack.
+
+The HTTP client is Sayon code in `standard/network`, over connections.
+
 ## Typed JSON
 
 `json.from_json<T>` and `json.to_json<T>` contain `typed_decode` and `typed_encode`, built-ins only `standard/json` can call. They require the `JSON` trait, which, like `CLONE`, is recorded on an explicit type parameter, so a call of `json.decode<T>` is checked against its caller's type. The trait holds for numbers, booleans, strings, `nothing`, arrays and string-keyed dictionaries of such types, structures and enums whose fields have it, and unions whose members read disjoint kinds of JSON value (an enum reads text and objects; `Json` reads every kind).

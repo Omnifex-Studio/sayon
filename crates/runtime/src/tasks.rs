@@ -17,6 +17,7 @@
 
 use crate::ffi::{DropFn, SayonArray, SayonError, allocated, released, set_error};
 use crate::host::{CANCELLED_CODE, EXIT_CODE, exit_status};
+use crate::network::{self, IoWait};
 use std::cell::UnsafeCell;
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_void};
@@ -146,6 +147,8 @@ enum Wait {
     Select(Vec<*mut ChannelBlock>),
     Sleep(Instant),
     Yield,
+    /// A socket, or a connection being made, until a deadline.
+    Io(IoWait, Option<Instant>),
 }
 
 impl Wait {
@@ -161,6 +164,9 @@ impl Wait {
                 Wait::Select(channels) => channels.iter().any(|c| (**c).receivable()),
                 Wait::Sleep(until) => now >= *until,
                 Wait::Yield => true,
+                Wait::Io(wait, deadline) => {
+                    deadline.is_some_and(|deadline| now >= deadline) || network::ready(wait)
+                }
             }
         }
     }
@@ -264,7 +270,8 @@ fn retire_unstarted() {
 }
 
 /// The next fiber after the running one, round, that can go on; when none
-/// can yet but one sleeps, after waiting for the earliest to wake.
+/// can yet but one sleeps or waits for a socket, after waiting for the
+/// earliest to be able to.
 fn next_fiber() -> Option<usize> {
     retire_unstarted();
     loop {
@@ -277,17 +284,29 @@ fn next_fiber() -> Option<usize> {
                 return Some(index);
             }
         }
-        let wake = scheduler()
-            .fibers
-            .iter()
-            .filter(|fiber| !fiber.done)
-            .filter_map(|fiber| match fiber.wait {
-                Wait::Sleep(until) => Some(until),
+        let waiting = scheduler().fibers.iter().filter(|fiber| !fiber.done);
+        let mut wake: Option<Instant> = None;
+        let mut sockets = Vec::new();
+        for fiber in waiting {
+            let until = match &fiber.wait {
+                Wait::Sleep(until) => Some(*until),
+                Wait::Io(wait, deadline) => {
+                    sockets.push(wait.clone());
+                    *deadline
+                }
                 _ => None,
-            })
-            .min()?;
+            };
+            if let Some(until) = until {
+                wake = Some(wake.map_or(until, |w| w.min(until)));
+            }
+        }
         let _ = std::io::stdout().flush();
-        std::thread::sleep(wake.saturating_duration_since(now));
+        let timeout = wake.map(|w| w.saturating_duration_since(now));
+        if !sockets.is_empty() {
+            network::wait_any(&sockets, timeout);
+        } else {
+            std::thread::sleep(timeout?);
+        }
     }
 }
 
@@ -331,6 +350,33 @@ fn wait(what: Wait) -> Result<(), Interrupted> {
     }
     if is_cancelled(current) {
         return Err(Interrupted::Cancelled);
+    }
+    Ok(())
+}
+
+/// Why a wait for a socket ended without it being ready.
+pub(crate) enum IoStop {
+    Cancelled,
+    TimedOut,
+}
+
+/// Lets the running task wait for a socket, or for a connection being
+/// made, while the other tasks run.
+pub(crate) fn wait_io(what: IoWait, deadline: Option<Instant>) -> Result<(), IoStop> {
+    let current = scheduler().current;
+    if is_cancelled(current) {
+        return Err(IoStop::Cancelled);
+    }
+    scheduler().fibers[current].wait = Wait::Io(what.clone(), deadline);
+    if let Some(index) = next_fiber() {
+        switch_to(index);
+    }
+    scheduler().fibers[current].wait = Wait::None;
+    if is_cancelled(current) {
+        return Err(IoStop::Cancelled);
+    }
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) && !network::ready(&what) {
+        return Err(IoStop::TimedOut);
     }
     Ok(())
 }

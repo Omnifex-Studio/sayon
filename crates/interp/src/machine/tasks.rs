@@ -10,6 +10,7 @@
 //! so that they finish instead of acting twice.
 
 use super::*;
+use sayon_runtime::network::{self, BLOCKED_CODE, IoWait};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -23,6 +24,9 @@ pub(super) struct Fiber {
     pub(super) done: bool,
     /// Where `select` starts looking, after the channel it chose last.
     pub(super) cursor: usize,
+    /// When the operation the task runs first waited for a socket, which
+    /// its timeout counts from.
+    pub(super) io_started: Option<Instant>,
 }
 
 impl Fiber {
@@ -35,6 +39,7 @@ impl Fiber {
             started: true,
             done: false,
             cursor: 0,
+            io_started: None,
         }
     }
 }
@@ -49,6 +54,13 @@ pub(super) enum Wait {
     Select(Vec<Rc<RefCell<ChannelState>>>),
     Sleep(Instant),
     Yield,
+    /// A socket, or a connection being made, until a deadline after which
+    /// the operation fails, having waited for `timeout`.
+    Io {
+        wait: IoWait,
+        deadline: Option<Instant>,
+        timeout: Option<Duration>,
+    },
 }
 
 impl Wait {
@@ -61,6 +73,9 @@ impl Wait {
             Wait::Select(channels) => channels.iter().any(|c| c.borrow().receivable()),
             Wait::Sleep(until) => now >= *until,
             Wait::Yield => true,
+            Wait::Io { wait, deadline, .. } => {
+                deadline.is_some_and(|deadline| now >= deadline) || network::ready(wait)
+            }
         }
     }
 }
@@ -73,6 +88,8 @@ pub(super) enum Resume {
     Yielded,
     /// No task could ever go on; the waiting operation fails.
     Deadlock,
+    /// A socket was not ready within its timeout.
+    TimedOut(Duration),
 }
 
 /// The outcome of a task operation.
@@ -91,6 +108,9 @@ fn channel_of(value: &Value) -> Rc<RefCell<ChannelState>> {
 
 impl<'m> Machine<'m> {
     pub(super) fn is_task_op(op: &Op) -> bool {
+        if let Op::Host { function, .. } = op {
+            return function.may_wait();
+        }
         matches!(
             op,
             Op::Spawn { .. }
@@ -121,6 +141,14 @@ impl<'m> Machine<'m> {
 
     pub(super) fn task_op(&mut self, op: &Op, span: Span) -> Progress {
         let resume = self.fibers[self.current].resume.take();
+        if let Op::Host {
+            function,
+            args,
+            tags,
+        } = op
+        {
+            return self.host_waiting(*function, args, *tags, resume, span);
+        }
         if let Some(Resume::Deadlock) = resume {
             return Progress::Failed(self.task_error(
                 "DeadlockError",
@@ -160,6 +188,7 @@ impl<'m> Machine<'m> {
                     started: false,
                     done: false,
                     cursor: 0,
+                    io_started: None,
                 });
                 Progress::Done(Value::Task(TaskHandle(state)))
             }
@@ -355,17 +384,28 @@ impl<'m> Machine<'m> {
                     return Some(index);
                 }
             }
-            let wake = self
-                .fibers
-                .iter()
-                .filter(|fiber| !fiber.done)
-                .filter_map(|fiber| match &fiber.wait {
+            let mut wake: Option<Instant> = None;
+            let mut sockets = Vec::new();
+            for fiber in self.fibers.iter().filter(|fiber| !fiber.done) {
+                let until = match &fiber.wait {
                     Some(Wait::Sleep(until)) => Some(*until),
+                    Some(Wait::Io { wait, deadline, .. }) => {
+                        sockets.push(wait.clone());
+                        *deadline
+                    }
                     _ => None,
-                })
-                .min()?;
+                };
+                if let Some(until) = until {
+                    wake = Some(wake.map_or(until, |w| w.min(until)));
+                }
+            }
             let _ = self.out.flush();
-            std::thread::sleep(wake.saturating_duration_since(now));
+            let timeout = wake.map(|w| w.saturating_duration_since(now));
+            if !sockets.is_empty() {
+                network::wait_any(&sockets, timeout);
+            } else {
+                std::thread::sleep(timeout?);
+            }
         }
     }
 
@@ -396,8 +436,64 @@ impl<'m> Machine<'m> {
             Some(Wait::Rendezvous(_, number)) => Some(Resume::Rendezvous(number)),
             Some(Wait::Sleep(_)) => Some(Resume::Slept),
             Some(Wait::Yield) => Some(Resume::Yielded),
+            Some(Wait::Io {
+                wait,
+                deadline: Some(deadline),
+                timeout,
+            }) if Instant::now() >= deadline && !network::ready(&wait) => {
+                Some(Resume::TimedOut(timeout.unwrap_or_default()))
+            }
             _ => None,
         };
+    }
+
+    /// Runs a primitive that can wait for a socket: when it must, the task
+    /// waits while others run, and runs it again once the socket may be
+    /// ready, until it finishes or the socket's timeout passes.
+    fn host_waiting(
+        &mut self,
+        function: Host,
+        args: &[Operand],
+        tags: Option<(u32, u32)>,
+        resume: Option<Resume>,
+        span: Span,
+    ) -> Progress {
+        if let Some(Resume::TimedOut(timeout)) = resume {
+            self.fibers[self.current].io_started = None;
+            return Progress::Failed(self.task_error(
+                "TimeoutError",
+                network::timeout_message(timeout),
+                span,
+            ));
+        }
+        match self.host(function, args, tags, span) {
+            Err(problem) if problem.code == BLOCKED_CODE => {
+                let blocked = network::take_blocked().expect("what the primitive waits for");
+                if self.cancelled() {
+                    self.fibers[self.current].io_started = None;
+                    return Progress::Failed(self.task_error(
+                        CANCELLED_CODE,
+                        "the task was cancelled".to_string(),
+                        span,
+                    ));
+                }
+                let started = *self.fibers[self.current]
+                    .io_started
+                    .get_or_insert_with(Instant::now);
+                Progress::Wait(Wait::Io {
+                    wait: blocked.wait,
+                    deadline: blocked.timeout.map(|timeout| started + timeout),
+                    timeout: blocked.timeout,
+                })
+            }
+            result => {
+                self.fibers[self.current].io_started = None;
+                match result {
+                    Ok(value) => Progress::Done(value),
+                    Err(problem) => Progress::Failed(problem),
+                }
+            }
+        }
     }
 
     /// Leaves the running task waiting and switches to one that can go on.

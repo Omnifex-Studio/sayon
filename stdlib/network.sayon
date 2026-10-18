@@ -1,0 +1,420 @@
+# TCP connections and listeners, UDP datagrams, and an HTTP client.
+#
+#     network = import("standard/network.sayon")
+#
+#     response = network.get("http://localhost:8080/status")
+#     print(response.status, response.text())
+#
+#     connection = network.connect("localhost", 7000)
+#     connection.write_line("hello")
+#     print(connection.read_line())
+#     connection.close()
+#
+# Waiting for the network, to connect, for data that has not arrived, or
+# for the other side to take what was sent, lets other tasks run (see
+# standard/threads). Connections, listeners, and datagram sockets can each
+# have a timeout: an operation of theirs that waits longer fails with
+# TimeoutError. The network's failures are ConnectionError (refused,
+# closed by the other side, unreachable), AddressError (a host without an
+# address, an address in use), TimeoutError, and NetworkError for the
+# rest; HTTP adds HttpError.
+
+io = import("standard/io.sayon")
+strings = import("standard/strings.sayon")
+time = import("standard/time.sayon")
+
+# A host and a port. The host is a name, or a numeric address such as
+# "127.0.0.1" or "::1".
+type Address = [host: string, port: integer]
+
+# The address as text, as in "127.0.0.1:80", or "[::1]:80".
+function address_text(address: Address) -> string
+    if strings.contains(address.host, ":")
+        return "[{address.host}]:{address.port}"
+    return "{address.host}:{address.port}"
+
+# The numeric addresses of a host, in the order the system prefers them.
+# Fails with AddressError for a host that has none. Finding them waits for
+# the system, without letting other tasks run.
+function resolve(host: string) -> Array<string>
+    return host_resolve(host)
+
+# ----- connections -----------------------------------------------------------------
+
+# A TCP connection, from `connect` or from a listener's `accept`. It is read
+# and written like a file of standard/io, in lines, text, and bytes, and
+# what it reads is what the other side has sent so far. `close()` waits
+# for what was written to go, and closes it; a connection that is not
+# closed is closed when it is no longer used. A connection has one owner,
+# so it cannot be cloned.
+type Connection = [stream: HostStream, line_limit: integer]
+
+# Connects to a port of a host, trying each of its addresses in turn. Fails
+# with ConnectionError when nothing accepts the connection, AddressError
+# when the host has no address, and TimeoutError after `timeout`.
+function connect(host: string, port: integer, timeout = time.seconds(30)) -> Connection
+    stream = host_connect(host, port, timeout.nanoseconds)
+    host_connect_finish(stream)
+    return Connection(stream = stream, line_limit = io.LINE_LIMIT)
+
+# The next line without its line ending (LF or CRLF), or nothing once the
+# other side has finished sending.
+function connection_read_line(update connection: Connection) -> string or nothing
+    return host_stream_read_line(connection.stream, connection.line_limit)
+
+# The lines to come, for a `for` loop, until the other side finishes.
+function connection_lines(update connection: Connection) -> io.Lines
+    return io.Lines(stream = host_stream_share(connection.stream), limit = connection.line_limit)
+
+# Everything the other side sends until it finishes, as text.
+function connection_read(update connection: Connection) -> string
+    return host_stream_read(connection.stream)
+
+# Up to `count` bytes: as many as have arrived, waiting for one when none
+# has. None once the other side has finished sending.
+function connection_read_bytes(update connection: Connection, count: integer) -> Array<byte>
+    return host_stream_read_bytes(connection.stream, count)
+
+function connection_write(update connection: Connection, text: string)
+    host_stream_write(connection.stream, text)
+
+# Writes text and a line ending, LF.
+function connection_write_line(update connection: Connection, text: string)
+    host_stream_write(connection.stream, text + "\n")
+
+function connection_write_bytes(update connection: Connection, bytes: Array<byte>)
+    host_stream_write_bytes(connection.stream, bytes)
+
+# Waits until what was written has gone to the system.
+function connection_flush(update connection: Connection)
+    host_stream_flush(connection.stream)
+
+# Finishes sending: the other side reads to the end of what was written,
+# and this side can still read.
+function connection_finish_sending(update connection: Connection)
+    host_finish_sending(connection.stream)
+
+# How long each read or write may wait; zero for no limit, which is how a
+# connection starts.
+function connection_set_timeout(update connection: Connection, timeout: time.Duration)
+    host_socket_timeout(connection.stream, timeout.nanoseconds)
+
+# This computer's address and port of the connection.
+function connection_local_address(connection: Connection) -> Address
+    return parse_address(host_local_address(connection.stream))
+
+# The other side's address and port.
+function connection_peer_address(connection: Connection) -> Address
+    return parse_address(host_peer_address(connection.stream))
+
+# Waits for what was written to go, and closes the connection.
+function connection_close(own connection: Connection)
+    host_stream_close(connection.stream)
+
+# ----- listeners -------------------------------------------------------------------
+
+# A listener for connections to a port of this computer, from `listen`.
+type Listener = [stream: HostStream]
+
+# Listens on a port: 0 picks a free one, which `address()` tells. A host of
+# "127.0.0.1" or "localhost" accepts connections only from this computer,
+# and "0.0.0.0" from any. Fails with AddressError when the port is in use.
+function listen(host: string, port: integer) -> Listener
+    return Listener(stream = host_listen(host, port))
+
+# The next connection made to the listener, waiting for one.
+function listener_accept(update listener: Listener) -> Connection
+    return Connection(stream = host_accept(listener.stream), line_limit = io.LINE_LIMIT)
+
+# The address and port the listener listens on.
+function listener_address(listener: Listener) -> Address
+    return parse_address(host_local_address(listener.stream))
+
+# How long `accept` may wait; zero for no limit, which is how a listener
+# starts.
+function listener_set_timeout(update listener: Listener, timeout: time.Duration)
+    host_socket_timeout(listener.stream, timeout.nanoseconds)
+
+# Stops listening.
+function listener_close(own listener: Listener)
+    host_stream_close(listener.stream)
+
+# ----- datagrams -------------------------------------------------------------------
+
+# A UDP socket, from `bind`, which sends and receives datagrams: messages of
+# bytes, each delivered whole or not at all, in no promised order.
+type DatagramSocket = [stream: HostStream]
+
+# A datagram received, and where it came from.
+type Datagram = [bytes: Array<byte>, sender: Address]
+
+# A socket for datagrams on a port of this computer; 0 picks a free one.
+function bind(host: string, port: integer) -> DatagramSocket
+    return DatagramSocket(stream = host_datagram_bind(host, port))
+
+# Sends one datagram to a port of a host.
+function datagram_socket_send(update socket: DatagramSocket, bytes: Array<byte>, host: string, port: integer)
+    host_datagram_send(socket.stream, bytes, host, port)
+
+# The next datagram, waiting for one. Up to `size` bytes of it are kept.
+function datagram_socket_receive(update socket: DatagramSocket, size = 65536) -> Datagram
+    bytes = host_datagram_receive(socket.stream, size)
+    return Datagram(bytes = bytes, sender = parse_address(host_datagram_sender(socket.stream)))
+
+# The address and port the socket uses.
+function datagram_socket_address(socket: DatagramSocket) -> Address
+    return parse_address(host_local_address(socket.stream))
+
+# How long `receive` and `send` may wait; zero for no limit, which is how a
+# socket starts.
+function datagram_socket_set_timeout(update socket: DatagramSocket, timeout: time.Duration)
+    host_socket_timeout(socket.stream, timeout.nanoseconds)
+
+function datagram_socket_close(own socket: DatagramSocket)
+    host_stream_close(socket.stream)
+
+# "127.0.0.1:80" or "[::1]:80" as an Address.
+private function parse_address(text: string) -> Address
+    characters = strings.characters(text)
+    colon = length(characters) - 1
+    while colon > 0 and characters[colon] != ":"
+        colon -= 1
+    host = strings.slice(text, 0, colon)
+    if strings.starts_with(host, "[")
+        host = strings.slice(host, 1, length(host) - 1)
+    port = decimal(strings.slice(text, colon + 1, length(text)))
+    if port == nothing
+        return Address(host = host, port = 0)
+    return Address(host = host, port = port)
+
+# The value of decimal digits, or nothing for text that is not one.
+private function decimal(text: string) -> integer or nothing
+    if text == ""
+        return nothing
+    value = 0
+    for character in text
+        digit = strings.code(character) - strings.code("0")
+        if digit < 0 or digit > 9
+            return nothing
+        value = value * 10 + digit
+    return value
+
+# The value of hexadecimal digits, or nothing for text that is not one.
+private function hexadecimal(text: string) -> integer or nothing
+    if text == ""
+        return nothing
+    value = 0
+    for character in strings.lower(text)
+        digit = strings.find("0123456789abcdef", character)
+        if digit == nothing
+            return nothing
+        value = value * 16 + digit
+    return value
+
+# ----- HTTP ------------------------------------------------------------------------
+
+# The answer to an HTTP request: its status (such as 200 or 404) and the
+# text that comes with it, its headers by lowercase name, its body, and the
+# URL that gave it, after any redirects.
+type Response = [status: integer, reason: string, headers: Dict<string, string>, body: Array<byte>, url: string]
+
+# The body as text. Fails with EncodingError when it is not UTF-8.
+function response_text(response: Response) -> string
+    return strings.from_bytes(response.body)
+
+# A header's value, by its name in any letter case, or nothing when the
+# response has none of that name.
+function response_header(response: Response, name: string) -> string or nothing
+    key = strings.lower(name)
+    if haskey(response.headers, key)
+        return clone(response.headers[key])
+    return nothing
+
+# Whether the status is a success, 200 to 299.
+function response_succeeded(response: Response) -> boolean
+    return response.status >= 200 and response.status < 300
+
+# Gets a URL.
+function get(url: string, headers: Dict<string, string> = []) -> Response
+    return request("GET", url, headers)
+
+# Posts text to a URL.
+function post(url: string, body: string, content_type = "text/plain; charset=utf-8") -> Response
+    headers: Dict<string, string> = ["content-type" = clone(content_type)]
+    return request("POST", url, headers, strings.bytes(body))
+
+# Sends an HTTP/1.1 request and gives the response, following up to
+# `redirects` redirects. Each step of connecting, sending, and receiving
+# may wait for `timeout`; a body longer than `limit` bytes fails with
+# HttpError, as do a response that is not HTTP and a URL that is not
+# `http://`. A status that reports a failure, such as 404, is a response
+# like any other; `response.succeeded()` tells it apart.
+function request(method: string, url: string, headers: Dict<string, string> = [], body: Array<byte> = [], timeout = time.seconds(30), redirects = 10, limit = 16_777_216) -> Response
+    verb = strings.upper(method)
+    current = clone(url)
+    content = clone(body)
+    followed = 0
+    while true
+        response = exchange(verb, current, headers, content, timeout, limit)
+        location = response_header(response, "location")
+        if location == nothing or not is_redirect(response.status)
+            return response
+        if followed == redirects
+            host_http_fail("{url} redirected more than {redirects} times")
+        followed += 1
+        current = join_url(current, location)
+        # These redirects repeat the request as a GET without a body.
+        if response.status == 303 or verb == "POST" and response.status < 303
+            verb = "GET"
+            content = []
+
+private function is_redirect(status: integer) -> boolean
+    return status == 301 or status == 302 or status == 303 or status == 307 or status == 308
+
+# A URL split into its parts.
+private type Url = [host: string, port: integer, target: string]
+
+private function parse_url(url: string) -> Url
+    if strings.starts_with(url, "https://")
+        host_http_fail("{url} needs TLS, which this release does not have yet")
+    if not strings.starts_with(url, "http://")
+        host_http_fail("{url} is not an http:// URL")
+    rest = strings.slice(url, 7, length(url))
+    slash = strings.find(rest, "/")
+    authority = clone(rest)
+    target = "/"
+    if slash != nothing
+        authority = strings.slice(rest, 0, slash)
+        target = strings.slice(rest, slash, length(rest))
+    if authority == ""
+        host_http_fail("{url} has no host")
+    host = clone(authority)
+    port = 80
+    colon = strings.find(authority, ":")
+    if colon != nothing and not strings.starts_with(authority, "[")
+        host = strings.slice(authority, 0, colon)
+        number = decimal(strings.slice(authority, colon + 1, length(authority)))
+        if number == nothing
+            host_http_fail("{url} has a port that is not a number")
+        port = number
+    if strings.starts_with(host, "[")
+        host = strings.slice(host, 1, length(host) - 1)
+    return Url(host = host, port = port, target = target)
+
+# Where a redirect leads: a URL of its own, or a path on the same host.
+private function join_url(base: string, location: string) -> string
+    if strings.starts_with(location, "http://") or strings.starts_with(location, "https://")
+        return clone(location)
+    parts = parse_url(base)
+    origin = "http://{address_text(Address(host = clone(parts.host), port = parts.port))}"
+    if strings.starts_with(location, "/")
+        return origin + location
+    last = 0
+    position = 0
+    for character in parts.target
+        if character == "/"
+            last = position
+        position += 1
+    return origin + strings.slice(parts.target, 0, last + 1) + location
+
+# One request and its response, on a connection of its own.
+private function exchange(method: string, url: string, headers: Dict<string, string>, body: Array<byte>, timeout: time.Duration, limit: integer) -> Response
+    parts = parse_url(url)
+    connection = connect(parts.host, parts.port, timeout)
+    connection.set_timeout(timeout)
+    host = clone(parts.host)
+    if strings.contains(host, ":")
+        host = "[{host}]"
+    if parts.port != 80
+        host = "{host}:{parts.port}"
+    lines = ["{method} {parts.target} HTTP/1.1", "host: {host}", "user-agent: sayon", "connection: close"]
+    if length(body) > 0 or method == "POST" or method == "PUT"
+        push(lines, "content-length: {length(body)}")
+    for name, value in headers
+        push(lines, "{name}: {value}")
+    connection.write(strings.join(lines, "\r\n") + "\r\n\r\n")
+    connection.write_bytes(body)
+    connection.flush()
+
+    status_line = connection.read_line()
+    if status_line == nothing
+        host_http_fail("{url} closed the connection without a response")
+    words = strings.split(status_line, " ")
+    if length(words) < 2 or not strings.starts_with(words[0], "HTTP/")
+        host_http_fail("{url} did not answer in HTTP")
+    status = decimal(words[1])
+    if status == nothing
+        host_http_fail("{url} answered with a status that is not a number")
+    rest: Array<string> = []
+    for index in range(2, length(words))
+        push(rest, clone(words[index]))
+    reason = strings.join(rest, " ")
+    received: Dict<string, string> = []
+    while true
+        line = connection.read_line()
+        if line == nothing or line == ""
+            break
+        colon = strings.find(line, ":")
+        if colon != nothing
+            name = strings.lower(strings.trim(strings.slice(line, 0, colon)))
+            value = strings.trim(strings.slice(line, colon + 1, length(line)))
+            if haskey(received, name)
+                value = received[name] + ", " + value
+            received[name] = value
+    content: Array<byte> = []
+    if method != "HEAD" and status >= 200 and status != 204 and status != 304
+        content = read_body(connection, received, url, limit)
+    connection.close()
+    return Response(status = status, reason = reason, headers = received, body = content, url = clone(url))
+
+private function read_body(update connection: Connection, headers: Dict<string, string>, url: string, limit: integer) -> Array<byte>
+    if haskey(headers, "transfer-encoding") and strings.contains(strings.lower(headers["transfer-encoding"]), "chunked")
+        return read_chunks(connection, url, limit)
+    if haskey(headers, "content-length")
+        size = decimal(headers["content-length"])
+        if size == nothing
+            host_http_fail("{url} sent a length that is not a number")
+        if size > limit
+            host_http_fail("the body from {url} is longer than the limit of {limit} bytes")
+        return read_exactly(connection, size, url)
+    body: Array<byte> = []
+    while true
+        part = connection.read_bytes(65536)
+        if length(part) == 0
+            return body
+        for byte in part
+            push(body, byte)
+        if length(body) > limit
+            host_http_fail("the body from {url} is longer than the limit of {limit} bytes")
+
+private function read_chunks(update connection: Connection, url: string, limit: integer) -> Array<byte>
+    body: Array<byte> = []
+    while true
+        line = connection.read_line()
+        if line == nothing
+            host_http_fail("{url} ended its body early")
+        digits = strings.trim(strings.split(line, ";")[0])
+        size = hexadecimal(digits)
+        if size == nothing
+            host_http_fail("{url} sent a chunk size that is not a number")
+        if size == 0
+            # Trailing headers end with an empty line.
+            while true
+                trailer = connection.read_line()
+                if trailer == nothing or trailer == ""
+                    return body
+        if length(body) + size > limit
+            host_http_fail("the body from {url} is longer than the limit of {limit} bytes")
+        for byte in read_exactly(connection, size, url)
+            push(body, byte)
+        connection.read_line()
+
+private function read_exactly(update connection: Connection, size: integer, url: string) -> Array<byte>
+    bytes: Array<byte> = []
+    while length(bytes) < size
+        part = connection.read_bytes(size - length(bytes))
+        if length(part) == 0
+            host_http_fail("{url} ended its body early")
+        for byte in part
+            push(bytes, byte)
+    return bytes

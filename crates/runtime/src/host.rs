@@ -148,6 +148,51 @@ hosts! {
     ReadBytes = "read_bytes"(Pointer, Integer) -> Bytes;
     WriteBytes = "write_bytes"(Pointer, Bytes) -> Nothing;
     PointerOffset = "pointer_offset"(Pointer, Integer) -> Pointer;
+    Connect = "connect"(String, Integer, Integer) -> Stream;
+    ConnectFinish = "connect_finish"(Stream) -> Nothing;
+    Listen = "listen"(String, Integer) -> Stream;
+    Accept = "accept"(Stream) -> Stream;
+    DatagramBind = "datagram_bind"(String, Integer) -> Stream;
+    DatagramSend = "datagram_send"(Stream, Bytes, String, Integer) -> Nothing;
+    DatagramReceive = "datagram_receive"(Stream, Integer) -> Bytes;
+    DatagramSender = "datagram_sender"(Stream) -> String;
+    SocketTimeout = "socket_timeout"(Stream, Integer) -> Nothing;
+    LocalAddress = "local_address"(Stream) -> String;
+    PeerAddress = "peer_address"(Stream) -> String;
+    FinishSending = "finish_sending"(Stream) -> Nothing;
+    Resolve = "resolve"(String) -> StringArray;
+    HttpFail = "http_fail"(String) -> Nothing;
+}
+
+impl Host {
+    /// Whether the primitive always fails, so that the code after a call of
+    /// it never runs.
+    pub fn always_fails(self) -> bool {
+        matches!(
+            self,
+            Host::ParseError | Host::JsonFail | Host::HttpFail | Host::Exit
+        )
+    }
+
+    /// Whether the primitive can wait for a socket, returning
+    /// `network::BLOCKED_CODE` until it can finish.
+    pub fn may_wait(self) -> bool {
+        matches!(
+            self,
+            Host::StreamReadLine
+                | Host::StreamRead
+                | Host::StreamReadBytes
+                | Host::StreamWrite
+                | Host::StreamWriteBytes
+                | Host::StreamFlush
+                | Host::StreamClose
+                | Host::ConnectFinish
+                | Host::Accept
+                | Host::DatagramSend
+                | Host::DatagramReceive
+                | Host::FinishSending
+        )
+    }
 }
 
 /// The code of the error `os.exit` raises to end the program. `catch` and
@@ -517,6 +562,35 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
                 .map_err(|e| io_error("write", path, &e))
         }
         Host::StandardInput => Ok(V::Stream(crate::streams::standard_input())),
+        Host::Connect => {
+            crate::streams::connect(string(args, 0), integer(args, 1), integer(args, 2))
+                .map(V::Stream)
+        }
+        Host::ConnectFinish => crate::streams::connect_finish(stream(args, 0)).map(|()| V::Nothing),
+        Host::Listen => crate::streams::listen(string(args, 0), integer(args, 1)).map(V::Stream),
+        Host::Accept => crate::streams::accept(stream(args, 0)).map(V::Stream),
+        Host::DatagramBind => {
+            crate::streams::datagram_bind(string(args, 0), integer(args, 1)).map(V::Stream)
+        }
+        Host::DatagramSend => crate::streams::datagram_send(
+            stream(args, 0),
+            bytes(args, 1),
+            string(args, 2),
+            integer(args, 3),
+        )
+        .map(|()| V::Nothing),
+        Host::DatagramReceive => {
+            crate::streams::datagram_receive(stream(args, 0), integer(args, 1)).map(V::Bytes)
+        }
+        Host::DatagramSender => crate::streams::datagram_sender(stream(args, 0)).map(V::String),
+        Host::SocketTimeout => {
+            crate::streams::set_timeout(stream(args, 0), integer(args, 1)).map(|()| V::Nothing)
+        }
+        Host::LocalAddress => crate::streams::local_address(stream(args, 0)).map(V::String),
+        Host::PeerAddress => crate::streams::peer_address(stream(args, 0)).map(V::String),
+        Host::FinishSending => crate::streams::finish_sending(stream(args, 0)).map(|()| V::Nothing),
+        Host::Resolve => crate::network::resolve(string(args, 0)).map(V::Strings),
+        Host::HttpFail => Err(("HttpError", string(args, 0).to_string())),
         Host::Run => run(string(args, 0), &args[1], string(args, 2)),
         Host::JsonInteger => json_integer(string(args, 0), string(args, 1), integer(args, 2))
             .map(|value| V::Integer(value as i64)),

@@ -740,6 +740,7 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 | `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters`, `code` (a character's Unicode code), `character` (the character with a code), `graphemes`, `grapheme_count`, `bytes`, `byte_view`, `from_bytes` (strict UTF-8), `from_bytes_lossy` |
 | `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer`; typed values: `decode`, `encode_value`, `from_json`, `to_json` |
 | `standard/threads.sayon` | `spawn`, `join`, `detach`, `pause`, `new_channel`, `new_unbounded_channel`, `send`, `recoverable_send` (a `SendResult<T>`), `receive`, `receive_result` (a `ReceiveResult<T>`), `close`, `select`; see [Tasks and channels](#tasks-and-channels) |
+| `standard/network.sayon` | `connect` for a `Connection` (`read_line`, `lines`, `read`, `read_bytes`, `write`, `write_line`, `write_bytes`, `flush`, `finish_sending`, `set_timeout`, `local_address`, `peer_address`, `close`), `listen` for a `Listener` (`accept`, `address`, `set_timeout`, `close`), `bind` for a `DatagramSocket` (`send`, `receive`, `address`, `set_timeout`, `close`), `resolve`, `address_text`; HTTP: `get`, `post`, `request`, and `Response` (`text`, `header`, `succeeded`); see [Networking](#networking) |
 | `standard/time.sayon` | `Duration` (`nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `add`, `subtract`, `scale`, `in_seconds`, `in_milliseconds`, `describe`), the monotonic clock (`start`, `elapsed`, `between`, `sleep`), and UTC dates (`DateTime`, `now`, `unix_seconds`, `from_unix`, `to_unix`, `shift`, `difference`, `weekday`, `is_leap_year`, `days_in_month`, `format` and `parse` for ISO 8601) |
 | `standard/collections.sayon` | `sort` and `sort_by` (stable), `reverse`; `Set<T>` with `new_set`, `set_add`, `set_contains`, `set_remove`, `set_size`, `set_values` (as methods: `set.add(value)`); `Queue<T>` with `new_queue`, `queue_add`, `queue_take`, `queue_size` |
 | `standard/memory.sayon` | `read`, `write`, `read_bytes`, `write_bytes`, `read_text`, `offset`, `address`; see [C functions and unsafe code](#c-functions-and-unsafe-code) |
@@ -882,6 +883,36 @@ threads.join(sender)
 - When the main task finishes, the tasks still running are cancelled: each stops where it waits, running its `finally` blocks and cleanup, which `catch` and `try` do not stop. A task whose handle is dropped without a `join` is cancelled the same way (`W_UNUSED_TASK` warns of a handle dropped at once), and one that has not started never runs; `detach(task)` lets a task run on until the main task ends. A task that fails without being joined is reported and makes the program fail. `os.exit` in any task ends the whole program in order.
 
 Tasks run on one thread, so values they share through `Shared` and `Cell` never change under them in the middle of an operation; running tasks in parallel on several threads arrives with `Mutex` in this milestone. Compiled programs can run tasks on Windows so far.
+
+### Networking
+
+`standard/network.sayon` makes TCP connections, listens for them, sends and receives UDP datagrams, and makes HTTP requests.
+
+```sayon
+network = import("standard/network.sayon")
+threads = import("standard/threads.sayon")
+
+listener = network.listen("127.0.0.1", 0)       # 0: any free port
+port = listener.address().port
+server = threads.spawn(function()
+    connection = listener.accept()
+    connection.write_line("hello, {connection.read_line()}")
+    connection.close()
+)
+
+client = network.connect("127.0.0.1", port)
+client.write_line("world")
+print(client.read_line())                       # hello, world
+client.close()
+threads.join(server)
+```
+
+- A `Connection` reads and writes like a file: `read_line`, `lines`, `read` (everything until the other side finishes), `read_bytes` (as many bytes as have arrived, up to a count), `write`, `write_line`, `write_bytes`, `flush`, `close`. `finish_sending()` ends what this side sends while it can still read, and `local_address()` and `peer_address()` give `Address` values with a `host` and a `port`.
+- `network.listen(host, port)` gives a `Listener`, whose `accept()` waits for the next connection; `network.bind(host, port)` gives a `DatagramSocket`, which `send`s datagrams to a host and `receive`s them as a `Datagram` of `bytes` and its `sender`. `network.resolve(host)` gives a host's numeric addresses.
+- Waiting for the network lets other tasks run, so one program can be both a server and its client. `connect` takes a `timeout` (30 seconds unless given), and `set_timeout(duration)` gives a connection, listener, or datagram socket one for each of its operations; an operation that waits longer fails with `TimeoutError`. Other failures are `ConnectionError`, `AddressError`, and `NetworkError`.
+- What a connection writes goes out as the other side takes it; a write waits only when a megabyte is still waiting to go, and `flush` and `close` wait until all of it has gone.
+
+`network.get(url)`, `network.post(url, text)`, and `network.request(method, url, headers, body, timeout, redirects, limit)` make HTTP/1.1 requests and give a `Response`: its `status` and `reason`, its `headers` with lowercase names, its `body` as bytes, and the `url` that answered. `response.text()` reads the body as text, `response.header(name)` finds a header in any letter case, and `response.succeeded()` tells a status from 200 to 299. Requests follow up to 10 redirects and accept bodies up to 16 MiB unless told otherwise; a failing status such as 404 is a response, not an error, while an answer that is not HTTP fails with `HttpError`. Only `http://` URLs work so far: `https://` needs TLS, which is still to come.
 
 ### Display
 

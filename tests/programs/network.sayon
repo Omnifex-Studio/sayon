@@ -1,0 +1,110 @@
+# TCP, UDP, and HTTP between tasks of one program, on this computer.
+network = import("standard/network.sayon")
+strings = import("standard/strings.sayon")
+threads = import("standard/threads.sayon")
+time = import("standard/time.sayon")
+
+# An echo server: each line comes back in capitals.
+listener = network.listen("127.0.0.1", 0)
+port = listener.address().port
+echo = threads.spawn(function()
+    connection = listener.accept()
+    while true
+        line = connection.read_line()
+        if line == nothing
+            break
+        connection.write_line(strings.upper(line))
+    connection.close()
+)
+client = network.connect("127.0.0.1", port)
+client.write_line("hello")
+client.write_line("sayon")
+print(client.read_line(), client.read_line())
+print(client.peer_address().port == port, client.local_address().host)
+client.finish_sending()
+print(client.read_line())
+client.close()
+threads.join(echo)
+
+# A small HTTP server, for one request at a time.
+function respond(update connection: network.Connection, status: string, headers: Array<string>, body: string)
+    connection.write("HTTP/1.1 {status}\r\n")
+    for header in headers
+        connection.write(header + "\r\n")
+    connection.write("\r\n" + body)
+
+function serve(update listener: network.Listener, count: integer)
+    for _ in range(count)
+        connection = listener.accept()
+        first = connection.read_line()
+        request_line = ""
+        if first != nothing
+            request_line = first
+        length_header = 0
+        while true
+            line = connection.read_line()
+            if line == nothing or line == ""
+                break
+            if strings.starts_with(line, "content-length: ")
+                digits = strings.slice(line, 16, length(line))
+                number = tonumber(digits)
+                if typeof(number) == "integer"
+                    length_header = number
+        words = strings.split(request_line, " ")
+        path = clone(words[1])
+        if path == "/hello"
+            respond(connection, "200 OK", ["content-length: 11", "x-greeting: Hi"], "Hello, HTTP")
+        elseif path == "/chunked"
+            respond(connection, "200 OK", ["transfer-encoding: chunked"], "5\r\nHello\r\n7\r\n, again\r\n0\r\n\r\n")
+        elseif path == "/moved"
+            respond(connection, "302 Found", ["location: /hello", "content-length: 0"], "")
+        elseif path == "/echo"
+            body = strings.from_bytes(connection.read_bytes(length_header))
+            respond(connection, "201 Created", [], "{words[0]} {body}")
+        else
+            respond(connection, "404 Not Found", ["content-length: 7"], "missing")
+        connection.close()
+
+web = network.listen("127.0.0.1", 0)
+base = "http://127.0.0.1:{web.address().port}"
+server = threads.spawn(function()
+    serve(web, 6)
+)
+hello = network.get(base + "/hello")
+print(hello.status, hello.reason, hello.text(), hello.header("X-Greeting"))
+chunked = network.get(base + "/chunked")
+print(chunked.text())
+moved = network.get(base + "/moved")
+print(moved.status, moved.text(), strings.ends_with(moved.url, "/hello"))
+posted = network.post(base + "/echo", "some text")
+print(posted.status, posted.text(), posted.succeeded())
+missing = network.get(base + "/nowhere")
+print(missing.status, missing.text(), missing.succeeded())
+threads.join(server)
+
+# Datagrams.
+receiver = network.bind("127.0.0.1", 0)
+sender = network.bind("127.0.0.1", 0)
+sender.send(strings.bytes("ping"), "127.0.0.1", receiver.address().port)
+datagram = receiver.receive()
+print(strings.from_bytes(datagram.bytes), datagram.sender.port == sender.address().port)
+
+# Waiting longer than a timeout fails.
+quiet = network.listen("127.0.0.1", 0)
+quiet.set_timeout(time.milliseconds(50))
+waited = try quiet.accept()
+if waited is error
+    print(waited.code, waited.message)
+silent = network.connect("127.0.0.1", quiet.address().port)
+silent.set_timeout(time.milliseconds(50))
+nothing_said = try silent.read_line()
+if nothing_said is error
+    print(nothing_said.code, nothing_said.message)
+
+# Mistakes are errors.
+outcome = try network.get("https://127.0.0.1/")
+if outcome is error
+    print(outcome.code, outcome.message)
+bad_port = try network.listen("127.0.0.1", 70000)
+if bad_port is error
+    print(bad_port.code, bad_port.message)

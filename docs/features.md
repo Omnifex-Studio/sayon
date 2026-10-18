@@ -101,7 +101,10 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `standard/collections`: stable sorting, `Set`, `Queue`; `remove` and `swap` built-ins | experimental | M2 |
 | `standard/time`: durations, monotonic clock, sleep, UTC dates, ISO 8601 | experimental | M2 |
 | `standard/time` time zones, timers, deadlines | planned | M3 |
-| `standard/network`; tasks on several threads in parallel | planned | M3 |
+| `standard/network`: TCP connections and listeners, UDP datagrams, address resolution, timeouts; waiting for sockets lets other tasks run | experimental | M3 |
+| `standard/network` HTTP/1.1 client: `get`, `post`, `request`, chunked and sized bodies, redirects, body size limits | experimental | M3 |
+| TLS (`https://`) with certificate verification, streaming HTTP bodies | planned | M3 |
+| Tasks on several threads in parallel | planned | M3 |
 | `standard.graphics` | planned | M4 baseline |
 
 ## Platforms

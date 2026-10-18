@@ -252,13 +252,14 @@ pub(crate) fn stmt_exits(stmt: &hir::Stmt) -> bool {
     use hir::StmtKind::*;
     match &stmt.kind {
         Return(_) | Break | Continue => true,
-        Expr(expr) => matches!(
-            expr.kind,
-            hir::ExprKind::Builtin {
-                builtin: hir::Builtin::Error | hir::Builtin::Raise,
-                ..
-            }
-        ),
+        Expr(expr) => match &expr.kind {
+            hir::ExprKind::Builtin { builtin, .. } => match builtin {
+                hir::Builtin::Error | hir::Builtin::Raise => true,
+                hir::Builtin::Host(host) => host.always_fails(),
+                _ => false,
+            },
+            _ => false,
+        },
         If {
             then_block,
             else_block: Some(else_block),

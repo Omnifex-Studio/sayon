@@ -1,4 +1,5 @@
-//! Open files and standard input, for `standard/io`'s `File`.
+//! Open files, standard input, and sockets, for `standard/io`'s `File` and
+//! `standard/network`'s connections.
 //!
 //! A stream is a number naming an entry of a process-wide table, so that the
 //! interpreter and compiled programs share one implementation. Each value
@@ -10,6 +11,7 @@
 //! different file.
 
 use crate::host::{HostError, io_error};
+use crate::network::{BLOCKED_CODE, Connecting, Connection, Datagrams, Listener};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -21,7 +23,15 @@ enum Handle {
     /// Standard input, read through the process's own buffer, which
     /// `io.read_line` shares.
     Input,
+    Socket(Socket),
     Closed,
+}
+
+enum Socket {
+    Connection(Box<Connection>),
+    Listener(Listener),
+    Datagrams(Datagrams),
+    Connecting(Connecting),
 }
 
 struct Entry {
@@ -71,8 +81,56 @@ fn reader<T>(
             "IOError",
             format!("\"{}\" was opened for writing, not reading", entry.path),
         )),
+        Handle::Socket(_) => Err(not_connection(&entry.path)),
         Handle::Closed => Err(closed(&entry.path)),
     }
+}
+
+fn not_connection(name: &str) -> HostError {
+    ("IOError", format!("{name} is not a connection"))
+}
+
+/// Runs `f` on the socket of a stream.
+fn socket<T>(
+    id: i64,
+    f: impl FnOnce(&mut Socket, &str) -> Result<T, HostError>,
+) -> Result<T, HostError> {
+    let mut table = table();
+    let entry = table
+        .entries
+        .get_mut(&id)
+        .ok_or(("IOError", "the socket is closed".to_string()))?;
+    match &mut entry.handle {
+        Handle::Socket(socket) => f(socket, &entry.path),
+        Handle::Closed => Err((
+            "IOError",
+            format!("the socket for {} is closed", entry.path),
+        )),
+        _ => Err(not_connection(&entry.path)),
+    }
+}
+
+/// Runs `f` on the connection of a stream, when it is one.
+fn connection<T>(
+    id: i64,
+    f: impl FnOnce(&mut Connection) -> Result<T, HostError>,
+) -> Option<Result<T, HostError>> {
+    let mut table = table();
+    match table.entries.get_mut(&id).map(|entry| &mut entry.handle) {
+        Some(Handle::Socket(Socket::Connection(connection))) => Some(f(connection)),
+        _ => None,
+    }
+}
+
+/// Runs `f` on a connection, or fails for a stream that is none.
+fn with_connection<T>(
+    id: i64,
+    f: impl FnOnce(&mut Connection) -> Result<T, HostError>,
+) -> Result<T, HostError> {
+    socket(id, |socket, name| match socket {
+        Socket::Connection(connection) => f(connection),
+        _ => Err(not_connection(name)),
+    })
 }
 
 /// Runs `f` on the open writer of a stream.
@@ -91,6 +149,7 @@ fn writer<T>(
             "IOError",
             format!("\"{}\" was opened for reading, not writing", entry.path),
         )),
+        Handle::Socket(_) => Err(not_connection(&entry.path)),
         Handle::Closed => Err(closed(&entry.path)),
     }
 }
@@ -144,6 +203,174 @@ pub fn open(path: &str, mode: &str) -> Result<i64, HostError> {
     Ok(insert(handle, path))
 }
 
+fn port(value: i64) -> Result<u16, HostError> {
+    u16::try_from(value).map_err(|_| {
+        (
+            "ValueError",
+            format!("{value} is not a port; ports are 0 to 65535"),
+        )
+    })
+}
+
+fn timeout(nanoseconds: i64) -> Result<Option<std::time::Duration>, HostError> {
+    match nanoseconds {
+        0 => Ok(None),
+        n if n < 0 => Err(("ValueError", "a timeout cannot be negative".to_string())),
+        n => Ok(Some(std::time::Duration::from_nanos(n as u64))),
+    }
+}
+
+/// Starts connecting to a host. `connect_finish` waits for the connection,
+/// or fails with the reason there is none.
+pub fn connect(host: &str, port_number: i64, timeout_ns: i64) -> Result<i64, HostError> {
+    let port = port(port_number)?;
+    let timeout = timeout(timeout_ns)?;
+    let connecting = Connecting::start(host, port, timeout);
+    Ok(insert(
+        Handle::Socket(Socket::Connecting(connecting)),
+        &format!("{host}:{port}"),
+    ))
+}
+
+pub fn connect_finish(id: i64) -> Result<(), HostError> {
+    let mut table = table();
+    let entry = table
+        .entries
+        .get_mut(&id)
+        .ok_or(("IOError", "the socket is closed".to_string()))?;
+    let Handle::Socket(Socket::Connecting(connecting)) = &entry.handle else {
+        return Ok(());
+    };
+    match connecting.finish() {
+        Ok(connection) => {
+            entry.handle = Handle::Socket(Socket::Connection(Box::new(connection)));
+            Ok(())
+        }
+        Err(error) => {
+            if error.0 != BLOCKED_CODE {
+                entry.handle = Handle::Closed;
+            }
+            Err(error)
+        }
+    }
+}
+
+/// A listener for connections to a port of this computer.
+pub fn listen(host: &str, port_number: i64) -> Result<i64, HostError> {
+    let listener = Listener::bind(host, port(port_number)?)?;
+    Ok(insert(
+        Handle::Socket(Socket::Listener(listener)),
+        &format!("the listener on {host}:{port_number}"),
+    ))
+}
+
+/// The next connection made to a listener, as a stream of its own.
+pub fn accept(id: i64) -> Result<i64, HostError> {
+    let connection = socket(id, |socket, name| match socket {
+        Socket::Listener(listener) => listener.accept(),
+        _ => Err(("IOError", format!("{name} is not a listener"))),
+    })?;
+    let name = connection.name.clone();
+    Ok(insert(
+        Handle::Socket(Socket::Connection(Box::new(connection))),
+        &name,
+    ))
+}
+
+/// A socket for datagrams, sent from and received at a port of this
+/// computer.
+pub fn datagram_bind(host: &str, port_number: i64) -> Result<i64, HostError> {
+    let socket = Datagrams::bind(host, port(port_number)?)?;
+    Ok(insert(
+        Handle::Socket(Socket::Datagrams(socket)),
+        &format!("the datagram socket on {host}:{port_number}"),
+    ))
+}
+
+fn datagrams<T>(
+    id: i64,
+    f: impl FnOnce(&mut Datagrams) -> Result<T, HostError>,
+) -> Result<T, HostError> {
+    socket(id, |socket, name| match socket {
+        Socket::Datagrams(datagrams) => f(datagrams),
+        _ => Err(("IOError", format!("{name} is not a datagram socket"))),
+    })
+}
+
+pub fn datagram_send(id: i64, bytes: &[u8], host: &str, port_number: i64) -> Result<(), HostError> {
+    let port = port(port_number)?;
+    datagrams(id, |socket| socket.send(bytes, host, port))
+}
+
+pub fn datagram_receive(id: i64, size: i64) -> Result<Vec<u8>, HostError> {
+    if size < 0 {
+        return Err(("ValueError", format!("cannot receive {size} bytes")));
+    }
+    datagrams(id, |socket| socket.receive(size as usize))
+}
+
+pub fn datagram_sender(id: i64) -> Result<String, HostError> {
+    datagrams(id, |socket| Ok(socket.sender()))
+}
+
+/// How long each operation of a socket may wait; 0 for no limit.
+pub fn set_timeout(id: i64, timeout_ns: i64) -> Result<(), HostError> {
+    let limit = timeout(timeout_ns)?;
+    socket(id, |socket, _| {
+        match socket {
+            Socket::Connection(connection) => connection.timeout = limit,
+            Socket::Listener(listener) => listener.timeout = limit,
+            Socket::Datagrams(datagrams) => datagrams.timeout = limit,
+            Socket::Connecting(_) => {}
+        }
+        Ok(())
+    })
+}
+
+/// This computer's address and port of a socket.
+pub fn local_address(id: i64) -> Result<String, HostError> {
+    socket(id, |socket, name| match socket {
+        Socket::Connection(connection) => connection.local_address(),
+        Socket::Listener(listener) => listener.address(),
+        Socket::Datagrams(datagrams) => datagrams.address(),
+        Socket::Connecting(_) => Err(not_connection(name)),
+    })
+}
+
+/// The other side's address and port of a connection.
+pub fn peer_address(id: i64) -> Result<String, HostError> {
+    with_connection(id, |connection| connection.peer_address())
+}
+
+pub fn finish_sending(id: i64) -> Result<(), HostError> {
+    with_connection(id, |connection| connection.finish_sending())
+}
+
+/// Sends what connections hold of their output, as their sockets take it.
+pub(crate) fn send_output() {
+    for entry in table().entries.values_mut() {
+        if let Handle::Socket(Socket::Connection(connection)) = &mut entry.handle
+            && connection.has_output()
+        {
+            let _ = connection.send_some();
+        }
+    }
+}
+
+/// The sockets of the connections that still hold output.
+pub(crate) fn sockets_with_output() -> Vec<u64> {
+    table()
+        .entries
+        .values()
+        .filter_map(|entry| match &entry.handle {
+            Handle::Socket(Socket::Connection(connection)) if connection.has_output() => {
+                Some(connection.raw())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Adds a reference to a stream, for a clone of a value holding it.
 pub fn share(id: i64) {
     if let Some(entry) = table().entries.get_mut(&id) {
@@ -169,8 +396,12 @@ pub fn release(id: i64) {
 /// Writes what every open stream still buffers, when the program ends.
 pub fn flush_all() {
     for entry in table().entries.values_mut() {
-        if let Handle::Writer(writer) = &mut entry.handle {
-            let _ = writer.flush();
+        match &mut entry.handle {
+            Handle::Writer(writer) => {
+                let _ = writer.flush();
+            }
+            Handle::Socket(Socket::Connection(connection)) => connection.send_rest(),
+            _ => {}
         }
     }
 }
@@ -180,6 +411,9 @@ pub fn flush_all() {
 /// stays unread.
 pub fn read_line(id: i64, limit: i64) -> Result<Option<String>, HostError> {
     let limit = limit.max(0) as usize;
+    if let Some(result) = connection(id, |connection| connection.read_line(limit)) {
+        return result;
+    }
     reader(id, |reader, path| {
         let too_long = || {
             (
@@ -225,6 +459,9 @@ pub fn read_line(id: i64, limit: i64) -> Result<Option<String>, HostError> {
 
 /// The rest of the stream as text.
 pub fn read_rest(id: i64) -> Result<String, HostError> {
+    if let Some(result) = connection(id, |connection| connection.read_rest()) {
+        return result;
+    }
     reader(id, |reader, path| {
         let mut bytes = Vec::new();
         reader
@@ -240,6 +477,9 @@ pub fn read_bytes(id: i64, count: i64) -> Result<Vec<u8>, HostError> {
     if count < 0 {
         return Err(("ValueError", format!("cannot read {count} bytes")));
     }
+    if let Some(result) = connection(id, |connection| connection.read_bytes(count as usize)) {
+        return result;
+    }
     reader(id, |reader, path| {
         let mut bytes = Vec::new();
         reader
@@ -251,6 +491,9 @@ pub fn read_bytes(id: i64, count: i64) -> Result<Vec<u8>, HostError> {
 }
 
 pub fn write(id: i64, bytes: &[u8]) -> Result<(), HostError> {
+    if let Some(result) = connection(id, |connection| connection.write(bytes)) {
+        return result;
+    }
     writer(id, |writer, path| {
         writer
             .write_all(bytes)
@@ -261,6 +504,9 @@ pub fn write(id: i64, bytes: &[u8]) -> Result<(), HostError> {
 /// Passes buffered output to the system. It does not wait for the data to
 /// reach the disk.
 pub fn flush(id: i64) -> Result<(), HostError> {
+    if let Some(result) = connection(id, |connection| connection.flush()) {
+        return result;
+    }
     writer(id, |writer, path| {
         writer.flush().map_err(|e| io_error("write", path, &e))
     })
@@ -277,7 +523,7 @@ pub fn position(id: i64) -> Result<i64, HostError> {
     let result = match &mut entry.handle {
         Handle::Reader(reader) => reader.stream_position(),
         Handle::Writer(writer) => writer.stream_position(),
-        Handle::Input => return Err(unpositioned(&path)),
+        Handle::Input | Handle::Socket(_) => return Err(unpositioned(&path)),
         Handle::Closed => return Err(closed(&path)),
     };
     result
@@ -303,7 +549,7 @@ pub fn seek(id: i64, position: i64) -> Result<(), HostError> {
     let result = match &mut entry.handle {
         Handle::Reader(reader) => reader.seek(target),
         Handle::Writer(writer) => writer.seek(target),
-        Handle::Input => return Err(unpositioned(&path)),
+        Handle::Input | Handle::Socket(_) => return Err(unpositioned(&path)),
         Handle::Closed => return Err(closed(&path)),
     };
     result
@@ -311,8 +557,12 @@ pub fn seek(id: i64, position: i64) -> Result<(), HostError> {
         .map_err(|e| io_error("move in", &path, &e))
 }
 
-/// Finishes a stream: writes what it buffers and closes the file.
+/// Finishes a stream: writes what it buffers and closes the file. A
+/// connection's output goes first, which can wait.
 pub fn close(id: i64) -> Result<(), HostError> {
+    if let Some(result) = connection(id, |connection| connection.flush()) {
+        result?;
+    }
     let mut table = table();
     let entry = table
         .entries
@@ -326,7 +576,7 @@ pub fn close(id: i64) -> Result<(), HostError> {
             .into_inner()
             .map(drop)
             .map_err(|e| io_error("write", &path, e.error())),
-        Handle::Reader(_) | Handle::Input => Ok(()),
+        Handle::Reader(_) | Handle::Input | Handle::Socket(_) => Ok(()),
         Handle::Closed => Err(("IOError", format!("\"{path}\" is already closed"))),
     }
 }
@@ -357,6 +607,7 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
                 format!("\"{}\" was opened for writing, not reading", source.path),
             ));
         }
+        Handle::Socket(_) => return Err(("IOError", "io.copy copies between files".to_string())),
         Handle::Closed => return Err(closed(&source.path)),
     };
     let writer = match &mut target.handle {
@@ -367,6 +618,7 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
                 format!("\"{}\" was opened for reading, not writing", target.path),
             ));
         }
+        Handle::Socket(_) => return Err(("IOError", "io.copy copies between files".to_string())),
         Handle::Closed => return Err(closed(&target.path)),
     };
     let mut buffer = [0u8; 64 * 1024];

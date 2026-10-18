@@ -6,6 +6,7 @@
 pub mod ffi;
 pub mod graphemes;
 pub mod host;
+pub mod network;
 pub mod streams;
 pub mod tasks;
 pub mod text;

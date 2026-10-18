@@ -2992,6 +2992,9 @@ impl<'l, 'p> FnLower<'l, 'p> {
                     Some(dest),
                     span,
                 );
+                if function.always_fails() {
+                    self.terminate(Terminator::Unreachable);
+                }
             }
             Builtin::Convert => {
                 let from = self.ty(&args[0].expr.ty);
