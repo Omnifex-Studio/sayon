@@ -120,6 +120,24 @@ hosts! {
     StreamCopy = "stream_copy"(Stream, Stream) -> Integer;
     ReadFileBytes = "read_file_bytes"(String) -> Bytes;
     WriteFileBytes = "write_file_bytes"(String, Bytes) -> Nothing;
+    Exit = "exit"(Integer) -> Nothing;
+    Walk = "walk"(String) -> StringArray;
+    IsLink = "is_link"(String) -> Boolean;
+}
+
+/// The code of the error `os.exit` raises to end the program. `catch` and
+/// `try` let it pass, so the program ends after its `finally` blocks and
+/// cleanup; the entry boundary turns it into the exit status, which is the
+/// last word of its message.
+pub const EXIT_CODE: &str = "Exit";
+
+/// The exit status an `Exit` error carries.
+pub fn exit_status(message: &str) -> i32 {
+    message
+        .rsplit(' ')
+        .next()
+        .and_then(|word| word.parse().ok())
+        .unwrap_or(1)
 }
 
 impl Host {
@@ -259,6 +277,41 @@ fn random() -> f64 {
     bits as f64 / (1u64 << 53) as f64
 }
 
+/// The entries of a directory, sorted by name, as paths relative to the
+/// directory walked (`prefix`), with whether each is a directory to enter.
+/// A symbolic link is never entered, even when it points to a directory.
+fn walk_entries(
+    directory: &std::path::Path,
+    prefix: &str,
+) -> Result<Vec<(String, std::path::PathBuf, bool)>, HostError> {
+    let shown = directory.display().to_string();
+    let entries = std::fs::read_dir(directory).map_err(|e| io_error("list", &shown, &e))?;
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| io_error("list", &shown, &e))?;
+        let name = entry.file_name().into_string().map_err(|raw| {
+            (
+                "EncodingError",
+                format!(
+                    "\"{}\" in \"{shown}\" is not valid Unicode",
+                    raw.to_string_lossy()
+                ),
+            )
+        })?;
+        let kind = entry
+            .file_type()
+            .map_err(|e| io_error("inspect", &entry.path().display().to_string(), &e))?;
+        let relative = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        found.push((relative, entry.path(), kind.is_dir()));
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(found)
+}
+
 /// Runs a primitive. Output primitives write to the process's standard
 /// streams; the interpreter routes `Write` through its own output instead so
 /// it stays ordered with `print`.
@@ -350,6 +403,35 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
             std::fs::write(path, bytes(args, 1))
                 .map(|()| V::Nothing)
                 .map_err(|e| io_error("write", path, &e))
+        }
+        Host::Walk => {
+            let mut stack = walk_entries(std::path::Path::new(string(args, 0)), "")?;
+            stack.reverse();
+            let mut found = Vec::new();
+            while let Some((relative, path, directory)) = stack.pop() {
+                if directory {
+                    let mut inside = walk_entries(&path, &relative)?;
+                    inside.reverse();
+                    stack.extend(inside);
+                }
+                found.push(relative);
+            }
+            Ok(V::Strings(found))
+        }
+        Host::IsLink => Ok(V::Boolean(
+            std::fs::symlink_metadata(string(args, 0))
+                .map(|metadata| metadata.file_type().is_symlink())
+                .unwrap_or(false),
+        )),
+        Host::Exit => {
+            let status = integer(args, 0);
+            if !(0..=255).contains(&status) {
+                return Err((
+                    "ValueError",
+                    format!("{status} is not a portable exit status; use 0 to 255"),
+                ));
+            }
+            Err((EXIT_CODE, format!("the program exits with status {status}")))
         }
         Host::Arguments => Ok(V::Strings(
             ARGUMENTS.lock().unwrap_or_else(|e| e.into_inner()).clone(),

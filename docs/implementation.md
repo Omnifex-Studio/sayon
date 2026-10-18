@@ -218,6 +218,8 @@ An `Error` is a runtime object with a code, a message, and the source location o
 
 A `try` expression evaluates its operand under a handler of its own, as a `try` statement does: the operand's temporaries are a scope that the error edge destroys, and the handler moves the error out of the slot into `failure(problem)`. On success the operand moves into `success(value)`. `Outcome<T>` is the prelude's first type definition, an ordinary enum with those two variants, so it has the enum layout and `match` works on it. Narrowing an `Outcome` by `is error` records the variant as well as the type, so reading the variable reads that variant's field; this keeps `Outcome<Error>` unambiguous.
 
+`os.exit` raises an error with the code `Exit`. Every `catch` and `try` handler first compares the pending error's code with it and, when it matches, passes the error on as if it had no handler, after its `finally` block; so the error reaches the entry boundary, through every cleanup on the way, and the boundary exits with the status it carries instead of reporting it.
+
 The program's entry runs the module constant initializers, then the entry function. An error escaping either is reported as `error: uncaught CODE: message` followed by `  --> file:line:column`, and the program exits with status 1 after releasing module constants.
 
 ## Limits

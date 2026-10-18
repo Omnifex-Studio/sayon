@@ -19,6 +19,17 @@ function is_directory(path: string) -> boolean
 function list(path: string) -> Array<string>
     return host_list_directory(path)
 
+# Every file and directory below a directory, as paths relative to it joined
+# with "/", such as "docs/notes.txt". Each directory comes just before what
+# it holds, and the entries of a directory are sorted by name. A symbolic
+# link is listed but not followed, so a walk always ends.
+function walk(path: string) -> Array<string>
+    return host_walk(path)
+
+# Whether the path itself is a symbolic link, whatever it points to.
+function is_link(path: string) -> boolean
+    return host_is_link(path)
+
 # A file's size in bytes.
 function size(path: string) -> integer
     return host_file_size(path)

@@ -20,3 +20,10 @@ function platform() -> string
 # The directory the program is running in.
 function current_directory() -> string
     return host_current_directory()
+
+# Ends the program with an exit status from 0 (success) to 255. The program
+# ends in order: `finally` blocks run and values are cleaned up on the way
+# out, though `catch` and `try` do not stop it. Fails with ValueError for a
+# status outside 0 to 255.
+function exit(code = 0)
+    host_exit(code)

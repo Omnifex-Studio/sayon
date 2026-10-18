@@ -607,8 +607,8 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 | Module | Functions |
 |---|---|
 | `standard/io.sayon` | `read_file`, `write_file`, `append_file`, `read_lines`, `read_file_bytes`, `write_file_bytes`, `read_line` (standard input; `nothing` at the end), `write` (no newline), `write_error`; `open` for a `File` with the methods `read_line`, `lines`, `read`, `read_bytes`, `write`, `write_line`, `write_bytes`, `flush`, `position`, `seek`, `close`; `copy` |
-| `standard/os.sayon` | `arguments` (the words after `--` with `sayon run`), `environment`, `platform`, `current_directory` |
-| `standard/filesystem.sayon` | `exists`, `is_file`, `is_directory`, `list` (sorted names), `size`, `create_directory`, `remove`, `rename`, `copy`, `join`, `name`, `parent`, `extension` |
+| `standard/os.sayon` | `arguments` (the words after `--` with `sayon run`), `environment`, `platform`, `current_directory`, `exit` |
+| `standard/filesystem.sayon` | `exists`, `is_file`, `is_directory`, `is_link`, `list` (sorted names), `walk` (everything below a directory), `size`, `create_directory`, `remove`, `rename`, `copy`, `join`, `name`, `parent`, `extension` |
 | `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters`, `code` (a character's Unicode code), `character` (the character with a code) |
 | `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer` |
 | `standard/time.sayon` | `Duration` (`nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `add`, `subtract`, `scale`, `in_seconds`, `in_milliseconds`, `describe`), the monotonic clock (`start`, `elapsed`, `between`, `sleep`), and UTC dates (`DateTime`, `now`, `unix_seconds`, `from_unix`, `to_unix`, `shift`, `difference`, `weekday`, `is_leap_year`, `days_in_month`, `format` and `parse` for ISO 8601) |
@@ -627,6 +627,10 @@ while true
 ```
 
 String positions count Unicode characters. File and directory failures raise `IOError`; text that is not UTF-8 raises `EncodingError`. `math.random()` is not suitable for security.
+
+`os.exit(status)` ends the program with a status from 0 to 255 (another status raises `ValueError`). It ends it in order: `finally` blocks run and values are cleaned up on the way out, so open files are written, but `catch` and `try` do not stop it. In a test, it fails the test.
+
+`filesystem.walk(path)` lists every file and directory below `path`, as paths relative to it joined with `/`. Each directory comes just before what it holds, and each directory's entries are sorted by name. A symbolic link is listed but not followed, so a walk always ends; `filesystem.is_link(path)` tells whether a path is one.
 
 ### Files
 

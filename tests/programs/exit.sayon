@@ -1,0 +1,20 @@
+# `os.exit` ends the program in order: `finally` blocks run, but `catch` and
+# `try` do not stop it.
+os = import("standard/os.sayon")
+
+outcome = try os.exit(300)
+if outcome is error
+    print(outcome.code, outcome.message)
+
+function leave()
+    try
+        try
+            os.exit(3)
+        catch problem
+            print("not caught", problem.code)
+    finally
+        print("finally runs")
+
+names = ["kept", "until", "the", "end"]
+attempt = try leave()
+print("not reached", attempt is error, names)

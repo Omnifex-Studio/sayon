@@ -34,10 +34,18 @@ print(filesystem.extension("archive.tar.gz"), "[" + filesystem.extension(".profi
 
 # files and directories
 root = "library_check.tmp"
+
+# Removes a directory and everything in it, deepest first.
+function remove_all(path: string)
+    entries = filesystem.walk(path)
+    while length(entries) > 0
+        entry = pop(entries)
+        if entry != nothing
+            filesystem.remove(filesystem.join(path, entry))
+    filesystem.remove(path)
+
 if filesystem.exists(root)
-    for name in filesystem.list(root)
-        filesystem.remove(filesystem.join(root, name))
-    filesystem.remove(root)
+    remove_all(root)
 filesystem.create_directory(root)
 first = filesystem.join(root, "first.txt")
 io.write_file(first, "one\ntwo\n")
@@ -46,9 +54,10 @@ filesystem.copy(first, filesystem.join(root, "copy.txt"))
 filesystem.rename(filesystem.join(root, "copy.txt"), filesystem.join(root, "second.txt"))
 print(filesystem.list(root), filesystem.size(first), io.read_lines(first))
 print(filesystem.is_directory(root), filesystem.is_file(first), filesystem.exists(filesystem.join(root, "copy.txt")))
-for name in filesystem.list(root)
-    filesystem.remove(filesystem.join(root, name))
-filesystem.remove(root)
+filesystem.create_directory(filesystem.join(root, "inner/nested"))
+io.write_file(filesystem.join(root, "inner/nested/deep.txt"), "deep")
+print(filesystem.walk(root), filesystem.is_link(root))
+remove_all(root)
 print(filesystem.exists(root))
 try
     filesystem.size("missing.tmp")

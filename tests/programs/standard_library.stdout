@@ -15,5 +15,6 @@ docs/notes.txt notes.txt a/b
 gz []
 ["first.txt", "second.txt"] 14 ["one", "two", "three"]
 true true false
+["first.txt", "inner", "inner/nested", "inner/nested/deep.txt", "second.txt"] false
 false
 IOError

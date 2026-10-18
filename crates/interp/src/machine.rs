@@ -7,7 +7,7 @@
 use crate::value::*;
 use sayon_check::types::{FloatType, IntType, Type};
 use sayon_ir::*;
-use sayon_runtime::host::{Host, HostArg, HostType, HostValue, invoke};
+use sayon_runtime::host::{EXIT_CODE, Host, HostArg, HostType, HostValue, exit_status, invoke};
 use sayon_runtime::text::{
     Number, parse_number, position_error, range_length, view_bounds_message,
 };
@@ -91,8 +91,18 @@ impl<'m> Machine<'m> {
         }
     }
 
-    /// Initializes globals, runs the entry function, and returns its exit status.
+    /// Initializes globals, runs the entry function, and returns its exit
+    /// status, or the one `os.exit` gave.
     pub fn run(&mut self) -> Result<i32, RunError> {
+        match self.run_program() {
+            Err(RunError::Uncaught(error)) if error.code == EXIT_CODE => {
+                Ok(exit_status(&error.message))
+            }
+            other => other,
+        }
+    }
+
+    fn run_program(&mut self) -> Result<i32, RunError> {
         let module = self.module;
         for (global, initializer) in &module.initializers {
             let value = self.call(*initializer)?;

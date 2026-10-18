@@ -9,6 +9,7 @@
 use crate::ir::*;
 use sayon_check::hir::{self, Builtin, ErrorField, LocalId, Usage};
 use sayon_check::types::{FieldDef, IntType, NamedType, Type, TypeDef, TypeDefKind, TypeId};
+use sayon_runtime::host::EXIT_CODE;
 use sayon_syntax::ast::{BinaryOp, ParamMode, UnaryOp};
 use sayon_syntax::{Diagnostic, Span};
 use std::collections::HashMap;
@@ -1397,6 +1398,8 @@ impl<'l, 'p> FnLower<'l, 'p> {
         self.switch_to(on_body_error);
         match catch {
             Some((local, handler)) => {
+                let exiting = self.new_block();
+                self.unless_exiting(exiting);
                 let on_handler_error = finally.map(|_| self.new_block());
                 self.push_scope();
                 self.block_scopes.push(self.scopes.len() - 1);
@@ -1423,11 +1426,50 @@ impl<'l, 'p> FnLower<'l, 'p> {
                     self.switch_to(target);
                     self.finally_then_propagate(finally_depth);
                 }
+                self.switch_to(exiting);
+                self.finally_then_propagate(finally_depth);
             }
             None => self.finally_then_propagate(finally_depth),
         }
         self.finallies.truncate(finally_depth);
         self.switch_to(after);
+    }
+
+    /// At a handler: continues when the pending error is an ordinary one,
+    /// and jumps to `exiting` when it is the program exiting (`os.exit`),
+    /// which `catch` and `try` never stop.
+    fn unless_exiting(&mut self, exiting: BlockId) {
+        self.push_scope();
+        let code = self.temp(Type::String);
+        let error = Place::slot(self.f.error_slot);
+        self.assign(
+            Place::slot(code),
+            Rvalue::ErrorCode(Operand::Borrow {
+                place: error,
+                mutable: false,
+            }),
+        );
+        let flag = self.new_slot(Type::Boolean, SlotKind::Value, None);
+        self.assign(
+            Place::slot(flag),
+            Rvalue::Compare {
+                op: CompareOp::Equal,
+                ty: Type::String,
+                lhs: Operand::Borrow {
+                    place: Place::slot(code),
+                    mutable: false,
+                },
+                rhs: Operand::Const(Constant::Str(EXIT_CODE.to_string())),
+            },
+        );
+        self.pop_scope();
+        let handle = self.new_block();
+        self.terminate(Terminator::Branch {
+            condition: Operand::Copy(Place::slot(flag)),
+            then_block: exiting,
+            else_block: handle,
+        });
+        self.switch_to(handle);
     }
 
     /// Runs the `finally` block of the region at `depth` on a normal exit.
@@ -2221,6 +2263,8 @@ impl<'l, 'p> FnLower<'l, 'p> {
 
         // The error edge has already destroyed the temporaries of the value.
         self.switch_to(on_error);
+        let exiting = self.new_block();
+        self.unless_exiting(exiting);
         let problem = Operand::Move(Place::slot(self.f.error_slot));
         self.assign(
             dest,
@@ -2231,6 +2275,9 @@ impl<'l, 'p> FnLower<'l, 'p> {
             },
         );
         self.goto(join);
+        self.switch_to(exiting);
+        let target = self.error_target();
+        self.goto(target);
         self.switch_to(join);
     }
 

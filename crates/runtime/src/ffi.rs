@@ -1083,6 +1083,9 @@ pub unsafe extern "C" fn sayon_report_uncaught(e: *mut SayonError) -> i32 {
         }
         let error = Box::from_raw(e);
         released();
+        if error.code == crate::host::EXIT_CODE {
+            return crate::host::exit_status(&error.message);
+        }
         eprintln!("error: uncaught {}: {}", error.code, error.message);
         if let Some(location) = &error.location {
             eprintln!("  --> {location}");
