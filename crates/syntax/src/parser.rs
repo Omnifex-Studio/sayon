@@ -1192,7 +1192,11 @@ impl<'t> Parser<'t> {
                             && !(self.nesting == 0 && next.line_start);
                     }
                 }
-                // `or` is deliberately excluded so `a < b or c > (d)` stays a comparison.
+                // `or` directly inside the first `<` is a comparison, as in
+                // `a < b or c > (d)`; deeper, such as `Array<integer or
+                // string>`, it can only be a union, since comparisons do not
+                // chain.
+                TokenKind::Keyword(Keyword::Or) if depth >= 2 => {}
                 TokenKind::Identifier(_)
                 | TokenKind::Comma
                 | TokenKind::Dot

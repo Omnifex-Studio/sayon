@@ -171,7 +171,7 @@ print(identity(42), identity("text"))   # 42 text
 print(add(1, 2), add("con", "cat"))     # 3 concat
 ```
 
-Generic functions can also be written explicitly. Explicit type parameters support only moving and borrowing their values:
+Generic functions can also be written explicitly. Values of an explicit type parameter can be moved, borrowed, cloned, and converted to and from JSON; cloning or converting one makes it a requirement of the parameter, so a call with a type that cannot be cloned, such as an open file, is an error where it is written. Other operations, such as `+` or `==`, need an inferred parameter instead.
 
 ```sayon
 function wrap<T>(own value: T) -> Array<T>
@@ -179,6 +179,8 @@ function wrap<T>(own value: T) -> Array<T>
 
 numbers = wrap<integer>(42)
 ```
+
+Type arguments may be given in a call, as `wrap<integer>(42)`. A union directly inside them, as in `f<integer or string>(x)`, reads as a comparison, so write such a type deeper inside, as in `f<Array<integer or string>>(x)`, or give it through an annotation: `value: integer or string = f(x)`.
 
 When a value's type cannot be determined, for example an empty `[]` that is never used, the compiler asks for an annotation.
 

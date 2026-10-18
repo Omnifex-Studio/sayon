@@ -27,6 +27,7 @@ print(mixed)
 for item in mixed
     print(typeof(item))
 print(json.encode_value(mixed))
+print(json.decode<Array<integer or string>>("[1, \"a\"]"))
 
 # Enums: a variant without fields is its name; one with fields an object.
 enum Figure

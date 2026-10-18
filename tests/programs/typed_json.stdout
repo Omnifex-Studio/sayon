@@ -13,6 +13,7 @@ string
 nothing
 integer
 [1,2.5,"three",null,-4]
+[1, "a"]
 [dot, circle(2.0), box(1.0, 3.0)]
 ["dot",{"circle":{"radius":2.0}},{"box":{"width":1.0,"height":3.0}}]
 [none, some("yes")]
