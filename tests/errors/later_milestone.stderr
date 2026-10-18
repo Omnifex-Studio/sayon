@@ -15,3 +15,4 @@ error[E_UNAVAILABLE]: unsafe blocks are not available yet
    = note: this release does not implement unsafe blocks; it is scheduled for M3
 
 2 errors found; nothing was run
+run `sayon explain E_UNAVAILABLE` to learn more about an error

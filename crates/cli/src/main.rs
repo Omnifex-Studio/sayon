@@ -2,6 +2,7 @@
 
 mod commands;
 mod compile;
+mod explain;
 
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -36,6 +37,7 @@ Usage:
     sayon init <name>                Create a project
     sayon clean                      Remove a project's build output
     sayon doctor                     Check the installation and native toolchain
+    sayon explain <code>             Explain an error code, such as E_MOVED_VALUE
     sayon version                    Print the version
     sayon help                       Print this help
 
@@ -165,7 +167,7 @@ fn dispatch(args: &[String]) -> u8 {
         ),
         "test" => (&["--quiet"], &["--color"], false),
         "fmt" => (&["--check"], &[], false),
-        "init" | "clean" | "doctor" => (&[], &[], false),
+        "init" | "clean" | "doctor" | "explain" => (&[], &[], false),
         other => return usage_error(&format!("unknown command `{other}`")),
     };
     let parsed = match parse_args(rest, flags, valued, allow_rest) {
@@ -224,6 +226,7 @@ fn dispatch(args: &[String]) -> u8 {
         },
         "clean" => commands::clean(&options),
         "doctor" => commands::doctor(),
+        "explain" => explain::explain(&parsed.positional),
         _ => unreachable!("checked above"),
     }
 }

@@ -16,3 +16,4 @@ error[E_UNDEFINED_NAME]: `greeting` is not defined
    = help: pass it to the function as a parameter, or declare it with `constant` if it never changes
 
 2 errors found; nothing was run
+run `sayon explain E_UNDEFINED_NAME` to learn more about an error

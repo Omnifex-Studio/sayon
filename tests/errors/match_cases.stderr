@@ -24,3 +24,4 @@ error[E_PATTERN_ARITY]: `circle` has 1 field
     = help: write `circle(_)` to match any values
 
 2 errors found; nothing was run
+run `sayon explain E_NONEXHAUSTIVE` to learn more about an error

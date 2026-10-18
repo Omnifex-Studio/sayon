@@ -7,3 +7,4 @@ error[E_MOVED_VALUE]: `names` was transferred to `consume` in an earlier iterati
    = help: `consume` takes ownership; pass clone(names) if you still need `names` afterwards
 
 1 error found; nothing was run
+run `sayon explain E_MOVED_VALUE` to learn more about an error

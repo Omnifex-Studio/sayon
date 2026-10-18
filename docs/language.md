@@ -588,7 +588,7 @@ description = "Says hello"     # optional
 
 Unknown or misspelled manifest keys are errors. Dependencies arrive with milestone M2.
 
-`sayon doctor` reports where the standard library, the runtime library, and clang were found.
+`sayon doctor` reports where the standard library, the runtime library, and clang were found. `sayon explain CODE` explains a diagnostic or runtime error code; [errors.md](errors.md) lists them all.
 
 ## Tests
 

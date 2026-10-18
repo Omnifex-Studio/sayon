@@ -38,7 +38,7 @@ Sayon is in early development and not ready for real programs. What works today:
 - Modules: programs can be split across files with `import`
 - Standard library modules for files, directories, standard input and output, program arguments, text, and math
 - `test` blocks and the `sayon test` runner, and the `sayon fmt` formatter
-- Projects with a `sayon.toml` manifest, and the `run`, `build`, `check`, `test`, `fmt`, `init`, `clean`, and `doctor` commands
+- Projects with a `sayon.toml` manifest, and the `run`, `build`, `check`, `test`, `fmt`, `init`, `clean`, `doctor`, and `explain` commands
 
 Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Dependencies and lock files come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
 
@@ -51,6 +51,7 @@ Download the installer for your device from the [releases page](https://github.c
 - [Installing](docs/installing.md): installers for each device, what they change, and uninstalling
 - [The language](docs/language.md): a reference for everything implemented so far
 - [Feature ledger](docs/features.md): what exists, what is planned, and for which milestone
+- [Error codes](docs/errors.md): what each diagnostic and runtime error code means, also shown by `sayon explain CODE`
 - [Implementation records](docs/implementation.md): grammar, ownership rules, cleanup order, data layouts, and the error ABI
 
 ## Building from source

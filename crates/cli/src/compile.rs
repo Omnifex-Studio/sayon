@@ -101,6 +101,13 @@ pub fn print_diagnostics(
     if errors > 0 {
         let noun = if errors == 1 { "error" } else { "errors" };
         let _ = writeln!(stderr, "{errors} {noun} found; {summary}");
+        if let Some(first) = diagnostics.iter().find(|d| d.is_error()) {
+            let _ = writeln!(
+                stderr,
+                "run `sayon explain {}` to learn more about an error",
+                first.code
+            );
+        }
     }
 }
 

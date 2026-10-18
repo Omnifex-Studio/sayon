@@ -21,3 +21,4 @@ error[E_MODULE_VALUE]: `shapes` is a module, not a value
    = help: use one of its definitions, such as `shapes.name`
 
 3 errors found; nothing was run
+run `sayon explain E_PRIVATE` to learn more about an error

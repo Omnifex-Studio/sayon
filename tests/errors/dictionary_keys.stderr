@@ -44,3 +44,4 @@ error[E_DUPLICATE_KEY]: the key 1 appears more than once
    |                   ^ duplicate key
 
 6 errors found; nothing was run
+run `sayon explain E_KEY_TYPE` to learn more about an error

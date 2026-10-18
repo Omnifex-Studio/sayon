@@ -23,3 +23,4 @@ error[E_UNTERMINATED_STRING]: this string is never closed
    = help: strings end with `"` on the same line
 
 3 errors found; nothing was run
+run `sayon explain E_UNEXPECTED_CHARACTER` to learn more about an error

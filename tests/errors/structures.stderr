@@ -47,3 +47,4 @@ error[E_RECORD_TYPE]: cannot tell which structure this field list builds
     = help: name the structure, for example `Point(x = 1.0, y = 2.0)`, or annotate the variable
 
 6 errors found; nothing was run
+run `sayon explain E_RECURSIVE_TYPE` to learn more about an error

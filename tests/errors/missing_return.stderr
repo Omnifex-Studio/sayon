@@ -7,3 +7,4 @@ error[E_MISSING_RETURN]: `sign` returns string but can reach its end without ret
    = help: add a `return` on every path, for example at the end of the function
 
 1 error found; nothing was run
+run `sayon explain E_MISSING_RETURN` to learn more about an error

@@ -7,3 +7,4 @@ error[E_MODULE_STATEMENT]: `modules/noisy.sayon` is imported as a module, so it 
    = help: move this into a function, or declare a value with `constant`
 
 1 error found; nothing was run
+run `sayon explain E_MODULE_STATEMENT` to learn more about an error

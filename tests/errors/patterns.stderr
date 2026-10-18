@@ -47,3 +47,4 @@ error[E_PATTERN_ARITY]: `Point` has 2 fields (x, y), but the pattern gives 1
     = help: name the fields you need instead: `Name(field = pattern)`
 
 5 errors found; nothing was run
+run `sayon explain E_OR_BINDING` to learn more about an error

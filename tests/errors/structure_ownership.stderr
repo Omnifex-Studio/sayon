@@ -27,3 +27,4 @@ error[E_MOVE_BORROWED]: cannot transfer `text`: it borrows part of the matched v
     = help: use clone(text) for a copy, or match on move(...) to take the value apart (in a case without an `if` guard)
 
 3 errors found; nothing was run
+run `sayon explain E_MOVE_OUT_OF_FIELD` to learn more about an error

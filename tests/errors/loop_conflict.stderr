@@ -10,3 +10,4 @@ error[E_BORROW_CONFLICT]: cannot change `scores` while the loop is reading it
    = help: collect the changes in another collection and apply them after the loop
 
 1 error found; nothing was run
+run `sayon explain E_BORROW_CONFLICT` to learn more about an error

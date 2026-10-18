@@ -75,3 +75,4 @@ error[E_MOVE_BORROWED]: cannot transfer `word`: it borrows an element during the
     = help: use clone(word) to keep a copy of the element
 
 8 errors found; nothing was run
+run `sayon explain E_MOVED_VALUE` to learn more about an error

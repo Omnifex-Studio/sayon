@@ -7,3 +7,4 @@ error[E_UNSUPPORTED_OPERATION]: string or nothing does not support `length`
    = help: the value might be nothing; check first, for example `if value != nothing`
 
 1 error found; nothing was run
+run `sayon explain E_UNSUPPORTED_OPERATION` to learn more about an error

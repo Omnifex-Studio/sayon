@@ -17,3 +17,4 @@ error[E_BORROW_CONFLICT]: cannot replace `word` while the loop is reading it
    = help: collect the changes in another collection and apply them after the loop
 
 2 errors found; nothing was run
+run `sayon explain E_IMMUTABLE_STRING` to learn more about an error

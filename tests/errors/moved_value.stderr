@@ -9,3 +9,4 @@ error[E_MOVED_VALUE]: `numbers` was transferred to `other`
    = help: use `other` here, or write `other = clone(numbers)` when you need two independent copies
 
 1 error found; nothing was run
+run `sayon explain E_MOVED_VALUE` to learn more about an error

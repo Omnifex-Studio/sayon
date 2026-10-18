@@ -5,3 +5,4 @@ error[E_SYNTAX]: `else if` is written as one word
    | ^^^^^^^ write `elseif`
 
 1 error found; nothing was run
+run `sayon explain E_SYNTAX` to learn more about an error

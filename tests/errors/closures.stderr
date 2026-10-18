@@ -55,3 +55,4 @@ error[E_UNSUPPORTED_OPERATION]: function(_) -> _ does not support equality compa
     |        ^^^^^^^^^^^^^^^^^^^^ these values cannot be compared
 
 8 errors found; nothing was run
+run `sayon explain E_NOT_CALLABLE` to learn more about an error

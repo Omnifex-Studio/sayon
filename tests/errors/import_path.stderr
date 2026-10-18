@@ -13,3 +13,4 @@ error[E_IMPORT_PATH]: import paths stay inside the program's root: no `..`, `.`,
    |                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 2 errors found; nothing was run
+run `sayon explain E_IMPORT_CASE` to learn more about an error

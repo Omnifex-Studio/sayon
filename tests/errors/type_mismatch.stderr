@@ -17,3 +17,4 @@ error[E_TYPE_MISMATCH]: `+` needs operands of the same type, found string and in
    = help: use interpolation such as "{value}" or tostring(...) to build text
 
 2 errors found; nothing was run
+run `sayon explain E_TYPE_MISMATCH` to learn more about an error
