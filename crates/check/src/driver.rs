@@ -117,6 +117,9 @@ impl<'a> Checker<'a> {
         let ty = annotation
             .map(|t| self.finalize_type(&t))
             .unwrap_or_else(|| value.ty.clone());
+        if matches!(ty, Type::View(..)) {
+            self.view_escape(decl.name.span, "a constant cannot hold a view".to_string());
+        }
         let entry = &mut self.constants[id.0 as usize];
         entry.ty = Some(ty);
         entry.hir = Some(value);

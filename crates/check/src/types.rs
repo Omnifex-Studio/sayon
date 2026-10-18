@@ -132,6 +132,9 @@ pub enum Type {
     Named(Box<NamedType>),
     /// A function value: a named function or a closure with its captures.
     Function(Box<FunctionType>),
+    /// A borrowed slice of an array's elements: `View<T>`, or with `true`,
+    /// the exclusive `MutableView<T>`.
+    View(Box<Type>, bool),
     /// A type parameter of a generic function.
     Param(u32),
     Var(TyVar),
@@ -187,6 +190,7 @@ impl Type {
             Type::Union(members) => members.iter().any(Type::has_vars),
             Type::Named(named) => named.args.iter().any(Type::has_vars),
             Type::Function(function) => function.types().any(Type::has_vars),
+            Type::View(element, _) => element.has_vars(),
             _ => false,
         }
     }
@@ -199,6 +203,7 @@ impl Type {
             Type::Union(members) => members.iter().any(Type::has_params),
             Type::Named(named) => named.args.iter().any(Type::has_params),
             Type::Function(function) => function.types().any(Type::has_params),
+            Type::View(element, _) => element.has_params(),
             _ => false,
         }
     }
@@ -211,6 +216,8 @@ impl Type {
             Type::Int(_) | Type::Float(_) | Type::Boolean | Type::Nothing | Type::Range => true,
             Type::Union(members) => members.iter().all(Type::is_copy),
             Type::Named(named) => named.copy && named.args.iter().all(Type::is_copy),
+            // A read-only view is copied; a mutable one is exclusive.
+            Type::View(_, mutable) => !mutable,
             Type::Unknown => true,
             _ => false,
         }
@@ -228,7 +235,37 @@ impl Type {
                 ..(**named).clone()
             }),
             Type::Function(function) => Type::function(function.map(|t| t.substitute(args))),
+            Type::View(element, mutable) => Type::view(element.substitute(args), *mutable),
             other => other.clone(),
+        }
+    }
+
+    pub fn view(element: Type, mutable: bool) -> Type {
+        Type::View(Box::new(element), mutable)
+    }
+
+    /// Whether a view appears inside this type, somewhere a view cannot be
+    /// kept: in a collection, structure, enum, union, or function result.
+    pub fn holds_view(&self) -> bool {
+        fn inside(ty: &Type) -> bool {
+            match ty {
+                Type::View(..) => true,
+                Type::Array(element) => inside(element),
+                Type::Dict(key, value) => inside(key) || inside(value),
+                Type::Union(members) => members.iter().any(inside),
+                Type::Named(named) => named.args.iter().any(inside),
+                Type::Function(function) => {
+                    inside(&function.ret) || function.params.iter().any(|(_, p)| p.holds_view())
+                }
+                _ => false,
+            }
+        }
+        match self {
+            Type::View(element, _) => inside(element),
+            Type::Function(function) => {
+                inside(&function.ret) || function.params.iter().any(|(_, p)| p.holds_view())
+            }
+            other => inside(other),
         }
     }
 
@@ -292,6 +329,8 @@ impl fmt::Display for Type {
                 }
                 Ok(())
             }
+            Type::View(element, false) => write!(f, "View<{element}>"),
+            Type::View(element, true) => write!(f, "MutableView<{element}>"),
             Type::Function(function) => {
                 f.write_str("function(")?;
                 for (index, (mode, param)) in function.params.iter().enumerate() {
@@ -447,6 +486,7 @@ pub fn non_key_part(types: &[TypeDef], ty: &Type) -> Option<Type> {
             | Type::Array(_)
             | Type::Dict(..)
             | Type::Function(_)
+            | Type::View(..)
             | Type::Error
             | Type::Range => Some(ty.clone()),
         }
@@ -460,7 +500,9 @@ pub fn holds_function(types: &[TypeDef], ty: &Type) -> bool {
         match ty {
             Type::Function(_) => true,
             Type::Union(members) => members.iter().any(|m| search(types, m, seen)),
-            Type::Array(element) | Type::Dict(_, element) => search(types, element, seen),
+            Type::Array(element) | Type::Dict(_, element) | Type::View(element, _) => {
+                search(types, element, seen)
+            }
             Type::Named(named) => {
                 if seen.contains(&named.id) {
                     return false;

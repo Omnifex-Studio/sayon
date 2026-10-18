@@ -116,6 +116,13 @@ The analysis tracks, along every control-flow path, whether each local holds a v
 | `E_MOVE_CAPTURED` | Moving a captured value out of the closure that captured it, or a closure inside a closure changing a capture of the outer one. |
 | `E_PARAMETER_MODE` | A named function used as a value whose inferred `own` or `update` parameter is not declared, so its function type would not show it. |
 | `E_IMMUTABLE_STRING` | Assigning to a position of a string. |
+| `E_VIEW_ESCAPE` | A view type inside a collection, structure, enum, union, closure capture, constant, or function result. |
+| `E_VIEW_RETURN` | A returned view that does not borrow exactly one parameter. |
+| `E_VIEW_TEMPORARY` | A view of an array that is not stored in a variable. |
+
+Each view local records the variables it borrows: the root variable of the array it was made from, the variables its base view borrows, or, for the result of a call, those of the argument the callee's returned views borrow. A function's summary of which parameter its returned views borrow is computed with its parameter modes. A view's borrow lasts through the last statement of its declaring block that mentions it, so a use inside a loop or branch keeps it for that whole statement. While it lasts, moving, replacing, or changing a borrowed variable, and for a mutable view any use of it, is `E_BORROW_CONFLICT`.
+
+In native code a view is `{ ptr first element, i64 length }`, the first two fields of an array, so indexing, `length`, and loops share the array code. The interpreter's view holds a reference to the array and a start and length; places through a view are rewritten to the array's element when they are resolved.
 
 A string position (`text[i]`) produces a new string, so it borrows the text and can be moved freely. A `for` loop over a string reads it in place like a collection, so the string cannot be replaced while the loop runs; each loop variable owns its character.
 

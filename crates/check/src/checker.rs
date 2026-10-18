@@ -284,6 +284,11 @@ pub(crate) struct Checker<'a> {
     pub reported_vars: HashSet<TyVar>,
     /// Where an unusable key type was reported, so each place is reported once.
     pub reported_key_spans: HashSet<Span>,
+    /// The same for views kept where they cannot be.
+    pub reported_view_spans: HashSet<Span>,
+    /// Types written with a view inside them, already reported where they
+    /// were written.
+    pub annotated_view_types: HashSet<Type>,
     /// Dictionary literals whose key type came from the type expected there,
     /// which was checked where it was written.
     pub typed_dict_literals: HashSet<Span>,
@@ -328,6 +333,8 @@ impl<'a> Checker<'a> {
             current_component: Vec::new(),
             reported_vars: HashSet::new(),
             reported_key_spans: HashSet::new(),
+            reported_view_spans: HashSet::new(),
+            annotated_view_types: HashSet::new(),
             typed_dict_literals: HashSet::new(),
             scc_order: Vec::new(),
             test_blocks: Vec::new(),
@@ -761,7 +768,42 @@ impl<'a> Checker<'a> {
     // ----- type annotations -----------------------------------------------------
 
     /// Resolves a type annotation written in `module`.
+    /// Resolves a type annotation. A view written directly inside another
+    /// type, such as `Array<View<integer>>`, is reported where it is written.
     pub fn resolve_type(
+        &mut self,
+        module: ModuleId,
+        ty: &ast::TypeExpr,
+        generics: &HashMap<String, u32>,
+    ) -> Type {
+        let resolved = self.resolve_type_parts(module, ty, generics);
+        let direct: Vec<&Type> = match &resolved {
+            Type::Array(element) => vec![element],
+            Type::Dict(key, value) => vec![key, value],
+            Type::Union(members) => members.iter().collect(),
+            Type::Named(named) => named.args.iter().collect(),
+            Type::Function(function) => vec![&function.ret],
+            _ => Vec::new(),
+        };
+        if direct.iter().any(|part| matches!(part, Type::View(..))) {
+            self.view_escape(ty.span, format!("{resolved} cannot hold a view"));
+            self.annotated_view_types.insert(resolved.clone());
+        }
+        resolved
+    }
+
+    /// Reports a view kept somewhere it could outlive what it borrows.
+    pub fn view_escape(&mut self, span: Span, message: String) {
+        if self.reported_view_spans.insert(span) {
+            self.error(
+                Diagnostic::error("E_VIEW_ESCAPE", message)
+                    .primary(span, "")
+                    .help("a view borrows an array for a while: keep it in a variable or pass it to a function, or use clone(...) for an owned copy"),
+            );
+        }
+    }
+
+    fn resolve_type_parts(
         &mut self,
         module: ModuleId,
         ty: &ast::TypeExpr,
@@ -874,6 +916,13 @@ impl<'a> Checker<'a> {
                             return Type::Unknown;
                         }
                         Type::array(self.resolve_type(module, &args[0], generics))
+                    }
+                    "View" | "MutableView" => {
+                        if !arity(self, 1) {
+                            return Type::Unknown;
+                        }
+                        let element = self.resolve_type(module, &args[0], generics);
+                        Type::view(element, name.name == "MutableView")
                     }
                     "Dict" => {
                         if !arity(self, 2) {
@@ -1160,9 +1209,16 @@ impl<'a> Checker<'a> {
                 continue;
             }
             seen.push(&field.name);
+            let ty = self.resolve_type(module, &field.ty, generics);
+            if matches!(ty, Type::View(..)) {
+                self.view_escape(
+                    field.ty.span,
+                    format!("the field `{}` cannot hold a view", field.name.name),
+                );
+            }
             resolved.push(FieldDef {
                 name: field.name.name.clone(),
-                ty: self.resolve_type(module, &field.ty, generics),
+                ty,
             });
         }
         resolved
@@ -1590,7 +1646,7 @@ impl<'a> Checker<'a> {
                 result,
                 span,
             } => match self.unifier.shallow(container) {
-                Type::Array(element) => {
+                Type::Array(element) | Type::View(element, _) => {
                     self.unify_at(&Type::INTEGER, index, *span, "array indexes are integers");
                     self.unify_at(result, &element, *span, "");
                     true
@@ -1659,7 +1715,7 @@ impl<'a> Checker<'a> {
     /// Unifies loop variable types with the element types of `iterable`.
     pub fn apply_iteration(&mut self, iterable: &Type, items: &[Type], span: Span) {
         let element_types: Vec<Type> = match iterable {
-            Type::Array(element) => vec![(**element).clone()],
+            Type::Array(element) | Type::View(element, _) => vec![(**element).clone()],
             Type::Range => vec![Type::INTEGER],
             Type::Dict(key, value) => {
                 if items.len() == 2 {
@@ -1892,6 +1948,23 @@ impl<'a> Checker<'a> {
     pub fn finalize_expr(&mut self, expr: &mut hir::Expr) {
         expr.ty = self.finalize_type(&expr.ty);
         use hir::ExprKind::*;
+        // Reported where such a value is made, not again where it is used.
+        let used = matches!(
+            expr.kind,
+            Local { .. }
+                | Constant(_)
+                | Narrow(_)
+                | Field { .. }
+                | Index { .. }
+                | VariantPayload { .. }
+        );
+        // An empty `[]` takes its type from an annotation, reported there.
+        let annotated = matches!(&expr.kind, Array(items) if items.is_empty())
+            && self.annotated_view_types.contains(&expr.ty);
+        if !used && !annotated && expr.ty.holds_view() {
+            let message = format!("a value of type {} cannot hold a view", expr.ty);
+            self.view_escape(expr.span, message);
+        }
         match &mut expr.kind {
             Integer(value) => {
                 if let Type::Int(int) = &expr.ty
@@ -1979,6 +2052,10 @@ impl<'a> Checker<'a> {
             Closure { captures, .. } => {
                 for capture in captures {
                     self.finalize_expr(&mut capture.value);
+                    if matches!(capture.value.ty, Type::View(..)) {
+                        let span = capture.value.span;
+                        self.view_escape(span, "a closure cannot capture a view".to_string());
+                    }
                 }
             }
             FunctionRef { type_args, .. } => {

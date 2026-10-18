@@ -344,6 +344,7 @@ A closure cannot transfer a value it captured out of itself, because it can be c
 One value is used in two conflicting ways at once:
 
 - a collection or string is changed, moved, or replaced while a `for` loop over it is running;
+- an array is changed or moved while a view of it is still used later, or used at all while a mutable view of it is;
 - a matched variable is changed while a case that borrows its parts runs;
 - one call receives the same variable twice, once for changes and once in any other way.
 
@@ -357,6 +358,23 @@ Collect the changes in another collection and apply them after the loop, or pass
 ### E_IMMUTABLE_STRING
 
 Strings cannot be changed in place, so `text[0] = "x"` is an error. Build a new string with `+`, interpolation, or `strings.slice`.
+
+### E_VIEW_ESCAPE
+
+A view is kept somewhere it could outlive the array it borrows: in a collection, structure, enum (including an `Outcome` from `try`), or union, in a closure's captures, in a constant, or as a function value's result. Keep a view in a variable or pass it to a function; for something to keep, `clone(view)` makes an array of its elements.
+
+### E_VIEW_RETURN
+
+A function returns a view that does not borrow exactly one of its parameters: a view of its own variable, which is destroyed when it returns, views of different parameters on different paths, or a view whose source is unclear. Return a view made from one parameter, or `clone(...)` of it.
+
+```sayon
+function first_two(items: Array<integer>) -> View<integer>
+    return view(items, 0, 2)          # fine: it borrows the parameter
+```
+
+### E_VIEW_TEMPORARY
+
+A view is made of an array that is not stored anywhere, such as `view([1, 2, 3])`, which is destroyed at the end of the statement. Store the array in a variable and make the view of that.
 
 ## Modules and projects
 

@@ -305,6 +305,10 @@ pub enum Builtin {
     Remove,
     /// `swap(update array, first, second)`.
     Swap,
+    /// `view(array or view, start, end)`: a read-only view.
+    View,
+    /// `mutable_view(update array or mutable view, start, end)`.
+    MutableView,
     HasKey,
     ReadFile,
     WriteFile,
@@ -332,6 +336,8 @@ impl Builtin {
             Builtin::Pop => "pop",
             Builtin::Remove => "remove",
             Builtin::Swap => "swap",
+            Builtin::View => "view",
+            Builtin::MutableView => "mutable_view",
             Builtin::HasKey => "haskey",
             Builtin::ReadFile => "readfile",
             Builtin::WriteFile => "writefile",

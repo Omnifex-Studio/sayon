@@ -31,6 +31,8 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
         "pop" => Builtin::Pop,
         "remove" => Builtin::Remove,
         "swap" => Builtin::Swap,
+        "view" => Builtin::View,
+        "mutable_view" => Builtin::MutableView,
         "haskey" => Builtin::HasKey,
         "readfile" => Builtin::ReadFile,
         "writefile" => Builtin::WriteFile,
@@ -57,7 +59,7 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
 pub fn planned(name: &str) -> Option<(&'static str, &'static str)> {
     Some(match name {
         "Shared" | "Weak" | "Cell" | "Mutex" | "Box" => ("explicit shared ownership", "M3"),
-        "View" | "MutableView" => ("borrowed views", "M2"),
+
         "platform" => ("compile-time platform branches", "M4"),
         "null_pointer" | "pointer" => ("foreign pointers", "M3"),
         _ => return None,

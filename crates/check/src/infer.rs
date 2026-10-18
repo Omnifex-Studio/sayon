@@ -236,6 +236,7 @@ impl Unifier {
                 ..*named
             }),
             Type::Function(function) => Type::function(function.map(|t| self.resolve(t))),
+            Type::View(element, mutable) => Type::view(self.resolve(&element), mutable),
             other => other,
         }
     }
@@ -267,6 +268,7 @@ impl Unifier {
             Type::Function(function) => {
                 Type::function(function.map(|t| self.resolve_for_display(t)))
             }
+            Type::View(element, mutable) => Type::view(self.resolve_for_display(&element), mutable),
             other => other,
         }
     }
@@ -322,7 +324,12 @@ impl Unifier {
             Traits::NEGATE => {
                 matches!(ty, Type::Float(_)) || matches!(ty, Type::Int(i) if i.signed())
             }
-            Traits::LENGTH => matches!(ty, Type::String | Type::Array(_) | Type::Dict(..)),
+            Traits::LENGTH => {
+                matches!(
+                    ty,
+                    Type::String | Type::Array(_) | Type::Dict(..) | Type::View(..)
+                )
+            }
             Traits::EQUALITY => match &ty {
                 Type::Array(element) => return self.require_trait(element, Traits::EQUALITY),
                 Type::Dict(_, value) => return self.require_trait(value, Traits::EQUALITY),
@@ -355,7 +362,7 @@ impl Unifier {
                     });
                 }
                 // Function values have no meaningful equality.
-                Type::Range | Type::Param(_) | Type::Function(_) => false,
+                Type::Range | Type::Param(_) | Type::Function(_) | Type::View(..) => false,
                 _ => true,
             },
             _ => true,
@@ -375,6 +382,7 @@ impl Unifier {
             Type::Union(members) => members.iter().any(|m| self.occurs(var, m)),
             Type::Named(named) => named.args.iter().any(|a| self.occurs(var, a)),
             Type::Function(function) => function.types().any(|t| self.occurs(var, t)),
+            Type::View(element, _) => self.occurs(var, &element),
             _ => false,
         }
     }
@@ -431,6 +439,9 @@ impl Unifier {
                 }
                 self.unify(&x.ret, &y.ret)
                     .map_err(|_| self.mismatch(&a, &b))
+            }
+            (Type::View(x, m), Type::View(y, n)) if m == n => {
+                self.unify(x, y).map_err(|_| self.mismatch(&a, &b))
             }
             (Type::Named(x), Type::Named(y)) if x.id == y.id => {
                 for (p, q) in x.args.iter().zip(&y.args) {
@@ -491,6 +502,7 @@ impl Unifier {
                     self.free_vars(ty, out);
                 }
             }
+            Type::View(element, _) => self.free_vars(&element, out),
             _ => {}
         }
     }

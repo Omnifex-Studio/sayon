@@ -565,7 +565,7 @@ impl<'a> Checker<'a> {
     /// while the target's type is unknown.
     pub fn index_type(&mut self, target: &Type, index: &hir::Expr, span: Span) -> Type {
         match self.unifier.shallow(target) {
-            Type::Array(element) => *element,
+            Type::Array(element) | Type::View(element, _) => *element,
             Type::Dict(_, value) => *value,
             // A string's character at a position, as a string.
             Type::String => Type::String,
@@ -589,7 +589,9 @@ impl<'a> Checker<'a> {
 
     pub fn coerce_index(&mut self, index: hir::Expr, target: &Type) -> hir::Expr {
         match self.unifier.shallow(target) {
-            Type::Array(_) => self.coerce(index, &Type::INTEGER, "array indexes are integers"),
+            Type::Array(_) | Type::View(..) => {
+                self.coerce(index, &Type::INTEGER, "array indexes are integers")
+            }
             Type::String => self.coerce(index, &Type::INTEGER, "string positions are integers"),
             Type::Dict(key, _) => self.coerce(index, &key, "dictionary key"),
             _ => index,
@@ -1287,6 +1289,7 @@ impl<'a> Checker<'a> {
             Builtin::Assert => (1, 2),
             Builtin::Range => (1, 3),
             Builtin::Swap => (3, 3),
+            Builtin::View | Builtin::MutableView => (1, 3),
             Builtin::Push | Builtin::HasKey | Builtin::WriteFile | Builtin::Remove => (2, 2),
             Builtin::Host(host) => (host.params().len(), host.params().len()),
             _ => (1, 1),
@@ -1408,6 +1411,53 @@ impl<'a> Checker<'a> {
                     Type::union([element, Type::Nothing]),
                 )
             }
+            Builtin::View | Builtin::MutableView => {
+                let mutable = builtin == Builtin::MutableView;
+                let base = self.check_expr(cx, &args[0], None);
+                let element = match self.unifier.resolve(&base.ty) {
+                    Type::Array(element) => *element,
+                    Type::View(element, base_mutable) if base_mutable || !mutable => *element,
+                    Type::Unknown => Type::Unknown,
+                    Type::Var(_) => {
+                        let element = self.fresh_var(span);
+                        let array = Type::array(element.clone());
+                        self.unify_at(&array, &base.ty, args[0].span, "views are made of arrays");
+                        element
+                    }
+                    other => {
+                        let what = if mutable {
+                            "an array or a mutable view"
+                        } else {
+                            "an array or a view"
+                        };
+                        self.error(
+                            Diagnostic::error(
+                                "E_TYPE_MISMATCH",
+                                format!("`{}` takes {what}, not {other}", builtin.name()),
+                            )
+                            .primary(args[0].span, ""),
+                        );
+                        Type::Unknown
+                    }
+                };
+                let mut checked = vec![Arg {
+                    expr: base,
+                    mode: if mutable {
+                        ParamMode::Update
+                    } else {
+                        ParamMode::Read
+                    },
+                }];
+                for bound in &args[1..] {
+                    checked.push(read(self.check_expr_as(
+                        cx,
+                        bound,
+                        &Type::INTEGER,
+                        "view bounds are integers",
+                    )));
+                }
+                (checked, Type::view(element, mutable))
+            }
             Builtin::Swap => {
                 let element = self.fresh_var(span);
                 let array = self.check_expr_as(
@@ -1517,7 +1567,11 @@ impl<'a> Checker<'a> {
             }
             Builtin::Clone => {
                 let value = self.check_expr(cx, &args[0], None);
-                let ty = value.ty.clone();
+                // Cloning a view copies the elements it shows into an array.
+                let ty = match self.unifier.resolve(&value.ty) {
+                    Type::View(element, _) => Type::array(*element),
+                    _ => value.ty.clone(),
+                };
                 (vec![read(value)], ty)
             }
             Builtin::Error => {

@@ -66,7 +66,9 @@ impl Module {
     pub fn project_type(&self, ty: &Type, projection: &Projection) -> Type {
         use sayon_check::types::{structure_fields, variant_fields};
         match (projection, ty) {
-            (Projection::Index(_), Type::Array(element)) => (**element).clone(),
+            (Projection::Index(_), Type::Array(element) | Type::View(element, _)) => {
+                (**element).clone()
+            }
             (Projection::DictValue(_), Type::Dict(_, value)) => (**value).clone(),
             (Projection::DictKey(_), Type::Dict(key, _)) => (**key).clone(),
             (Projection::Payload(tag), _) => {
@@ -410,6 +412,14 @@ pub enum Op {
     CheckIndex {
         array: Operand,
         index: Operand,
+    },
+    /// A view of the elements from `start` up to `end` of the array or view
+    /// at `base` (all of them when the bounds are left out); fails when the
+    /// bounds are outside it.
+    MakeView {
+        base: Place,
+        start: Option<Operand>,
+        end: Option<Operand>,
     },
     /// Exchanges two elements of an array; fails outside the array.
     Swap {

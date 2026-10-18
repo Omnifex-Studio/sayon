@@ -109,6 +109,15 @@ pub fn parse_number(text: &str) -> Result<Number, (&'static str, String)> {
 }
 
 /// Number of values `range(start, end, step)` yields, computed without overflow.
+/// The message for view bounds outside an array or view of `length` elements.
+pub fn view_bounds_message(start: i128, end: i128, length: usize) -> String {
+    if start > end {
+        format!("a view cannot start at {start} and end before it, at {end}")
+    } else {
+        format!("the view from {start} to {end} is outside an array of length {length}")
+    }
+}
+
 /// The message for a string position outside a string of `length`
 /// characters.
 pub fn position_error(position: i128, length: usize) -> String {

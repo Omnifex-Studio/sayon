@@ -1,0 +1,8 @@
+type Holder = [inner: View<integer>]
+views: Array<View<integer>> = []
+numbers = [1]
+v = view(numbers)
+group = [v]
+show = function() return length(v)
+constant FIXED = [1, 2]
+constant SHOWN = view(FIXED)

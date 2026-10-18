@@ -14,6 +14,7 @@
 //! | structure | `{ fields... }` in declaration order, naturally aligned | sum with padding |
 //! | enum | `{ i32 tag, [N x i64] payload }`; a variant's fields are laid out like a structure from offset 8 | 8 + 8N |
 //! | function value | `%sayon.func = { ptr code, ptr environment }` | 16 |
+//! | View, MutableView | `%sayon.view = { ptr first, i64 length }`: the first two fields of an array | 16 |
 //!
 //! Every union places its payload at offset 8 and uses program-wide tags, so
 //! a reference to a union value is also a valid reference to any narrower
@@ -58,6 +59,7 @@ impl Layouts {
             Type::Range => "%sayon.range".to_string(),
             Type::Dict(..) | Type::Error => "ptr".to_string(),
             Type::Function(_) => "%sayon.func".to_string(),
+            Type::View(..) => "%sayon.view".to_string(),
             Type::Union(_) => self.tagged(ty, "union"),
             Type::Named(named) if self.is_enum(named) => self.tagged(ty, "enum"),
             Type::Named(named) => {
@@ -123,7 +125,7 @@ impl Layouts {
             Type::Boolean | Type::Nothing | Type::Unknown => 1,
             Type::String | Type::Array(_) | Type::Range => 24,
             Type::Dict(..) | Type::Error => 8,
-            Type::Function(_) => 16,
+            Type::Function(_) | Type::View(..) => 16,
             Type::Union(_) => 8 + 8 * self.payload_words(ty),
             Type::Named(named) if self.is_enum(named) => 8 + 8 * self.payload_words(ty),
             Type::Named(named) => {

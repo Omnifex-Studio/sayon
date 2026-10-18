@@ -118,6 +118,35 @@ enum Access {
     Update,
 }
 
+/// A view still in use, and the variables it borrows. Its borrow lasts
+/// through the last statement of its declaring block that uses it.
+struct ActiveView {
+    view: LocalId,
+    owners: Vec<LocalId>,
+    mutable: bool,
+    /// The declaring block's place in `Analyzer::positions`.
+    depth: usize,
+    last: usize,
+    /// The statement of that last use, for messages.
+    last_span: Span,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Touch {
+    Read,
+    Change,
+    Move,
+}
+
+/// The parameter a function's returned views borrow.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Returned {
+    Nothing,
+    Param(usize),
+    /// Already reported as a problem.
+    Invalid,
+}
+
 /// A local read in place by a statement that runs other code meanwhile: a
 /// loop over a collection, or a match that binds parts of its value.
 struct LoopBorrow {
@@ -156,9 +185,253 @@ struct Analyzer<'p> {
     fixed_constants: &'p [bool],
     /// The same for `constant` locals of the function.
     fixed_locals: HashSet<LocalId>,
+    /// For each block being analyzed, the position of its current statement.
+    positions: Vec<usize>,
+    views: Vec<ActiveView>,
+    /// The variables each view local borrows.
+    view_owners: HashMap<LocalId, Vec<LocalId>>,
+    /// For functions analyzed so far that return views, the parameter
+    /// those views borrow.
+    view_returns: &'p HashMap<FuncId, usize>,
+    /// The position of each parameter, by local.
+    param_positions: HashMap<LocalId, usize>,
+    returned: Returned,
+}
+
+/// Whether a statement mentions a local anywhere, including nested blocks.
+fn stmt_mentions(stmt: &Stmt, local: LocalId) -> bool {
+    let expr = |e: &Expr| expr_mentions(e, local);
+    let block = |b: &Block| b.stmts.iter().any(|s| stmt_mentions(s, local));
+    match &stmt.kind {
+        StmtKind::Let {
+            local: declared,
+            value,
+        } => *declared == local || expr(value),
+        StmtKind::Assign { place, value } | StmtKind::CompoundAssign { place, value, .. } => {
+            place_mentions(place, local) || expr(value)
+        }
+        StmtKind::Expr(value) | StmtKind::Return(Some(value)) => expr(value),
+        StmtKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => expr(condition) || block(then_block) || else_block.as_ref().is_some_and(block),
+        StmtKind::While { condition, body } => expr(condition) || block(body),
+        StmtKind::For { iterable, body, .. } => expr(iterable) || block(body),
+        StmtKind::Try {
+            body,
+            catch,
+            finally,
+        } => {
+            block(body)
+                || catch.as_ref().is_some_and(|(_, b)| block(b))
+                || finally.as_ref().is_some_and(block)
+        }
+        StmtKind::Block(inner) => block(inner),
+        StmtKind::Match {
+            scrutinee, arms, ..
+        } => {
+            expr(scrutinee)
+                || arms
+                    .iter()
+                    .any(|arm| arm.guard.as_ref().is_some_and(expr) || block(&arm.body))
+        }
+        StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => false,
+    }
+}
+
+fn expr_mentions(expr: &Expr, local: LocalId) -> bool {
+    matches!(expr.kind, ExprKind::Local { local: found, .. } if found == local)
+        || expr
+            .children()
+            .into_iter()
+            .any(|child| expr_mentions(child, local))
+}
+
+fn place_mentions(place: &Place, local: LocalId) -> bool {
+    match place {
+        Place::Local(found) => *found == local,
+        Place::Index { target, index, .. } => {
+            place_mentions(target, local) || expr_mentions(index, local)
+        }
+        Place::Field { target, .. } | Place::Narrow { target, .. } => place_mentions(target, local),
+    }
 }
 
 impl<'p> Analyzer<'p> {
+    /// The variables a view-typed expression borrows.
+    fn view_source(&self, expr: &Expr) -> Vec<LocalId> {
+        match &expr.kind {
+            ExprKind::Builtin {
+                builtin: Builtin::View | Builtin::MutableView,
+                args,
+            } => self.view_base(&args[0].expr),
+            ExprKind::Local { local, .. } => match self.view_owners.get(local) {
+                Some(owners) => owners.clone(),
+                // A view parameter borrows from the caller.
+                None if self.param_positions.contains_key(local) => vec![*local],
+                None => Vec::new(),
+            },
+            ExprKind::Call { function, args, .. } => match self.view_returns.get(function) {
+                Some(&position) => args
+                    .get(position)
+                    .map(|arg| self.view_base(&arg.expr))
+                    .unwrap_or_default(),
+                // Not known yet (a recursive call): any array or view argument.
+                None => args
+                    .iter()
+                    .filter(|arg| matches!(arg.expr.ty, Type::Array(_) | Type::View(..)))
+                    .flat_map(|arg| self.view_base(&arg.expr))
+                    .collect(),
+            },
+            ExprKind::Narrow(inner) => self.view_source(inner),
+            _ => Vec::new(),
+        }
+    }
+
+    /// What a view made from `base` borrows: the base's own variables when
+    /// it is a view, or the variable that holds it.
+    fn view_base(&self, base: &Expr) -> Vec<LocalId> {
+        if matches!(base.ty, Type::View(..)) {
+            return self.view_source(base);
+        }
+        Self::root(base).into_iter().collect()
+    }
+
+    fn view_active(&self, view: &ActiveView) -> bool {
+        view.depth < self.positions.len() && self.positions[view.depth] <= view.last
+    }
+
+    /// Reports touching a variable that a view still in use borrows: any
+    /// change or transfer, and any use at all for a mutable view.
+    fn view_conflict(&mut self, local: LocalId, touch: Touch, span: Span) -> bool {
+        let found = self
+            .views
+            .iter()
+            .find(|view| {
+                self.view_active(view)
+                    && view.owners.contains(&local)
+                    && (touch != Touch::Read || view.mutable)
+            })
+            .map(|view| (view.view, view.mutable, view.last_span));
+        let Some((view, mutable, last_span)) = found else {
+            return true;
+        };
+        let owner = self.local(local).name.clone();
+        let view_name = self.local(view).name.clone();
+        let action = match touch {
+            Touch::Read => "use",
+            Touch::Change => "change",
+            Touch::Move => "transfer",
+        };
+        let kind = if mutable { "mutable view" } else { "view" };
+        self.emit("E_BORROW_CONFLICT", span, || {
+            Diagnostic::error(
+                "E_BORROW_CONFLICT",
+                format!("cannot {action} `{owner}` while the {kind} `{view_name}` of it is still in use"),
+            )
+            .primary(span, "")
+            .secondary(last_span, format!("`{view_name}` is used until here"))
+            .help(format!(
+                "finish using `{view_name}` first, or give it a copy: `clone({view_name})` is an array of its elements"
+            ))
+        });
+        false
+    }
+
+    /// Starts tracking a view local declared or assigned by the statement
+    /// at `index` of a block.
+    fn activate(&mut self, view: LocalId, depth: usize, stmts: &[Stmt], index: usize) {
+        self.views.retain(|active| active.view != view);
+        let owners = self.view_owners.get(&view).cloned().unwrap_or_default();
+        if owners.is_empty() {
+            return;
+        }
+        let (last, last_span) = (index + 1..stmts.len())
+            .rev()
+            .find(|&later| stmt_mentions(&stmts[later], view))
+            .map(|later| (later, stmts[later].span))
+            .unwrap_or((index, stmts[index].span));
+        let mutable = matches!(self.local(view).ty, Type::View(_, true));
+        self.views.push(ActiveView {
+            view,
+            owners,
+            mutable,
+            depth,
+            last,
+            last_span,
+        });
+    }
+
+    /// Records what a returned view borrows: it must be one parameter.
+    fn returned_view(&mut self, value: &Expr) {
+        let owners = self.view_source(value);
+        let span = value.span;
+        if let Some(local) = owners
+            .iter()
+            .find(|o| !self.param_positions.contains_key(o))
+        {
+            let name = self.local(*local).name.clone();
+            self.returned = Returned::Invalid;
+            self.emit("E_VIEW_RETURN", span, || {
+                Diagnostic::error(
+                    "E_VIEW_RETURN",
+                    format!("cannot return a view of `{name}`, which belongs to this function"),
+                )
+                .primary(span, "")
+                .help("return a view of a parameter, or clone(...) for an owned array")
+            });
+            return;
+        }
+        let mut positions: Vec<usize> = owners
+            .iter()
+            .filter_map(|owner| self.param_positions.get(owner).copied())
+            .collect();
+        positions.sort();
+        positions.dedup();
+        let position = match positions.as_slice() {
+            [] => return,
+            [one] => *one,
+            _ => {
+                self.returned = Returned::Invalid;
+                self.emit("E_VIEW_RETURN", span, || {
+                    Diagnostic::error(
+                        "E_VIEW_RETURN",
+                        "cannot tell which parameter this returned view borrows",
+                    )
+                    .primary(span, "")
+                    .help("return a view made from one parameter")
+                });
+                return;
+            }
+        };
+        match self.returned {
+            Returned::Nothing => self.returned = Returned::Param(position),
+            Returned::Param(previous) if previous != position => {
+                self.returned = Returned::Invalid;
+                self.emit("E_VIEW_RETURN", span, || {
+                    Diagnostic::error(
+                        "E_VIEW_RETURN",
+                        "this function returns views of different parameters",
+                    )
+                    .primary(span, "")
+                    .help("return views of one parameter, so that callers know what stays borrowed")
+                });
+            }
+            _ => {}
+        }
+    }
+
+    fn immutable_view(&mut self, span: Span) {
+        self.emit("E_MUTATE_BORROWED", span, || {
+            Diagnostic::error(
+                "E_MUTATE_BORROWED",
+                "the elements of a View cannot be changed",
+            )
+            .primary(span, "")
+            .help("make a view that can change them with mutable_view(...)")
+        });
+    }
     /// Whether values of the type are copied rather than moved.
     fn copy(&self, ty: &Type) -> bool {
         if self.stand_ins.is_empty() {
@@ -376,6 +649,14 @@ impl<'p> Analyzer<'p> {
         };
 
         if !self.check_initialized(local, span, state) {
+            return;
+        }
+        let touch = match decided {
+            Usage::Move => Touch::Move,
+            Usage::BorrowUpdate => Touch::Change,
+            _ => Touch::Read,
+        };
+        if !self.view_conflict(local, touch, span) {
             return;
         }
         let info = self.local(local).clone();
@@ -675,6 +956,20 @@ impl<'p> Analyzer<'p> {
                 self.args(args, &callee, state);
             }
             ExprKind::Builtin { builtin, args } => {
+                if matches!(builtin, Builtin::View | Builtin::MutableView)
+                    && matches!(args[0].expr.ty, Type::Array(_))
+                    && !Self::is_place(&args[0].expr)
+                {
+                    let base = args[0].expr.span;
+                    self.emit("E_VIEW_TEMPORARY", base, || {
+                        Diagnostic::error(
+                            "E_VIEW_TEMPORARY",
+                            "a view needs a variable to borrow from",
+                        )
+                        .primary(base, "this array is gone after this statement")
+                        .help("store the array in a variable first, and make the view of that")
+                    });
+                }
                 let name = builtin.name().to_string();
                 self.args(args, &name, state);
             }
@@ -881,6 +1176,9 @@ impl<'p> Analyzer<'p> {
                 if !self.loop_conflict(local, span, "replace") {
                     return;
                 }
+                if !self.view_conflict(local, Touch::Change, span) {
+                    return;
+                }
                 if let Some(map) = state {
                     map.insert(local, Status::Init);
                 }
@@ -892,6 +1190,10 @@ impl<'p> Analyzer<'p> {
             } => {
                 if *target_ty == Type::String {
                     self.immutable_string(span);
+                    return;
+                }
+                if matches!(target_ty, Type::View(_, false)) {
+                    self.immutable_view(span);
                     return;
                 }
                 self.expr(index, Ctx::Read, state);
@@ -923,6 +1225,9 @@ impl<'p> Analyzer<'p> {
                 if !self.check_initialized(local, span, state) {
                     return;
                 }
+                if !self.view_conflict(local, Touch::Change, span) {
+                    return;
+                }
                 if self.copy(&self.local(local).ty) {
                     // A Copy value (such as a structure of numbers) belongs to
                     // this function even when it arrived as a parameter.
@@ -938,6 +1243,10 @@ impl<'p> Analyzer<'p> {
             } => {
                 if *target_ty == Type::String {
                     self.immutable_string(span);
+                    return;
+                }
+                if matches!(target_ty, Type::View(_, false)) {
+                    self.immutable_view(span);
                     return;
                 }
                 self.expr(index, Ctx::Read, state);
@@ -991,12 +1300,28 @@ impl<'p> Analyzer<'p> {
     }
 
     fn block(&mut self, block: &mut Block, state: &mut State) {
-        for stmt in &mut block.stmts {
+        let depth = self.positions.len();
+        self.positions.push(0);
+        for index in 0..block.stmts.len() {
             if state.is_none() {
                 break;
             }
-            self.stmt(stmt, state);
+            self.positions[depth] = index;
+            let declared = match &block.stmts[index].kind {
+                StmtKind::Let { local, .. }
+                | StmtKind::Assign {
+                    place: Place::Local(local),
+                    ..
+                } if matches!(self.local(*local).ty, Type::View(..)) => Some(*local),
+                _ => None,
+            };
+            self.stmt(&mut block.stmts[index], state);
+            if let Some(view) = declared {
+                self.activate(view, depth, &block.stmts, index);
+            }
         }
+        self.positions.pop();
+        self.views.retain(|view| view.depth < depth);
     }
 
     fn stmt(&mut self, stmt: &mut Stmt, state: &mut State) {
@@ -1005,6 +1330,10 @@ impl<'p> Analyzer<'p> {
             StmtKind::Let { local, value } => {
                 if self.local(*local).kind == LocalKind::Constant && fixed(self.types, value) {
                     self.fixed_locals.insert(*local);
+                }
+                if matches!(self.local(*local).ty, Type::View(..)) {
+                    let owners = self.view_source(value);
+                    self.view_owners.insert(*local, owners);
                 }
                 let name = self.local(*local).name.clone();
                 let saved = std::mem::replace(&mut self.reason, MoveReason::Assign(name));
@@ -1015,6 +1344,12 @@ impl<'p> Analyzer<'p> {
                 }
             }
             StmtKind::Assign { place, value } => {
+                if let Place::Local(local) = place
+                    && matches!(self.local(*local).ty, Type::View(..))
+                {
+                    let owners = self.view_source(value);
+                    self.view_owners.insert(*local, owners);
+                }
                 let name = self.place_name(place);
                 let saved = std::mem::replace(&mut self.reason, MoveReason::Assign(name));
                 self.expr(value, Ctx::Consume, state);
@@ -1080,10 +1415,13 @@ impl<'p> Analyzer<'p> {
             } => {
                 self.expr(iterable, Ctx::Read, state);
                 let iterable_ty = iterable.ty.clone();
-                let collection = matches!(iterable_ty, Type::Array(_) | Type::Dict(..));
+                let collection = matches!(
+                    iterable_ty,
+                    Type::Array(_) | Type::Dict(..) | Type::View(..)
+                );
                 if collection {
                     let element_types: Vec<Type> = match &iterable_ty {
-                        Type::Array(element) => vec![(**element).clone()],
+                        Type::Array(element) | Type::View(element, _) => vec![(**element).clone()],
                         Type::Dict(key, value) => vec![(**key).clone(), (**value).clone()],
                         _ => Vec::new(),
                     };
@@ -1130,6 +1468,9 @@ impl<'p> Analyzer<'p> {
             }
             StmtKind::Return(value) => {
                 if let Some(value) = value {
+                    if matches!(value.ty, Type::View(..)) {
+                        self.returned_view(value);
+                    }
                     let saved = std::mem::replace(&mut self.reason, MoveReason::Return);
                     self.expr(value, Ctx::Consume, state);
                     self.reason = saved;
@@ -1349,6 +1690,7 @@ pub fn check_program(program: &mut Program, components: &[Vec<FuncId>]) -> Vec<D
         );
     }
     let mut diagnostics = Vec::new();
+    let mut view_returns: HashMap<FuncId, usize> = HashMap::new();
 
     for component in components {
         // Infer modes to a fixed point without reporting.
@@ -1362,9 +1704,13 @@ pub fn check_program(program: &mut Program, components: &[Vec<FuncId>]) -> Vec<D
                     &names,
                     &constant_names,
                     &fixed_constants,
+                    &view_returns,
                     false,
-                )
-                .0;
+                );
+                if let Some(position) = inferred.2 {
+                    view_returns.insert(*id, position);
+                }
+                let inferred = inferred.0;
                 if modes.get(id) != Some(&inferred) {
                     modes.insert(*id, inferred);
                     changed = true;
@@ -1381,15 +1727,19 @@ pub fn check_program(program: &mut Program, components: &[Vec<FuncId>]) -> Vec<D
             }
         }
         for id in component {
-            let (_, mut found) = analyze(
+            let (_, mut found, returned) = analyze(
                 program,
                 *id,
                 &modes,
                 &names,
                 &constant_names,
                 &fixed_constants,
+                &view_returns,
                 true,
             );
+            if let Some(position) = returned {
+                view_returns.insert(*id, position);
+            }
             diagnostics.append(&mut found);
         }
     }
@@ -1399,13 +1749,14 @@ pub fn check_program(program: &mut Program, components: &[Vec<FuncId>]) -> Vec<D
     for index in 0..program.functions.len() {
         if program.functions[index].closure {
             let id = FuncId(index as u32);
-            let (_, mut found) = analyze(
+            let (_, mut found, _) = analyze(
                 program,
                 id,
                 &modes,
                 &names,
                 &constant_names,
                 &fixed_constants,
+                &view_returns,
                 true,
             );
             diagnostics.append(&mut found);
@@ -1432,6 +1783,12 @@ pub fn check_program(program: &mut Program, components: &[Vec<FuncId>]) -> Vec<D
             types: &program.types,
             fixed_constants: &fixed_constants,
             fixed_locals: HashSet::new(),
+            positions: Vec::new(),
+            views: Vec::new(),
+            view_owners: HashMap::new(),
+            view_returns: &view_returns,
+            param_positions: HashMap::new(),
+            returned: Returned::Nothing,
         };
         let mut state: State = Some(HashMap::new());
         analyzer.expr(
@@ -1496,6 +1853,7 @@ fn function_value_modes(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn analyze(
     program: &mut Program,
     id: FuncId,
@@ -1503,8 +1861,9 @@ fn analyze(
     names: &HashMap<FuncId, String>,
     constant_names: &[String],
     fixed_constants: &[bool],
+    view_returns: &HashMap<FuncId, usize>,
     report: bool,
-) -> (Vec<ParamMode>, Vec<Diagnostic>) {
+) -> (Vec<ParamMode>, Vec<Diagnostic>, Option<usize>) {
     let types = &program.types;
     let function = &mut program.functions[id.0 as usize];
     let mut locals = std::mem::take(&mut function.locals);
@@ -1539,6 +1898,11 @@ fn analyze(
         .map(|p| p.default.take())
         .collect();
     let param_locals: Vec<LocalId> = function.params.iter().map(|p| p.local).collect();
+    let param_positions: HashMap<LocalId, usize> = param_locals
+        .iter()
+        .enumerate()
+        .map(|(position, local)| (*local, position))
+        .collect();
 
     let mut analyzer = Analyzer {
         modes,
@@ -1557,6 +1921,12 @@ fn analyze(
         types,
         fixed_constants,
         fixed_locals: HashSet::new(),
+        positions: Vec::new(),
+        views: Vec::new(),
+        view_owners: HashMap::new(),
+        view_returns,
+        param_positions,
+        returned: Returned::Nothing,
     };
     for default in defaults.iter_mut().flatten() {
         let mut state: State = Some(state_map.clone());
@@ -1569,6 +1939,10 @@ fn analyze(
         .map(|local| analyzer.params[local].0)
         .collect();
     let diagnostics = std::mem::take(&mut analyzer.diagnostics);
+    let returned = match analyzer.returned {
+        Returned::Param(position) => Some(position),
+        _ => None,
+    };
 
     let function = &mut program.functions[id.0 as usize];
     function.locals = locals;
@@ -1576,7 +1950,7 @@ fn analyze(
     for (param, default) in function.params.iter_mut().zip(defaults) {
         param.default = default;
     }
-    (inferred, diagnostics)
+    (inferred, diagnostics, returned)
 }
 
 #[cfg(test)]

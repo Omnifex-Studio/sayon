@@ -277,6 +277,7 @@ impl<'m> Codegen<'m> {
         out.push_str("%sayon.array = type { ptr, i64, i64 }\n");
         out.push_str("%sayon.range = type { i64, i64, i64 }\n");
         out.push_str("%sayon.func = type { ptr, ptr }\n");
+        out.push_str("%sayon.view = type { ptr, i64 }\n");
         for definition in &self.layouts.definitions {
             out.push_str(definition);
             out.push('\n');
@@ -516,7 +517,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
         for projection in &place.projection {
             match projection {
                 Projection::Index(slot) => {
-                    let Type::Array(element) = ty else {
+                    let (Type::Array(element) | Type::View(element, _)) = ty else {
                         panic!("index into {ty}")
                     };
                     let data = self.body.tmp();
@@ -1039,7 +1040,8 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     Type::String => self.body.line(format!(
                         "{result} = call i64 @sayon_str_chars(ptr {pointer})"
                     )),
-                    Type::Array(_) => {
+                    // A view's length is where an array's is.
+                    Type::Array(_) | Type::View(..) => {
                         let field = self.body.tmp();
                         self.body.line(format!("{field} = getelementptr inbounds %sayon.array, ptr {pointer}, i32 0, i32 1"));
                         self.body.line(format!("{result} = load i64, ptr {field}"));
@@ -1078,6 +1080,24 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 self.body
                     .line(format!("{result} = icmp sge i64 {position}, 0"));
                 self.body.line(format!("store i1 {result}, ptr {dest}"));
+            }
+            Rvalue::Clone {
+                value,
+                ty: Type::View(element, _),
+            } => {
+                // An array of copies of the viewed elements: the view has
+                // the first two fields of an array, so copying it into an
+                // array and cloning that array copies the elements.
+                let (pointer, _) = self.pointer(value);
+                let array = self.body.alloca("%sayon.array");
+                self.body
+                    .line(format!("store %sayon.array zeroinitializer, ptr {array}"));
+                self.cg.intrinsic(MEMCPY.to_string());
+                self.body.memcpy(&array, &pointer, "16");
+                let array_ty = Type::array((**element).clone());
+                let clone = self.cg.helper(Helper::Clone, &array_ty);
+                self.body
+                    .line(format!("call void {clone}(ptr {array}, ptr {dest})"));
             }
             Rvalue::Clone { value, ty } => {
                 let (pointer, _) = self.pointer(value);
@@ -1619,6 +1639,46 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     let (target, _) = self.place_ptr(place);
                     self.body
                         .line(format!("store i64 {position}, ptr {target}"));
+                }
+                Some(status)
+            }
+            Op::MakeView { base, start, end } => {
+                let (pointer, ty) = self.place_ptr(base);
+                let (Type::Array(element) | Type::View(element, _)) = ty else {
+                    panic!("view of {ty}")
+                };
+                let data = self.body.tmp();
+                self.body.line(format!("{data} = load ptr, ptr {pointer}"));
+                let length_field = self.offset_pointer(&pointer, 8);
+                let length = self.body.tmp();
+                self.body
+                    .line(format!("{length} = load i64, ptr {length_field}"));
+                let start = match start {
+                    Some(start) => self.value(start).1,
+                    None => "0".to_string(),
+                };
+                let end = match end {
+                    Some(end) => self.value(end).1,
+                    None => length.clone(),
+                };
+                let location = self.cg.location(span);
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_check_view(ptr {err}, i64 {start}, i64 {end}, i64 {length}, ptr {location})"
+                ));
+                let element_llvm = self.cg.llvm(&element);
+                let first = self.body.tmp();
+                self.body.line(format!(
+                    "{first} = getelementptr {element_llvm}, ptr {data}, i64 {start}"
+                ));
+                let count = self.body.tmp();
+                self.body.line(format!("{count} = sub i64 {end}, {start}"));
+                if let Some(place) = dest {
+                    let (target, _) = self.place_ptr(place);
+                    self.body.line(format!("store ptr {first}, ptr {target}"));
+                    let target_length = self.offset_pointer(&target, 8);
+                    self.body
+                        .line(format!("store i64 {count}, ptr {target_length}"));
                 }
                 Some(status)
             }
@@ -2227,6 +2287,7 @@ declare void @sayon_dict_new(ptr, ptr, i64)
 declare zeroext i1 @sayon_dict_remove(ptr, ptr, ptr)
 declare i32 @sayon_array_remove(ptr, ptr, i64, i64, ptr, ptr)
 declare i32 @sayon_array_swap(ptr, ptr, i64, i64, i64, ptr)
+declare i32 @sayon_check_view(ptr, i64, i64, i64, ptr)
 declare i64 @sayon_str_hash(ptr)
 declare i64 @sayon_dict_len(ptr)
 declare i64 @sayon_dict_find(ptr, ptr)

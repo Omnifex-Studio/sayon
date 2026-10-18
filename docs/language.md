@@ -130,6 +130,7 @@ Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) evaluates its target once. In
 | `nothing` | The absence of a value |
 | `Array<T>` | A growable sequence |
 | `Dict<K, V>` | An insertion-ordered dictionary from keys of type `K` to values of type `V` |
+| `View<T>`, `MutableView<T>` | A borrowed run of an array's elements; see [Views](#views) |
 | `A or B` | A value of one of the member types |
 | `Range` | The result of `range(...)` |
 | `Error` | A recoverable error value |
@@ -452,6 +453,34 @@ numbers = [1, 2, 3]
 other = numbers
 print(numbers)     # error[E_MOVED_VALUE]: `numbers` was transferred to `other`
 ```
+
+### Views
+
+A view borrows a run of an array's elements without copying them. `view(items, start, end)` shows the elements from `start` up to, but not including, `end`, and `view(items)` all of them; `mutable_view(update items, start, end)` can also change them. The types are `View<T>` and `MutableView<T>`, and a view can be made of another view.
+
+```sayon
+function total(values: View<integer>) -> integer
+    sum = 0
+    for value in values
+        sum += value
+    return sum
+
+numbers = [5, 3, 8, 1, 9]
+print(total(view(numbers, 1, 4)))     # 12
+
+function double(update values: MutableView<integer>)
+    for index in range(length(values))
+        values[index] = values[index] * 2
+
+double(mutable_view(numbers, 0, 2))
+print(numbers)                         # [10, 6, 8, 1, 9]
+```
+
+- `length`, `v[i]`, `for` loops, `print`, and `tostring` work on views as on arrays; `v[i] = value` works on a mutable view. Bounds outside the array raise `BoundsError`.
+- While a view is still used later in its block, the array it borrows cannot be changed, moved, or replaced, and while a mutable view is, the array cannot be used at all except through the view. After the view's last use, the array is free again.
+- A view lives in variables and parameters. It cannot be stored in a collection, structure, enum, or union, captured by a closure, or held by a constant (`E_VIEW_ESCAPE`), and it must borrow a variable, not a temporary array (`E_VIEW_TEMPORARY`).
+- A function can return a view of one of its parameters; the caller's argument then stays borrowed for as long as the result is used. Returning a view of the function's own variable is an error (`E_VIEW_RETURN`).
+- `View<T>` values are copied like numbers; a `MutableView<T>` is moved, so only one exists at a time. `clone(view)` makes an array of copies of the elements.
 
 ## Errors
 

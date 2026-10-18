@@ -533,6 +533,23 @@ pub unsafe extern "C" fn sayon_array_free(a: *mut SayonArray, element_size: i64)
     }
 }
 
+/// Checks the bounds of a view of an array or view of `length` elements.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_check_view(
+    err: *mut *mut SayonError,
+    start: i64,
+    end: i64,
+    length: i64,
+    location: *const c_char,
+) -> i32 {
+    if 0 <= start && start <= end && end <= length {
+        return 0;
+    }
+    let message = text::view_bounds_message(start as i128, end as i128, length as usize);
+    // SAFETY: valid error slot.
+    unsafe { set_error(err, "BoundsError", message, location) }
+}
+
 /// Exchanges two elements, or fails when either position is outside the
 /// array.
 #[unsafe(no_mangle)]

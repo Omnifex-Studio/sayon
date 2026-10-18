@@ -1184,7 +1184,7 @@ impl<'l, 'p> FnLower<'l, 'p> {
             return;
         }
         let element_places: Vec<Place> = match &iterable_ty {
-            Type::Array(_) => vec![collection.project(Projection::Index(index))],
+            Type::Array(_) | Type::View(..) => vec![collection.project(Projection::Index(index))],
             Type::Dict(..) => {
                 vec![
                     collection.project(Projection::DictKey(index)),
@@ -2400,6 +2400,17 @@ impl<'l, 'p> FnLower<'l, 'p> {
                         nothing_tag,
                     },
                 );
+            }
+            Builtin::View | Builtin::MutableView => {
+                let want = if builtin == Builtin::MutableView {
+                    Want::Mut
+                } else {
+                    Want::Read
+                };
+                let base = self.place_of(&args[0].expr, want);
+                let start = args.get(1).map(|arg| self.operand(&arg.expr, Want::Owned));
+                let end = args.get(2).map(|arg| self.operand(&arg.expr, Want::Owned));
+                self.op(Op::MakeView { base, start, end }, Some(dest), span);
             }
             Builtin::Swap => {
                 let array = self.place_of(&args[0].expr, Want::Mut);

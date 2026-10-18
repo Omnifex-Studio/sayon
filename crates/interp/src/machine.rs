@@ -8,7 +8,9 @@ use crate::value::*;
 use sayon_check::types::{FloatType, IntType, Type};
 use sayon_ir::*;
 use sayon_runtime::host::{Host, HostArg, HostType, HostValue, invoke};
-use sayon_runtime::text::{Number, parse_number, position_error, range_length};
+use sayon_runtime::text::{
+    Number, parse_number, position_error, range_length, view_bounds_message,
+};
 use sayon_syntax::{SourceMap, Span};
 use std::io::Write;
 use std::rc::Rc;
@@ -29,30 +31,6 @@ enum SlotValue {
     Empty,
     Value(Value),
     Ref(Ref),
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Root {
-    Slot { frame: usize, slot: usize },
-    Global(usize),
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Step {
-    Index(usize),
-    DictValue(usize),
-    DictKey(usize),
-    Payload,
-    /// A field of a structure, or of an enum value's variant.
-    Field(usize),
-    /// The environment of a function value.
-    Env,
-}
-
-#[derive(Clone, Debug)]
-struct Ref {
-    root: Root,
-    path: Vec<Step>,
 }
 
 enum Source {
@@ -76,6 +54,19 @@ pub struct Machine<'m> {
     globals: Vec<Option<Value>>,
     frames: Vec<Frame>,
     out: &'m mut dyn Write,
+}
+
+/// The part of a value that one step leads to.
+fn step_into(step: Step, value: &Value) -> &Value {
+    match (step, value) {
+        (Step::Index(i), Value::Array(items)) => &items[i],
+        (Step::DictValue(i), Value::Dict(dict)) => &dict.values[i],
+        (Step::DictKey(i), Value::Dict(dict)) => &dict.keys[i],
+        (Step::Payload, Value::Union(_, payload)) => payload,
+        (Step::Field(i), Value::Record(_, fields) | Value::Variant(_, _, fields)) => &fields[i],
+        (Step::Env, Value::Function(_, env)) => env,
+        (step, value) => panic!("invalid path step {step:?} into {value:?}"),
+    }
 }
 
 fn constant_value(constant: &Constant) -> Value {
@@ -339,25 +330,54 @@ impl<'m> Machine<'m> {
         }
     }
 
+    /// The reference with every step through a view replaced by the step
+    /// into the viewed array's element.
+    fn flatten(&self, reference: &Ref) -> Ref {
+        let mut current = self.root_value(reference.root);
+        for (index, step) in reference.path.iter().enumerate() {
+            if let (Step::Index(i), Value::View(view)) = (step, current) {
+                let mut path = view.array.path.clone();
+                path.push(Step::Index(view.start + i));
+                path.extend_from_slice(&reference.path[index + 1..]);
+                return self.flatten(&Ref {
+                    root: view.array.root,
+                    path,
+                });
+            }
+            current = step_into(*step, current);
+        }
+        reference.clone()
+    }
+
     fn read<R>(&self, reference: &Ref, f: impl FnOnce(&Value) -> R) -> R {
+        let reference = self.flatten(reference);
         let mut current = self.root_value(reference.root);
         for step in &reference.path {
-            current = match (step, current) {
-                (Step::Index(i), Value::Array(items)) => &items[*i],
-                (Step::DictValue(i), Value::Dict(dict)) => &dict.values[*i],
-                (Step::DictKey(i), Value::Dict(dict)) => &dict.keys[*i],
-                (Step::Payload, Value::Union(_, payload)) => payload,
-                (Step::Field(i), Value::Record(_, fields) | Value::Variant(_, _, fields)) => {
-                    &fields[*i]
-                }
-                (Step::Env, Value::Function(_, env)) => env,
-                (step, value) => panic!("invalid path step {step:?} into {value:?}"),
-            };
+            current = step_into(*step, current);
         }
         f(current)
     }
 
+    /// The elements a view shows, as an array.
+    fn view_array(&self, view: &ViewValue) -> Value {
+        self.read(&view.array, |value| match value {
+            Value::Array(items) => {
+                Value::Array(items[view.start..view.start + view.length].to_vec())
+            }
+            other => panic!("view of {other:?}"),
+        })
+    }
+
+    /// Reads a source, showing a view as the array of its elements.
+    fn with_shown<R>(&self, source: &Source, f: impl FnOnce(&Value) -> R) -> R {
+        self.with_source(source, |value| match value {
+            Value::View(view) => f(&self.view_array(view)),
+            other => f(other),
+        })
+    }
+
     fn with_mut<R>(&mut self, reference: &Ref, f: impl FnOnce(&mut Value) -> R) -> R {
+        let reference = &self.flatten(reference);
         let root: &mut Value = match reference.root {
             Root::Slot { frame, slot } => match &mut self.frames[frame].slots[slot] {
                 SlotValue::Value(value) => value,
@@ -586,7 +606,7 @@ impl<'m> Machine<'m> {
                         FormatPart::Text(literal) => text.push_str(literal),
                         FormatPart::Value(operand, _) => {
                             let source = self.source(operand);
-                            self.with_source(&source, |v| {
+                            self.with_shown(&source, |v| {
                                 display(v, &mut text, false, &self.module.types)
                             });
                         }
@@ -662,6 +682,7 @@ impl<'m> Machine<'m> {
                     Value::Str(text) => text.chars().count(),
                     Value::Array(items) => items.len(),
                     Value::Dict(dict) => dict.len(),
+                    Value::View(view) => view.length,
                     other => panic!("length of {other:?}"),
                 });
                 Value::Int(length as i128)
@@ -677,7 +698,7 @@ impl<'m> Machine<'m> {
             }
             Rvalue::Clone { value, .. } => {
                 let source = self.source(value);
-                self.with_source(&source, Value::clone)
+                self.with_shown(&source, Value::clone)
             }
             Rvalue::ErrorMessage(value) | Rvalue::ErrorCode(value) => {
                 let message = matches!(rvalue, Rvalue::ErrorMessage(_));
@@ -849,6 +870,7 @@ impl<'m> Machine<'m> {
                 let source = self.source(array);
                 let length = self.with_source(&source, |v| match v {
                     Value::Array(items) => items.len(),
+                    Value::View(view) => view.length,
                     other => panic!("index into {other:?}"),
                 });
                 if index < 0 || index >= length as i128 {
@@ -860,6 +882,30 @@ impl<'m> Machine<'m> {
                     return Err(self.error("BoundsError", message, span));
                 }
                 Ok(Value::Int(index))
+            }
+            Op::MakeView { base, start, end } => {
+                let start = start.as_ref().map(|s| self.int(s));
+                let end = end.as_ref().map(|e| self.int(e));
+                let reference = self.flatten(&self.resolve(base));
+                let (array, offset, length) = self.read(&reference, |v| match v {
+                    Value::Array(items) => (reference.clone(), 0, items.len()),
+                    Value::View(view) => (view.array.clone(), view.start, view.length),
+                    other => panic!("view of {other:?}"),
+                });
+                let start = start.unwrap_or(0);
+                let end = end.unwrap_or(length as i128);
+                if start < 0 || start > end || end > length as i128 {
+                    return Err(self.error(
+                        "BoundsError",
+                        view_bounds_message(start, end, length),
+                        span,
+                    ));
+                }
+                Ok(Value::View(Box::new(ViewValue {
+                    array,
+                    start: offset + start as usize,
+                    length: (end - start) as usize,
+                })))
             }
             Op::Swap {
                 array,
@@ -951,7 +997,7 @@ impl<'m> Machine<'m> {
                         line.push(' ');
                     }
                     let source = self.source(operand);
-                    self.with_source(&source, |v| {
+                    self.with_shown(&source, |v| {
                         display(v, &mut line, false, &self.module.types)
                     });
                 }

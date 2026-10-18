@@ -35,6 +35,44 @@ pub enum Value {
     /// A function value: the code to call and its environment, a structure
     /// of captured values (`Nothing` when it captures none).
     Function(FunctionId, Box<Value>),
+    /// A view of `length` elements of the array at a reference, from
+    /// `start`.
+    View(Box<ViewValue>),
+}
+
+/// Where a value is stored: a frame's slot, or a module constant.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Root {
+    Slot { frame: usize, slot: usize },
+    Global(usize),
+}
+
+/// One step from a value into a part of it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Step {
+    Index(usize),
+    DictValue(usize),
+    DictKey(usize),
+    Payload,
+    /// A field of a structure, or of an enum value's variant.
+    Field(usize),
+    /// The environment of a function value.
+    Env,
+}
+
+/// A stored value, or a part of one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ref {
+    pub root: Root,
+    pub path: Vec<Step>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ViewValue {
+    /// The array the view shows.
+    pub array: Ref,
+    pub start: usize,
+    pub length: usize,
 }
 
 impl Value {
@@ -251,6 +289,10 @@ pub fn display(value: &Value, out: &mut String, nested: bool, types: &[TypeDef])
             }
         }
         Value::Function(..) => out.push_str("function"),
+        // The machine shows a view's elements before displaying it.
+        Value::View(view) => {
+            let _ = write!(out, "view of {} elements", view.length);
+        }
     }
 }
 

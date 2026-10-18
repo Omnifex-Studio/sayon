@@ -527,8 +527,8 @@ impl<'m> Codegen<'m> {
             Type::Float(FloatType::F32) => scalar(body, "float", "fcmp oeq"),
             Type::Boolean => scalar(body, "i1", "icmp eq"),
             Type::Nothing | Type::Unknown => body.line("ret i1 true"),
-            // Function values are never compared.
-            Type::Function(_) => body.line("ret i1 false"),
+            // Function values and views are never compared.
+            Type::Function(_) | Type::View(..) => body.line("ret i1 false"),
             Type::String => {
                 let result = body.tmp();
                 body.line(format!(
@@ -736,7 +736,8 @@ impl<'m> Codegen<'m> {
                 body.line("call void @sayon_builder_error(ptr %builder, ptr %value, i1 %nested)")
             }
             Type::Range => body.line("call void @sayon_builder_range(ptr %builder, ptr %value)"),
-            Type::Array(element) => {
+            // A view has an array's first two fields, so it displays like one.
+            Type::Array(element) | Type::View(element, _) => {
                 let display = self.helper(Helper::Display, element);
                 let element_llvm = self.llvm(element);
                 let open = self.bytes(b"[");

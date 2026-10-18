@@ -1,0 +1,27 @@
+numbers = [1, 2, 3, 4]
+part = view(numbers, 0, 2)
+push(numbers, 5)
+print(part[0])
+
+items = [1, 2, 3]
+changing = mutable_view(items)
+print(items)
+changing[0] = 9
+
+reading = view(items)
+reading[0] = 5
+
+function first_half(values: Array<string>) -> View<string>
+    return view(values, 0, length(values) / 2)
+
+words = ["a", "b", "c", "d"]
+half = first_half(words)
+moved = words
+print(half)
+
+function local_view() -> View<integer>
+    owned = [1, 2]
+    return view(owned)
+
+temporary = view([1, 2, 3])
+print(temporary)

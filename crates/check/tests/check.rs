@@ -245,6 +245,37 @@ fn unavailable_features_name_their_milestone() {
 }
 
 #[test]
+fn views_borrow_until_their_last_use() {
+    ok("items = [1, 2, 3]\npart = view(items, 0, 2)\nprint(part[0])\npush(items, 4)\n");
+    ok(
+        "function head(values: Array<integer>) -> View<integer>\n    return view(values, 0, 1)\n\nitems = [1, 2]\nfirst = head(items)\nprint(first)\npush(items, 3)\n",
+    );
+    fails(
+        "items = [1, 2, 3]\npart = view(items)\npush(items, 4)\nprint(part)\n",
+        "E_BORROW_CONFLICT",
+    );
+    fails(
+        "items = [1, 2, 3]\nchanging = mutable_view(items)\nprint(items)\nchanging[0] = 5\n",
+        "E_BORROW_CONFLICT",
+    );
+    fails(
+        "function head(values: Array<integer>) -> View<integer>\n    return view(values, 0, 1)\n\nitems = [1, 2]\nfirst = head(items)\nother = items\nprint(first)\n",
+        "E_BORROW_CONFLICT",
+    );
+    fails(
+        "items = [1]\npart = view(items)\npart[0] = 2\n",
+        "E_MUTATE_BORROWED",
+    );
+    fails(
+        "function mine() -> View<integer>\n    owned = [1]\n    return view(owned)\n",
+        "E_VIEW_RETURN",
+    );
+    fails("part = view([1, 2])\nprint(part)\n", "E_VIEW_TEMPORARY");
+    fails("items = [1]\nparts = [view(items)]\n", "E_VIEW_ESCAPE");
+    fails("type Holder = [inner: View<integer>]\n", "E_VIEW_ESCAPE");
+}
+
+#[test]
 fn dictionaries_take_value_keys() {
     let program = ok("squares = [1 = 1, 2 = 4]\nprint(squares[1], haskey(squares, 3))\n");
     let entry = &program.functions[program.entry.0 as usize];

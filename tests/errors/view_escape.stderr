@@ -1,0 +1,42 @@
+error[E_VIEW_ESCAPE]: the field `inner` cannot hold a view
+  --> view_escape.sayon:1:23
+   |
+ 1 | type Holder = [inner: View<integer>]
+   |                       ^^^^^^^^^^^^^
+   |
+   = help: a view borrows an array for a while: keep it in a variable or pass it to a function, or use clone(...) for an owned copy
+
+error[E_VIEW_ESCAPE]: Array<View<integer>> cannot hold a view
+  --> view_escape.sayon:2:8
+   |
+ 2 | views: Array<View<integer>> = []
+   |        ^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: a view borrows an array for a while: keep it in a variable or pass it to a function, or use clone(...) for an owned copy
+
+error[E_VIEW_ESCAPE]: a value of type Array<View<integer>> cannot hold a view
+  --> view_escape.sayon:5:9
+   |
+ 5 | group = [v]
+   |         ^^^
+   |
+   = help: a view borrows an array for a while: keep it in a variable or pass it to a function, or use clone(...) for an owned copy
+
+error[E_VIEW_ESCAPE]: a closure cannot capture a view
+  --> view_escape.sayon:6:33
+   |
+ 6 | show = function() return length(v)
+   |                                 ^
+   |
+   = help: a view borrows an array for a while: keep it in a variable or pass it to a function, or use clone(...) for an owned copy
+
+error[E_VIEW_ESCAPE]: a constant cannot hold a view
+  --> view_escape.sayon:8:10
+   |
+ 8 | constant SHOWN = view(FIXED)
+   |          ^^^^^
+   |
+   = help: a view borrows an array for a while: keep it in a variable or pass it to a function, or use clone(...) for an owned copy
+
+5 errors found; nothing was run
+run `sayon explain E_VIEW_ESCAPE` to learn more about an error

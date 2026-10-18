@@ -1,0 +1,56 @@
+error[E_BORROW_CONFLICT]: cannot change `numbers` while the view `part` of it is still in use
+  --> view_ownership.sayon:3:6
+   |
+ 3 | push(numbers, 5)
+   |      ^^^^^^^
+ 4 | print(part[0])
+   | -------------- `part` is used until here
+   |
+   = help: finish using `part` first, or give it a copy: `clone(part)` is an array of its elements
+
+error[E_BORROW_CONFLICT]: cannot use `items` while the mutable view `changing` of it is still in use
+  --> view_ownership.sayon:8:7
+   |
+ 8 | print(items)
+   |       ^^^^^
+ 9 | changing[0] = 9
+   | --------------- `changing` is used until here
+   |
+   = help: finish using `changing` first, or give it a copy: `clone(changing)` is an array of its elements
+
+error[E_MUTATE_BORROWED]: the elements of a View cannot be changed
+   --> view_ownership.sayon:12:1
+    |
+ 12 | reading[0] = 5
+    | ^^^^^^^^^^^^^^
+    |
+    = help: make a view that can change them with mutable_view(...)
+
+error[E_BORROW_CONFLICT]: cannot transfer `words` while the view `half` of it is still in use
+   --> view_ownership.sayon:19:9
+    |
+ 19 | moved = words
+    |         ^^^^^
+ 20 | print(half)
+    | ----------- `half` is used until here
+    |
+    = help: finish using `half` first, or give it a copy: `clone(half)` is an array of its elements
+
+error[E_VIEW_RETURN]: cannot return a view of `owned`, which belongs to this function
+   --> view_ownership.sayon:24:12
+    |
+ 24 |     return view(owned)
+    |            ^^^^^^^^^^^
+    |
+    = help: return a view of a parameter, or clone(...) for an owned array
+
+error[E_VIEW_TEMPORARY]: a view needs a variable to borrow from
+   --> view_ownership.sayon:26:18
+    |
+ 26 | temporary = view([1, 2, 3])
+    |                  ^^^^^^^^^ this array is gone after this statement
+    |
+    = help: store the array in a variable first, and make the view of that
+
+6 errors found; nothing was run
+run `sayon explain E_BORROW_CONFLICT` to learn more about an error
