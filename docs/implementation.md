@@ -167,6 +167,7 @@ A moved-from place is empty, and destroying an empty place does nothing, so clea
 | `Array<T>` | `{ ptr data, i64 length, i64 capacity }`, elements contiguous | 24 |
 | `Range` | `{ i64 start, i64 end, i64 step }` | 24 |
 | `Dict<K, V>`, `Error` | pointer to a runtime object | 8 |
+| `HostStream` | `i64` number of a stream | 8 |
 | union | `{ i32 tag, [N x i64] payload }`, payload at offset 8 | 8 + 8N |
 | structure | `{ fields... }` in declaration order, each at its natural alignment | sum of fields with padding |
 | enum | `{ i32 tag, [N x i64] payload }`; tag is the variant's position plus one; a variant's fields are laid out like a structure starting at offset 8 | 8 + 8N |
@@ -187,6 +188,16 @@ A package is identified by its source: `path:<folder>`, relative to the root pac
 A Git source is cloned into `<cache>/git/<first 20 hex digits of SHA-256(url, NUL, commit)>` through a temporary folder, checked out at the commit, and verified with `git rev-parse HEAD`. Its digest is SHA-256 over the domain prefix `sayon-package-digest-1` and a NUL byte, then, for each file in order of its `/`-separated relative path, the path's length (8 bytes, little-endian), the path, the content's length, and the content. Hidden entries (such as `.git`), and `target` and `sayon.lock` at the package's top, are left out; line endings are not normalized; symbolic links are rejected. The build family recomputes the digest of every Git source it uses. Local folders are not digested, since they are meant to be edited.
 
 The loader resolves `dependencies/<alias>/<path>` against the package of the importing module, using a map from each package's canonical folder to its aliases, built from the lock. Modules from dependencies are named `dependencies/<alias>/<path>` in messages, nested for dependencies of dependencies.
+
+## Methods and iterators
+
+A method call `value.name(...)` is checked as an ordinary call with the value as the first argument, after the checker knows the value's type: it looks in the module declaring the type for a function `type_name`, then `name`, whose first parameter is annotated with that type. Functions are checked in dependency order, and since a method call names no module, a function calling `.name(...)` depends on every method named `name` of any type; a `for` loop depends on every `next`. These edges can only join components in a cycle that already exists through the methods' bodies.
+
+A loop over an iterator keeps the iterator in a hidden local: a reference to the variable it iterates, or the owner of an iterator made for the loop, destroyed when the loop ends. Each iteration calls `next` into a slot of type `T or nothing`, leaves when it holds `nothing`, and otherwise moves the payload into the loop variable, whose scope ends with the iteration. The loop borrows the iterated variable, and for a made iterator, the variables passed to the call that made it in `update` mode.
+
+## Streams
+
+A `File` holds a `HostStream`, a type only the standard library can name: in both execution modes a 64-bit number naming an entry of the runtime's stream table, `0` once moved. An entry counts the values that refer to it. A clone adds one, destroying a value removes one, and the last closes the file, writing its buffer without a report; `close` writes the buffer, reports a failure, and leaves the entry closed for the references that remain. Numbers are never reused, so a stale reference can never reach another file. Readers and writers are buffered; a line read keeps at most the limit and a carriage return, plus one buffer of 8 KiB. When the program ends, every writer still open is flushed. Native programs count each stream reference as an allocation in the `SAYON_DEBUG_ALLOC` report.
 
 ## Calls and parameter passing
 

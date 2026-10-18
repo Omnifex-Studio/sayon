@@ -100,6 +100,8 @@ impl<'m> Machine<'m> {
         }
         let result = self.call(module.entry);
         let _ = self.out.flush();
+        // Files kept by constants stay open until the program ends.
+        sayon_runtime::streams::flush_all();
         match result? {
             Value::Int(code) => Ok(code.clamp(i32::MIN as i128, i32::MAX as i128) as i32),
             _ => Ok(0),
@@ -1147,6 +1149,10 @@ impl<'m> Machine<'m> {
                 (HostType::StringArray, Value::Array(items)) => {
                     HostArg::Strings(items.iter().map(Value::as_str).collect())
                 }
+                (HostType::Stream, Value::Stream(stream)) => HostArg::Stream(stream.id()),
+                (HostType::Bytes, Value::Array(items)) => {
+                    HostArg::Bytes(items.iter().map(|item| item.as_int() as u8).collect())
+                }
                 (ty, value) => panic!("host argument {value:?} for {ty:?}"),
             })
             .collect();
@@ -1159,6 +1165,13 @@ impl<'m> Machine<'m> {
             Ok(HostValue::Strings(items)) => {
                 Ok(Value::Array(items.iter().map(|s| Value::str(s)).collect()))
             }
+            Ok(HostValue::Stream(id)) => Ok(Value::Stream(StreamRef::adopt(id))),
+            Ok(HostValue::Bytes(bytes)) => Ok(Value::Array(
+                bytes
+                    .into_iter()
+                    .map(|byte| Value::Int(byte as i128))
+                    .collect(),
+            )),
             Ok(HostValue::OptionalString(text)) => {
                 let (string_tag, nothing_tag) = tags.expect("tags for an optional string");
                 Ok(match text {

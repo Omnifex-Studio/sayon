@@ -833,6 +833,13 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 bindings,
                 iterable,
                 body,
+                next: Some(next),
+            } => self.iterator_loop(bindings, iterable, body, next),
+            For {
+                bindings,
+                iterable,
+                body,
+                next: None,
             } => self.for_loop(bindings, iterable, body),
             Break | Continue => {
                 let Some(target) = self.loops.last() else {
@@ -1239,6 +1246,77 @@ impl<'l, 'p> FnLower<'l, 'p> {
             Place::slot(index),
             Rvalue::Increment(Operand::Copy(Place::slot(index))),
         );
+        self.goto(head);
+
+        self.switch_to(exit);
+        self.pop_scope();
+    }
+
+    /// A loop over an iterator: each iteration calls `next`, and the loop
+    /// ends when it returns `nothing`; otherwise the loop variable owns the
+    /// value until the iteration ends.
+    fn iterator_loop(
+        &mut self,
+        bindings: &[LocalId],
+        iterable: &'p hir::Expr,
+        body: &'p hir::Block,
+        next: &'p hir::NextCall,
+    ) {
+        self.push_scope();
+        let iterator_ty = self.ty(&iterable.ty);
+        let iterator = self.place_of(iterable, Want::Mut);
+        let reference = self.new_slot(iterator_ty, SlotKind::Ref { mutable: true }, None);
+        self.push(Inst::Bind {
+            slot: reference,
+            place: iterator,
+            mutable: true,
+        });
+        self.local_slots.insert(next.iterator, reference);
+        let result_ty = self.ty(&next.call.ty);
+        let result = self.temp(result_ty.clone());
+        let ended = self.new_slot(Type::Boolean, SlotKind::Value, None);
+        let head = self.new_block();
+        let body_entry = self.new_block();
+        let exit = self.new_block();
+        self.goto(head);
+
+        self.switch_to(head);
+        self.expr_into(&next.call, Place::slot(result));
+        let value = self.read_operand(&Place::slot(result), &result_ty);
+        let tag = self.l.tag(&Type::Nothing);
+        self.assign(Place::slot(ended), Rvalue::TagIs { value, tag });
+        self.terminate(Terminator::Branch {
+            condition: Operand::Copy(Place::slot(ended)),
+            then_block: exit,
+            else_block: body_entry,
+        });
+
+        self.switch_to(body_entry);
+        let scope_depth = self.scopes.len();
+        self.push_scope();
+        let local = bindings[0];
+        let info = &self.locals[local.0 as usize];
+        let ty = self.ty(&info.ty);
+        let name = Some(info.name.clone());
+        let slot = self.new_slot(ty.clone(), SlotKind::Value, name);
+        self.scopes.last_mut().expect("scope").slots.push(slot);
+        self.local_slots.insert(local, slot);
+        let payload = self.narrow(Place::slot(result), &result_ty, &ty);
+        let operand = if ty.is_copy() {
+            Operand::Copy(payload)
+        } else {
+            Operand::Move(payload)
+        };
+        self.assign(Place::slot(slot), Rvalue::Use(operand));
+        self.loops.push(LoopCtx {
+            break_to: exit,
+            continue_to: head,
+            scope_depth,
+            finally_depth: self.finallies.len(),
+        });
+        self.lower_block(body);
+        self.loops.pop();
+        self.pop_scope();
         self.goto(head);
 
         self.switch_to(exit);

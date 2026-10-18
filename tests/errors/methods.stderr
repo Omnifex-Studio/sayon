@@ -1,0 +1,51 @@
+error[E_UNKNOWN_METHOD]: `Point` has no method `area`
+  --> methods.sayon:9:13
+   |
+ 9 | print(point.area())
+   |             ^^^^
+   |
+   = note: `.area(...)` calls a function `point_area` or `area` declared beside `Point`, whose first parameter is a `Point`
+
+error[E_UNKNOWN_METHOD]: Array<_> has no method `length_squared`
+   --> methods.sayon:10:14
+    |
+ 10 | print([1, 2].length_squared())
+    |              ^^^^^^^^^^^^^^
+    |
+    = note: methods belong to structures and enums; call a function with the value instead
+
+error[E_UNKNOWN_METHOD]: cannot tell which `length_squared` to call before this value's type is known
+   --> methods.sayon:13:18
+    |
+ 13 |     return shape.length_squared()
+    |                  ^^^^^^^^^^^^^^
+    |
+    = help: declare the type of the variable or parameter, for example `file: io.File`
+
+error[E_NOT_ITERABLE]: the `next` of `Endless` must return a value or `nothing`
+   --> methods.sayon:22:14
+    |
+ 22 | for value in Endless(count = 0)
+    |              ^^^^^^^^^^^^^^^^^^
+    |
+    = help: declare its result as `T or nothing`, with `nothing` at the end
+
+error[E_UNKNOWN_TYPE]: unknown type `HostStream`
+   --> methods.sayon:26:23
+    |
+ 26 | function keep(stream: HostStream)
+    |                       ^^^^^^^^^^ not a known type
+    |
+    = help: built-in types include integer, float, boolean, string, nothing, Array<T> and Dict<K, V>; declare your own with `type` or `enum`
+
+error[E_UNKNOWN_METHOD]: `Point` has no method `scaled`
+   --> methods.sayon:33:13
+    |
+ 33 | print(point.scaled(2.0))
+    |             ^^^^^^
+    |
+    = note: `.scaled(...)` calls a function `point_scaled` or `scaled` declared beside `Point`, whose first parameter is a `Point`
+    = help: `scaled` is not a method of `Point` until its first parameter is declared as one, such as `value: Point`
+
+6 errors found; nothing was run
+run `sayon explain E_UNKNOWN_METHOD` to learn more about an error

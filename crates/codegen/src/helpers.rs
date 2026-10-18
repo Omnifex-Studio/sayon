@@ -320,6 +320,7 @@ impl<'m> Codegen<'m> {
             }
             Type::String => body.line("call void @sayon_str_drop(ptr %p)"),
             Type::Error => body.line("call void @sayon_error_drop(ptr %p)"),
+            Type::Stream => body.line("call void @sayon_stream_drop(ptr %p)"),
             Type::Dict(_, value) => {
                 let drop = if needs_drop(value) {
                     self.helper(Helper::Drop, value)
@@ -415,6 +416,7 @@ impl<'m> Codegen<'m> {
             }
             Type::String => body.line("call void @sayon_str_clone(ptr %src, ptr %dst)"),
             Type::Error => body.line("call void @sayon_error_clone(ptr %src, ptr %dst)"),
+            Type::Stream => body.line("call void @sayon_stream_clone(ptr %src, ptr %dst)"),
             Type::Dict(_, value) => {
                 let clone = if needs_drop(value) {
                     self.helper(Helper::Clone, value)
@@ -527,8 +529,8 @@ impl<'m> Codegen<'m> {
             Type::Float(FloatType::F32) => scalar(body, "float", "fcmp oeq"),
             Type::Boolean => scalar(body, "i1", "icmp eq"),
             Type::Nothing | Type::Unknown => body.line("ret i1 true"),
-            // Function values and views are never compared.
-            Type::Function(_) | Type::View(..) => body.line("ret i1 false"),
+            // Function values, views, and streams are never compared.
+            Type::Function(_) | Type::View(..) | Type::Stream => body.line("ret i1 false"),
             Type::String => {
                 let result = body.tmp();
                 body.line(format!(
@@ -729,6 +731,7 @@ impl<'m> Codegen<'m> {
             }
             Type::Nothing | Type::Unknown => self.text(body, "nothing"),
             Type::Function(_) => self.text(body, "function"),
+            Type::Stream => self.text(body, "stream"),
             Type::String => {
                 body.line("call void @sayon_builder_str(ptr %builder, ptr %value, i1 %nested)")
             }

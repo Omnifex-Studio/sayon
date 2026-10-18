@@ -1321,8 +1321,37 @@ pub unsafe extern "C" fn sayon_write_file(
 
 // ----- program lifecycle ----------------------------------------------------------------------------
 
+// ----- streams --------------------------------------------------------------------------------------
+
+/// Drops a stream reference; 0 is a moved-from stream.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_stream_drop(slot: *mut i64) {
+    // SAFETY: the slot holds a stream number or 0.
+    unsafe {
+        if *slot != 0 {
+            crate::streams::release(*slot);
+            released();
+            *slot = 0;
+        }
+    }
+}
+
+/// A clone of a stream refers to the same open file.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_stream_clone(src: *const i64, dst: *mut i64) {
+    // SAFETY: valid slots.
+    unsafe {
+        crate::streams::share(*src);
+        allocated();
+        *dst = *src;
+    }
+}
+
+// ----- program lifecycle ----------------------------------------------------------------------------
+
 #[unsafe(no_mangle)]
 pub extern "C" fn sayon_runtime_finish() {
+    crate::streams::flush_all();
     let _ = std::io::stdout().flush();
     if std::env::var_os("SAYON_DEBUG_ALLOC").is_some() {
         eprintln!(
@@ -1388,6 +1417,16 @@ pub unsafe extern "C" fn sayon_host_call(
                         .collect();
                     HostArg::Strings(elements)
                 }
+                HostType::Stream => HostArg::Stream(*(pointer as *const i64)),
+                HostType::Bytes => {
+                    let array = &*(pointer as *const SayonArray);
+                    let bytes = if array.len == 0 {
+                        Vec::new()
+                    } else {
+                        std::slice::from_raw_parts(array.ptr, array.len as usize).to_vec()
+                    };
+                    HostArg::Bytes(bytes)
+                }
                 HostType::Nothing | HostType::OptionalString => {
                     panic!("unsupported host parameter")
                 }
@@ -1422,6 +1461,24 @@ pub unsafe extern "C" fn sayon_host_call(
                 if let Some(text) = text {
                     *(out as *mut SayonStr) = owned(text);
                 }
+            }
+            Ok(HostValue::Stream(id)) => {
+                allocated();
+                *(out as *mut i64) = id;
+            }
+            Ok(HostValue::Bytes(bytes)) => {
+                let array = out as *mut SayonArray;
+                *array = SayonArray {
+                    ptr: std::ptr::null_mut(),
+                    len: 0,
+                    cap: 0,
+                };
+                let count = bytes.len() as i64;
+                if count > 0 {
+                    sayon_array_reserve(array, count, 1);
+                    std::ptr::copy_nonoverlapping(bytes.as_ptr(), (*array).ptr, bytes.len());
+                }
+                (*array).len = count;
             }
             Err((code, message)) => return set_error(err, code, message, location),
         }

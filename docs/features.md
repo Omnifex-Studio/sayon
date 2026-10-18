@@ -37,6 +37,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `match` with literal, variant, union-member, and nested patterns, guards, exhaustiveness and unreachable-case checks | experimental | M2 |
 | Structure patterns (positional and by field name), named variant fields, `or` alternatives | experimental | M2 |
 | Function values, closures, captured state, function types | experimental | M2 |
+| Methods: `value.name(...)` calls a function declared beside the value's type | experimental | M2 |
+| `for` loops over iterators, through a `next` method | experimental | M2 |
 | `try` expressions, `is error` narrowing, `Outcome<T>`, unused-outcome warning | experimental | M2 |
 | Dictionary keys of any integer, boolean, string, or `nothing` type, and structures, enums, and unions of those | experimental | M2 |
 | Borrowed views (`View<T>`, `MutableView<T>`): `view`, `mutable_view`, indexing, loops, returned views of parameters, borrows until last use | experimental | M2 |
@@ -82,7 +84,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `standard/filesystem`: listing, metadata, create, remove, rename, copy, paths | experimental | M1 |
 | `standard/strings`: split, join, trim, case, replace, search, slicing, character codes | experimental | M1 |
 | `standard/math`: functions, constants, `random` | experimental | M1 |
-| Streams and file handles (`io.open`, `file.lines()`), process spawning, `os.exit`, directory walking | planned | M2 to M3 |
+| `standard/io` files: `io.open`, buffered reading and writing, `file.lines()` with a line limit, bytes, `seek`, `position`, checked `close`, `io.copy` | experimental | M2 |
+| Standard input and output as files, other encodings, process spawning, `os.exit`, directory walking | planned | M2 to M3 |
 | `standard/json`: `Json` values, parse with positions in errors, compact and pretty encoding, exact number text, duplicate-field and depth limits | experimental | M2 |
 | `standard/json` typed decoding and encoding into structures | planned | M2 to M3 |
 | `standard/collections`: stable sorting, `Set`, `Queue`; `remove` and `swap` built-ins | experimental | M2 |

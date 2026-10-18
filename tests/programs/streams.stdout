@@ -1,0 +1,18 @@
+19
+[first]
+[second]
+[third]
+first second
+third
+[102, 105, 114] 16 []
+["first", "second", "third", "fourth"]
+27
+true
+[0, 255, 10, 13]
+first
+IOError a line of "streams_output.tmp" is longer than the limit of 5 bytes
+could not open "streams_missing.tmp": it does not exist
+ValueError
+"streams_output.tmp" was opened for reading, not writing
+"streams_output.tmp" is closed
+first

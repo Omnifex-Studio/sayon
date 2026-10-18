@@ -32,3 +32,10 @@ ignored = 3  # allow(unused_variable)
 # allow(naming, not_a_lint)
 badName = 4
 print(badName)
+
+# Changing part of a parameter uses it.
+function reset_first(update items: Array<integer>)
+    items[0] = 0
+
+reset_first(values)
+print(values)

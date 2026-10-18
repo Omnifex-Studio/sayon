@@ -135,6 +135,9 @@ pub enum Type {
     /// A borrowed slice of an array's elements: `View<T>`, or with `true`,
     /// the exclusive `MutableView<T>`.
     View(Box<Type>, bool),
+    /// An open file, `HostStream` in the standard library's code: a counted
+    /// reference to the runtime's stream, closed when the last is dropped.
+    Stream,
     /// A type parameter of a generic function.
     Param(u32),
     Var(TyVar),
@@ -303,6 +306,7 @@ impl fmt::Display for Type {
             Type::String => f.write_str("string"),
             Type::Nothing => f.write_str("nothing"),
             Type::Range => f.write_str("Range"),
+            Type::Stream => f.write_str("HostStream"),
             Type::Error => f.write_str("Error"),
             Type::Array(element) => write!(f, "Array<{element}>"),
             Type::Dict(key, value) => write!(f, "Dict<{key}, {value}>"),
@@ -488,6 +492,7 @@ pub fn non_key_part(types: &[TypeDef], ty: &Type) -> Option<Type> {
             | Type::Function(_)
             | Type::View(..)
             | Type::Error
+            | Type::Stream
             | Type::Range => Some(ty.clone()),
         }
     }

@@ -966,24 +966,20 @@ impl<'a> Checker<'a> {
                 return self.qualified_variant(cx, id, name, Some(args), expected, span);
             }
             ast::ExprKind::Member { target, name } => {
-                // A structure field holding a function value can be called.
                 let value = self.check_expr(cx, target, None);
-                let is_field = match self.unifier.resolve(&value.ty) {
-                    Type::Named(named) => {
-                        let def = self.type_def(named.id);
-                        !def.is_enum() && def.field_index(&name.name).is_some()
+                let resolved = self.unifier.resolve(&value.ty);
+                if let Type::Named(named) = &resolved {
+                    // A structure field holding a function value can be called.
+                    let def = self.type_def(named.id);
+                    if !def.is_enum() && def.field_index(&name.name).is_some() {
+                        let field = self.check_field(cx, value, name, callee.span);
+                        return self.call_value(cx, field, args, span);
                     }
-                    _ => false,
-                };
-                if is_field {
-                    let field = self.check_field(cx, value, name, callee.span);
-                    return self.call_value(cx, field, args, span);
+                    if let Some(id) = self.method(named.id, &name.name) {
+                        return self.call_method(cx, id, name, value, generic_args, args, span);
+                    }
                 }
-                self.error(
-                    Diagnostic::error("E_UNKNOWN_METHOD", format!("no method `{}` is available here", name.name))
-                        .primary(name.span, "")
-                        .note("library methods such as `file.lines()` arrive with the standard library modules"),
-                );
+                self.unknown_method(&resolved, name);
                 for arg in args {
                     self.check_expr(cx, arg, None);
                 }
@@ -1244,6 +1240,120 @@ impl<'a> Checker<'a> {
             ret,
             span,
         )
+    }
+
+    /// `value.name(args)`: a call of the method `name` of the value's type,
+    /// with the value as the first argument.
+    #[allow(clippy::too_many_arguments)]
+    fn call_method(
+        &mut self,
+        cx: &mut FnCtx,
+        id: hir::FuncId,
+        name: &ast::Ident,
+        receiver: hir::Expr,
+        generic_args: &[ast::TypeExpr],
+        args: &[ast::Expr],
+        span: Span,
+    ) -> hir::Expr {
+        if self.item_is_private(Item::Function(id))
+            && self.functions[id.0 as usize].module != cx.module
+        {
+            let function = self.functions[id.0 as usize].name.clone();
+            let module = self.modules[self.functions[id.0 as usize].module.0 as usize]
+                .name
+                .clone();
+            self.error(
+                Diagnostic::error(
+                    "E_PRIVATE",
+                    format!("`{function}` is private to `{module}`"),
+                )
+                .primary(name.span, "not exported")
+                .help("remove `private` from its definition to export it"),
+            );
+        }
+        let explicit: Vec<Type> = generic_args
+            .iter()
+            .map(|g| self.resolve_type(cx.module, g, &cx.generics))
+            .collect();
+        let (signature, params, type_args, ret) = self.instantiate(id, &explicit, span);
+        // The receiver is the first argument, so the counts leave it out.
+        let given = args.len() + 1;
+        if given < signature.required || given > signature.params.len() {
+            let (min, max) = (signature.required - 1, signature.params.len() - 1);
+            self.arity(name, args, min, max, span);
+            for arg in args {
+                self.check_expr(cx, arg, None);
+            }
+            return expr(ExprKind::Nothing, ret, span);
+        }
+        let context = format!("value whose `{}` is called", name.name);
+        let receiver = self.coerce(receiver, &params[0], &context);
+        let mut checked = vec![Arg {
+            expr: receiver,
+            mode: signature.explicit_modes[0].unwrap_or(ParamMode::Read),
+        }];
+        for (index, arg) in args.iter().enumerate() {
+            let position = index + 1;
+            let context = format!("argument for `{}`", signature.param_names[position]);
+            let value = self.check_expr_as(cx, arg, &params[position], &context);
+            let mode = signature.explicit_modes[position].unwrap_or(ParamMode::Read);
+            checked.push(Arg { expr: value, mode });
+        }
+        expr(
+            ExprKind::Call {
+                function: id,
+                type_args,
+                args: checked,
+            },
+            ret,
+            span,
+        )
+    }
+
+    fn unknown_method(&mut self, receiver: &Type, name: &ast::Ident) {
+        let method = &name.name;
+        let diagnostic = match receiver {
+            Type::Var(_) => Diagnostic::error(
+                "E_UNKNOWN_METHOD",
+                format!("cannot tell which `{method}` to call before this value's type is known"),
+            )
+            .primary(name.span, "")
+            .help("declare the type of the variable or parameter, for example `file: io.File`"),
+            Type::Unknown => return,
+            Type::Named(named) => {
+                let type_name = self.types[named.id.0 as usize].name.clone();
+                let module = self.types[named.id.0 as usize].module;
+                let prefixed = format!("{}_{method}", checker::snake_case(&type_name));
+                let diagnostic = Diagnostic::error(
+                    "E_UNKNOWN_METHOD",
+                    format!("`{type_name}` has no method `{method}`"),
+                )
+                .primary(name.span, "")
+                .note(format!(
+                    "`.{method}(...)` calls a function `{prefixed}` or `{method}` declared beside `{type_name}`, whose first parameter is a `{type_name}`"
+                ));
+                // A function of that name whose first parameter is not
+                // declared with the type.
+                let near = [prefixed.as_str(), method.as_str()]
+                    .into_iter()
+                    .find(|candidate| {
+                        matches!(self.item(module, candidate), Some(Item::Function(_)))
+                    });
+                match near {
+                    Some(function) => diagnostic.help(format!(
+                        "`{function}` is not a method of `{type_name}` until its first parameter is declared as one, such as `value: {type_name}`"
+                    )),
+                    None => diagnostic,
+                }
+            }
+            other => Diagnostic::error(
+                "E_UNKNOWN_METHOD",
+                format!("{other} has no method `{method}`"),
+            )
+            .primary(name.span, "")
+            .note("methods belong to structures and enums; call a function with the value instead"),
+        };
+        self.error(diagnostic);
     }
 
     fn check_move(&mut self, cx: &mut FnCtx, args: &[ast::Expr], span: Span) -> hir::Expr {
@@ -1639,6 +1749,8 @@ pub(crate) fn host_type(ty: sayon_runtime::host::HostType) -> Type {
         HostType::Nothing => Type::Nothing,
         HostType::StringArray => Type::array(Type::String),
         HostType::OptionalString => Type::union([Type::String, Type::Nothing]),
+        HostType::Stream => Type::Stream,
+        HostType::Bytes => Type::array(Type::Int(crate::types::IntType::U8)),
     }
 }
 

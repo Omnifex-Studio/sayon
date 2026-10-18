@@ -152,7 +152,7 @@ enum Returned {
 struct LoopBorrow {
     local: LocalId,
     span: Span,
-    /// "loop" or "match".
+    /// "loop", "iterator" (a loop over an iterator), or "match".
     by: &'static str,
 }
 
@@ -590,12 +590,18 @@ impl<'p> Analyzer<'p> {
                 format!("the loop reads `{name}` here until it finishes"),
                 "collect the changes in another collection and apply them after the loop",
             )
+        } else if by == "iterator" {
+            (
+                format!("the loop uses `{name}` here until it finishes"),
+                "make the change after the loop, or `break` out of it first",
+            )
         } else {
             (
                 format!("the match reads `{name}` here while its case runs"),
                 "make the change after the match, or bind a copy with clone(...)",
             )
         };
+        let by = if by == "iterator" { "loop" } else { by };
         self.emit("E_BORROW_CONFLICT", span, || {
             Diagnostic::error(
                 "E_BORROW_CONFLICT",
@@ -1423,6 +1429,13 @@ impl<'p> Analyzer<'p> {
                 bindings,
                 iterable,
                 body,
+                next: Some(next),
+            } => self.iterator_loop(bindings, iterable, body, next, state),
+            StmtKind::For {
+                bindings,
+                iterable,
+                body,
+                next: None,
             } => {
                 self.expr(iterable, Ctx::Read, state);
                 let iterable_ty = iterable.ty.clone();
@@ -1616,6 +1629,88 @@ impl<'p> Analyzer<'p> {
 
     /// Runs a loop body to a fixed point. `body` analyses one iteration from
     /// the loop head and returns the state on which the loop exits normally.
+    /// A loop over an iterator. The loop changes or reads the iterator with
+    /// its `next`, so a variable it iterates is borrowed until the loop
+    /// finishes; so is a variable an iterator made for the loop was given to
+    /// change, such as the file of `file.lines()`. Each value the iterator
+    /// produces belongs to the loop variable.
+    fn iterator_loop(
+        &mut self,
+        bindings: &[LocalId],
+        iterable: &mut Expr,
+        body: &mut Block,
+        next: &mut NextCall,
+        state: &mut State,
+    ) {
+        let ExprKind::Call { function, args, .. } = &mut next.call.kind else {
+            unreachable!("the next of a loop is a call");
+        };
+        let mode = self
+            .modes
+            .get(function)
+            .and_then(|modes| modes.first())
+            .copied()
+            .unwrap_or(ParamMode::Read);
+        args[0].mode = mode;
+        if let ExprKind::Local { usage, .. } = &mut args[0].expr.kind {
+            *usage = if mode == ParamMode::Update {
+                Usage::BorrowUpdate
+            } else {
+                Usage::Borrow
+            };
+        }
+        if mode == ParamMode::Own {
+            let span = iterable.span;
+            let name = self.names.get(function).cloned().unwrap_or_default();
+            self.emit("E_NOT_ITERABLE", span, || {
+                Diagnostic::error(
+                    "E_NOT_ITERABLE",
+                    format!("`{name}` takes the iterator with `own`, so it cannot be called again"),
+                )
+                .primary(span, "")
+                .help("let `next` take the iterator with `update`")
+            });
+        }
+        let borrows: Vec<LocalId> = if Self::is_place(iterable) {
+            let ctx = if mode == ParamMode::Update {
+                Ctx::Update
+            } else {
+                Ctx::Read
+            };
+            self.expr(iterable, ctx, state);
+            Self::root(iterable).into_iter().collect()
+        } else {
+            self.expr(iterable, Ctx::Consume, state);
+            match &iterable.kind {
+                ExprKind::Call { args, .. } => args
+                    .iter()
+                    .filter(|arg| arg.mode == ParamMode::Update)
+                    .filter_map(|arg| Self::root(&arg.expr))
+                    .collect(),
+                _ => Vec::new(),
+            }
+        };
+        for &local in &borrows {
+            self.loop_borrows.push(LoopBorrow {
+                local,
+                span: iterable.span,
+                by: "iterator",
+            });
+        }
+        for binding in bindings {
+            self.locals[binding.0 as usize].borrowed = false;
+        }
+        let bindings = bindings.to_vec();
+        self.run_loop(state, Some(&bindings), |this, head| {
+            let exit = head.clone();
+            this.block(body, head);
+            exit
+        });
+        for _ in &borrows {
+            self.loop_borrows.pop();
+        }
+    }
+
     fn run_loop(
         &mut self,
         state: &mut State,

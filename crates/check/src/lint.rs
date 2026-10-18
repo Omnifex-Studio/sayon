@@ -571,7 +571,15 @@ impl<'p, 'o> FunctionLint<'p, 'o> {
                 each_expr(default, &mut |e| note_read(e, &mut reads));
             }
         }
-        each_block_expr(&function.body, &mut |e| note_read(e, &mut reads));
+        let mut changed = HashSet::new();
+        each_block_expr(
+            &function.body,
+            &mut |e| note_read(e, &mut reads),
+            &mut |local| {
+                changed.insert(local);
+            },
+        );
+        reads.extend(changed);
 
         for (index, local) in function.locals.iter().enumerate() {
             let id = LocalId(index as u32);
@@ -592,7 +600,7 @@ impl<'p, 'o> FunctionLint<'p, 'o> {
                     "W_UNUSED_VARIABLE",
                     format!("`{}` is never used", local.name),
                 ),
-                LocalKind::Captured => continue,
+                LocalKind::Captured | LocalKind::Hidden => continue,
             };
             self.out.push(
                 Diagnostic::warning(code, message)
@@ -614,7 +622,7 @@ impl<'p, 'o> FunctionLint<'p, 'o> {
     }
 
     fn naming(&mut self, local: &hir::Local) {
-        if local.kind == LocalKind::Captured || is_snake(&local.name) {
+        if matches!(local.kind, LocalKind::Captured | LocalKind::Hidden) || is_snake(&local.name) {
             return;
         }
         // A local constant may be written as a module constant would be.
@@ -709,6 +717,7 @@ impl<'p, 'o> FunctionLint<'p, 'o> {
                 bindings,
                 iterable,
                 body,
+                ..
             } => {
                 self.closures(iterable, visible);
                 let mark = visible.len();
@@ -791,14 +800,19 @@ fn each_expr<'e>(expr: &'e Expr, f: &mut dyn FnMut(&'e Expr)) {
     }
 }
 
-fn each_block_expr<'e>(block: &'e Block, f: &mut dyn FnMut(&'e Expr)) {
+/// `changed` receives the variables whose parts are changed.
+fn each_block_expr<'e>(
+    block: &'e Block,
+    f: &mut dyn FnMut(&'e Expr),
+    changed: &mut dyn FnMut(LocalId),
+) {
     for stmt in &block.stmts {
         match &stmt.kind {
             StmtKind::Let { value, .. } | StmtKind::Expr(value) | StmtKind::Return(Some(value)) => {
                 each_expr(value, f)
             }
             StmtKind::Assign { place, value } | StmtKind::CompoundAssign { place, value, .. } => {
-                each_place_expr(place, f);
+                each_place_expr(place, f, changed);
                 each_expr(value, f);
             }
             StmtKind::If {
@@ -807,33 +821,33 @@ fn each_block_expr<'e>(block: &'e Block, f: &mut dyn FnMut(&'e Expr)) {
                 else_block,
             } => {
                 each_expr(condition, f);
-                each_block_expr(then_block, f);
+                each_block_expr(then_block, f, changed);
                 if let Some(block) = else_block {
-                    each_block_expr(block, f);
+                    each_block_expr(block, f, changed);
                 }
             }
             StmtKind::While { condition, body } => {
                 each_expr(condition, f);
-                each_block_expr(body, f);
+                each_block_expr(body, f, changed);
             }
             StmtKind::For { iterable, body, .. } => {
                 each_expr(iterable, f);
-                each_block_expr(body, f);
+                each_block_expr(body, f, changed);
             }
             StmtKind::Try {
                 body,
                 catch,
                 finally,
             } => {
-                each_block_expr(body, f);
+                each_block_expr(body, f, changed);
                 if let Some((_, block)) = catch {
-                    each_block_expr(block, f);
+                    each_block_expr(block, f, changed);
                 }
                 if let Some(block) = finally {
-                    each_block_expr(block, f);
+                    each_block_expr(block, f, changed);
                 }
             }
-            StmtKind::Block(block) => each_block_expr(block, f),
+            StmtKind::Block(block) => each_block_expr(block, f, changed),
             StmtKind::Match {
                 scrutinee, arms, ..
             } => {
@@ -843,7 +857,7 @@ fn each_block_expr<'e>(block: &'e Block, f: &mut dyn FnMut(&'e Expr)) {
                     if let Some(guard) = &arm.guard {
                         each_expr(guard, f);
                     }
-                    each_block_expr(&arm.body, f);
+                    each_block_expr(&arm.body, f, changed);
                 }
             }
             StmtKind::Return(None) | StmtKind::Break | StmtKind::Continue => {}
@@ -853,29 +867,37 @@ fn each_block_expr<'e>(block: &'e Block, f: &mut dyn FnMut(&'e Expr)) {
 
 /// The expressions inside an assignment target; the target's own local is
 /// written, not read, unless an element or field of it is assigned.
-fn each_place_expr<'e>(place: &'e hir::Place, f: &mut dyn FnMut(&'e Expr)) {
+fn each_place_expr<'e>(
+    place: &'e hir::Place,
+    f: &mut dyn FnMut(&'e Expr),
+    changed: &mut dyn FnMut(LocalId),
+) {
     match place {
         hir::Place::Local(_) => {}
         hir::Place::Index { target, index, .. } => {
-            mark_place_root(target, f);
+            mark_place_root(target, f, changed);
             each_expr(index, f);
         }
         hir::Place::Field { target, .. } | hir::Place::Narrow { target, .. } => {
-            mark_place_root(target, f);
+            mark_place_root(target, f, changed);
         }
     }
 }
 
 /// Changing part of a variable counts as using it.
-fn mark_place_root<'e>(place: &'e hir::Place, f: &mut dyn FnMut(&'e Expr)) {
+fn mark_place_root<'e>(
+    place: &'e hir::Place,
+    f: &mut dyn FnMut(&'e Expr),
+    changed: &mut dyn FnMut(LocalId),
+) {
     match place {
-        hir::Place::Local(_) => {}
+        hir::Place::Local(local) => changed(*local),
         hir::Place::Index { target, index, .. } => {
-            mark_place_root(target, f);
+            mark_place_root(target, f, changed);
             each_expr(index, f);
         }
         hir::Place::Field { target, .. } | hir::Place::Narrow { target, .. } => {
-            mark_place_root(target, f)
+            mark_place_root(target, f, changed)
         }
     }
 }

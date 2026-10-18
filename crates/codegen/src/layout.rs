@@ -58,6 +58,7 @@ impl Layouts {
             Type::Array(_) => "%sayon.array".to_string(),
             Type::Range => "%sayon.range".to_string(),
             Type::Dict(..) | Type::Error => "ptr".to_string(),
+            Type::Stream => "i64".to_string(),
             Type::Function(_) => "%sayon.func".to_string(),
             Type::View(..) => "%sayon.view".to_string(),
             Type::Union(_) => self.tagged(ty, "union"),
@@ -124,7 +125,7 @@ impl Layouts {
             Type::Float(FloatType::F32) => 4,
             Type::Boolean | Type::Nothing | Type::Unknown => 1,
             Type::String | Type::Array(_) | Type::Range => 24,
-            Type::Dict(..) | Type::Error => 8,
+            Type::Dict(..) | Type::Error | Type::Stream => 8,
             Type::Function(_) | Type::View(..) => 16,
             Type::Union(_) => 8 + 8 * self.payload_words(ty),
             Type::Named(named) if self.is_enum(named) => 8 + 8 * self.payload_words(ty),
@@ -206,7 +207,12 @@ pub fn int_code(int: IntType) -> u32 {
 /// Whether values of the type own resources that must be released.
 pub fn needs_drop(ty: &Type) -> bool {
     match ty {
-        Type::String | Type::Array(_) | Type::Dict(..) | Type::Error | Type::Function(_) => true,
+        Type::String
+        | Type::Array(_)
+        | Type::Dict(..)
+        | Type::Error
+        | Type::Function(_)
+        | Type::Stream => true,
         Type::Union(members) => members.iter().any(needs_drop),
         // Every non-Copy field owns something.
         Type::Named(_) => !ty.is_copy(),

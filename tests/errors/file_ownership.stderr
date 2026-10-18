@@ -1,0 +1,32 @@
+error[E_MOVED_VALUE]: `file` was transferred to `file_close`
+  --> file_ownership.sayon:6:7
+   |
+ 5 | file.close()
+   | ---- ownership transferred here
+ 6 | print(file.read_line())
+   |       ^^^^ `file` no longer owns the value
+   |
+   = help: `file_close` takes ownership; pass clone(file) if you still need `file` afterwards
+
+error[E_BORROW_CONFLICT]: cannot transfer `other` while the loop is reading it
+   --> file_ownership.sayon:11:5
+    |
+ 10 | for line in other.lines()
+    |             ------------- the loop uses `other` here until it finishes
+ 11 |     other.close()
+    |     ^^^^^
+    |
+    = help: make the change after the loop, or `break` out of it first
+
+error[E_BORROW_CONFLICT]: cannot change `third` while the loop is reading it
+   --> file_ownership.sayon:15:11
+    |
+ 14 | for line in third.lines()
+    |             ------------- the loop uses `third` here until it finishes
+ 15 |     print(third.read_line())
+    |           ^^^^^
+    |
+    = help: make the change after the loop, or `break` out of it first
+
+3 errors found; nothing was run
+run `sayon explain E_MOVED_VALUE` to learn more about an error

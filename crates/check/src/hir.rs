@@ -61,6 +61,9 @@ pub enum LocalKind {
     /// A function literal's copy of a variable of the function around it,
     /// kept in the closure's environment between calls.
     Captured,
+    /// A value the program keeps without a name, such as the iterator of a
+    /// `for` loop.
+    Hidden,
 }
 
 #[derive(Debug, Clone)]
@@ -157,11 +160,12 @@ pub enum StmtKind {
         body: Block,
     },
     /// Iterates a range, an array, or a dictionary (keys, or keys and values),
-    /// according to the iterable's type.
+    /// according to the iterable's type, or an iterator through its `next`.
     For {
         bindings: Vec<LocalId>,
         iterable: Expr,
         body: Block,
+        next: Option<Box<NextCall>>,
     },
     Break,
     Continue,
@@ -271,6 +275,15 @@ impl Place {
             | Place::Narrow { target, .. } => target.root(),
         }
     }
+}
+
+/// How a `for` loop over an iterator gets each value: `call` is the
+/// iterator type's `next` applied to `iterator`, which holds the loop's
+/// iterator (or refers to it, when the loop is over a variable).
+#[derive(Debug, Clone)]
+pub struct NextCall {
+    pub iterator: LocalId,
+    pub call: Expr,
 }
 
 /// How an expression reading a local uses its value; decided by the
@@ -573,8 +586,16 @@ pub fn visit_stmt_mut(stmt: &mut Stmt, f: &mut dyn FnMut(&mut Expr)) {
             visit_expr_mut(condition, f);
             visit_block_mut(body, f);
         }
-        StmtKind::For { iterable, body, .. } => {
+        StmtKind::For {
+            iterable,
+            body,
+            next,
+            ..
+        } => {
             visit_expr_mut(iterable, f);
+            if let Some(next) = next {
+                visit_expr_mut(&mut next.call, f);
+            }
             visit_block_mut(body, f);
         }
         StmtKind::Return(value) => {

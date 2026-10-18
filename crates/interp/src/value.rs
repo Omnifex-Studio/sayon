@@ -38,6 +38,36 @@ pub enum Value {
     /// A view of `length` elements of the array at a reference, from
     /// `start`.
     View(Box<ViewValue>),
+    Stream(StreamRef),
+}
+
+/// A reference to an open stream of the runtime. A clone refers to the
+/// same file, and the file is closed when the last reference is dropped.
+#[derive(Debug)]
+pub struct StreamRef(i64);
+
+impl StreamRef {
+    /// Takes over the reference a new stream comes with.
+    pub fn adopt(id: i64) -> StreamRef {
+        StreamRef(id)
+    }
+
+    pub fn id(&self) -> i64 {
+        self.0
+    }
+}
+
+impl Clone for StreamRef {
+    fn clone(&self) -> StreamRef {
+        sayon_runtime::streams::share(self.0);
+        StreamRef(self.0)
+    }
+}
+
+impl Drop for StreamRef {
+    fn drop(&mut self) {
+        sayon_runtime::streams::release(self.0);
+    }
 }
 
 /// Where a value is stored: a frame's slot, or a module constant.
@@ -289,6 +319,7 @@ pub fn display(value: &Value, out: &mut String, nested: bool, types: &[TypeDef])
             }
         }
         Value::Function(..) => out.push_str("function"),
+        Value::Stream(_) => out.push_str("stream"),
         // The machine shows a view's elements before displaying it.
         Value::View(view) => {
             let _ = write!(out, "view of {} elements", view.length);

@@ -155,7 +155,7 @@ Only arrays, dictionaries, and strings support `value[index]`.
 
 ### E_NOT_ITERABLE
 
-`for` loops iterate over arrays, dictionaries, strings, and ranges.
+`for` loops iterate over arrays, views, dictionaries, strings, ranges, and iterators: values whose type has a `next` method returning `T or nothing`. This error also reports a `next` that takes more than the iterator, returns no `nothing`, or takes the iterator with `own` (a loop calls it again and again, so it needs `update` or a read).
 
 ### E_NOT_CALLABLE
 
@@ -243,7 +243,7 @@ A module has no function, type, or constant of that name, or it is `private`; or
 
 ### E_UNKNOWN_METHOD
 
-`value.name(...)` names no field holding a function value. Library methods such as `file.lines()` are planned with the standard library modules.
+`value.name(...)` names neither a field holding a function value nor a method. A method of a type `Point` is a function declared in the same module, named `point_name` or `name`, whose first parameter is declared as a `Point`. Only structures and enums have methods. The value's type must also be known where the method is called, so a parameter used this way needs an annotation, such as `file: io.File`.
 
 ### E_RECORD_TYPE
 

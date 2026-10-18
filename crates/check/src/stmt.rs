@@ -13,6 +13,78 @@ fn stmt(kind: StmtKind, span: Span) -> hir::Stmt {
 }
 
 impl<'a> Checker<'a> {
+    /// The call that gets the next value of a loop over an iterator, whose
+    /// type's `next` returns a value, or `nothing` at the end.
+    fn iterator_next(
+        &mut self,
+        cx: &mut FnCtx,
+        id: hir::FuncId,
+        iterable: &hir::Expr,
+        items: &[Type],
+        span: Span,
+    ) -> Option<Box<hir::NextCall>> {
+        let (signature, params, type_args, ret) = self.instantiate(id, &[], span);
+        let type_name = self.unifier.resolve(&iterable.ty).to_string();
+        if params.is_empty() || signature.required > 1 {
+            self.error(
+                Diagnostic::error(
+                    "E_NOT_ITERABLE",
+                    format!("the `next` of `{type_name}` must take only the iterator"),
+                )
+                .primary(span, ""),
+            );
+            return None;
+        }
+        self.unify_at(&params[0], &iterable.ty, span, "iterator");
+        let element = match self.unifier.resolve(&ret) {
+            Type::Union(members) if members.contains(&Type::Nothing) => {
+                Type::union(members.into_iter().filter(|m| *m != Type::Nothing))
+            }
+            _ => {
+                self.error(
+                    Diagnostic::error(
+                        "E_NOT_ITERABLE",
+                        format!("the `next` of `{type_name}` must return a value or `nothing`"),
+                    )
+                    .primary(span, "")
+                    .help("declare its result as `T or nothing`, with `nothing` at the end"),
+                );
+                return None;
+            }
+        };
+        if items.len() != 1 {
+            self.error(
+                Diagnostic::error("E_LOOP_BINDINGS", "this loop takes exactly one variable")
+                    .primary(span, ""),
+            );
+            return None;
+        }
+        self.unify_at(&items[0], &element, span, "loop variable");
+        let iterator = cx.hidden(iterable.ty.clone(), span);
+        let mode = signature.explicit_modes[0].unwrap_or(ast::ParamMode::Read);
+        let receiver = hir::Expr {
+            kind: hir::ExprKind::Local {
+                local: iterator,
+                usage: hir::Usage::Unset,
+            },
+            ty: iterable.ty.clone(),
+            span,
+        };
+        let call = hir::Expr {
+            kind: hir::ExprKind::Call {
+                function: id,
+                type_args,
+                args: vec![hir::Arg {
+                    expr: receiver,
+                    mode,
+                }],
+            },
+            ty: ret,
+            span,
+        };
+        Some(Box::new(hir::NextCall { iterator, call }))
+    }
+
     pub fn check_block(&mut self, cx: &mut FnCtx, block: &ast::Block) -> hir::Block {
         cx.scopes.push(Scope::new());
         let stmts = self.check_stmts(cx, block.stmts.iter());
@@ -125,12 +197,22 @@ impl<'a> Checker<'a> {
                 let iterable_hir = self.check_expr(cx, iterable, None);
                 let item_types: Vec<Type> =
                     bindings.iter().map(|b| self.fresh_var(b.span)).collect();
+                let mut next = None;
                 match self.unifier.shallow(&iterable_hir.ty) {
                     Type::Var(_) => self.deferred.push(Deferred::Iterate {
                         iterable: iterable_hir.ty.clone(),
                         items: item_types.clone(),
                         span: iterable.span,
                     }),
+                    Type::Named(named) if self.method(named.id, "next").is_some() => {
+                        let id = self.method(named.id, "next").expect("next");
+                        next =
+                            self.iterator_next(cx, id, &iterable_hir, &item_types, iterable.span);
+                        if next.is_none() {
+                            // Reported; the loop variables are unknown.
+                            self.apply_iteration(&Type::Unknown, &item_types, iterable.span);
+                        }
+                    }
                     resolved => self.apply_iteration(&resolved, &item_types, iterable.span),
                 }
                 self.drop_narrowing_for_loop(cx, body);
@@ -164,6 +246,7 @@ impl<'a> Checker<'a> {
                     bindings: locals,
                     iterable: iterable_hir,
                     body,
+                    next,
                 }
             }
             ast::StmtKind::Break | ast::StmtKind::Continue => {

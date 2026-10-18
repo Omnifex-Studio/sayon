@@ -1,0 +1,15 @@
+io = import("standard/io.sayon")
+
+# A closed file cannot be used.
+file = io.open("file_ownership.sayon")
+file.close()
+print(file.read_line())
+
+# A loop over a file's lines borrows the file until it finishes.
+other = io.open("file_ownership.sayon")
+for line in other.lines()
+    other.close()
+
+third = io.open("file_ownership.sayon")
+for line in third.lines()
+    print(third.read_line())

@@ -1,0 +1,33 @@
+io = import("standard/io.sayon")
+
+type Point = [x: float, y: float]
+
+function length_squared(point: Point) -> float
+    return point.x * point.x + point.y * point.y
+
+point = Point(x = 1.0, y = 2.0)
+print(point.area())
+print([1, 2].length_squared())
+
+function measure(shape) -> float
+    return shape.length_squared()
+
+# `next` must return a value or nothing.
+type Endless = [count: integer]
+
+function endless_next(update endless: Endless) -> integer
+    endless.count += 1
+    return endless.count
+
+for value in Endless(count = 0)
+    print(value)
+
+# The stream inside a file is the library's own.
+function keep(stream: HostStream)
+    print("kept")
+
+# A method's first parameter is declared with its type.
+function scaled(point, factor: float) -> float
+    return point.x * factor
+
+print(point.scaled(2.0))

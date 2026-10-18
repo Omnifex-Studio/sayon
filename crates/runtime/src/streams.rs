@@ -1,0 +1,356 @@
+//! Open files, for `standard/io`'s `File`.
+//!
+//! A stream is a number naming an entry of a process-wide table, so that the
+//! interpreter and compiled programs share one implementation. Each value
+//! holding the number is a reference: cloning a stream adds one, dropping it
+//! removes one, and the file is closed when none are left. `close` closes
+//! the file at once and reports what writing the rest of it failed with; the
+//! references that remain then refer to a closed stream. Numbers are never
+//! reused, so a stale reference can never reach a different file.
+
+use crate::host::{HostError, io_error};
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::sync::{LazyLock, Mutex, MutexGuard};
+
+enum Handle {
+    Reader(BufReader<File>),
+    Writer(BufWriter<File>),
+    Closed,
+}
+
+struct Entry {
+    handle: Handle,
+    path: String,
+    references: usize,
+}
+
+#[derive(Default)]
+struct Table {
+    last: i64,
+    entries: HashMap<i64, Entry>,
+}
+
+static STREAMS: LazyLock<Mutex<Table>> = LazyLock::new(Mutex::default);
+
+fn table() -> MutexGuard<'static, Table> {
+    STREAMS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn closed(path: &str) -> HostError {
+    ("IOError", format!("\"{path}\" is closed"))
+}
+
+/// Runs `f` on the open reader of a stream.
+fn reader<T>(
+    id: i64,
+    f: impl FnOnce(&mut BufReader<File>, &str) -> Result<T, HostError>,
+) -> Result<T, HostError> {
+    let mut table = table();
+    let entry = table
+        .entries
+        .get_mut(&id)
+        .ok_or(("IOError", "the file is closed".to_string()))?;
+    match &mut entry.handle {
+        Handle::Reader(reader) => f(reader, &entry.path),
+        Handle::Writer(_) => Err((
+            "IOError",
+            format!("\"{}\" was opened for writing, not reading", entry.path),
+        )),
+        Handle::Closed => Err(closed(&entry.path)),
+    }
+}
+
+/// Runs `f` on the open writer of a stream.
+fn writer<T>(
+    id: i64,
+    f: impl FnOnce(&mut BufWriter<File>, &str) -> Result<T, HostError>,
+) -> Result<T, HostError> {
+    let mut table = table();
+    let entry = table
+        .entries
+        .get_mut(&id)
+        .ok_or(("IOError", "the file is closed".to_string()))?;
+    match &mut entry.handle {
+        Handle::Writer(writer) => f(writer, &entry.path),
+        Handle::Reader(_) => Err((
+            "IOError",
+            format!("\"{}\" was opened for reading, not writing", entry.path),
+        )),
+        Handle::Closed => Err(closed(&entry.path)),
+    }
+}
+
+/// Opens a file: `"r"` to read, `"w"` to write from the start (creating or
+/// emptying it), `"a"` to write at its end (creating it when needed).
+pub fn open(path: &str, mode: &str) -> Result<i64, HostError> {
+    let handle = match mode {
+        "r" => Handle::Reader(BufReader::new(
+            File::open(path).map_err(|e| io_error("open", path, &e))?,
+        )),
+        "w" | "a" => {
+            let file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(mode == "w")
+                .append(mode == "a")
+                .open(path)
+                .map_err(|e| io_error("open", path, &e))?;
+            Handle::Writer(BufWriter::new(file))
+        }
+        _ => {
+            return Err((
+                "ValueError",
+                format!(
+                    "\"{mode}\" is not a file mode; use \"r\" to read, \"w\" to write, or \"a\" to add to the end"
+                ),
+            ));
+        }
+    };
+    let mut table = table();
+    table.last += 1;
+    let id = table.last;
+    table.entries.insert(
+        id,
+        Entry {
+            handle,
+            path: path.to_string(),
+            references: 1,
+        },
+    );
+    Ok(id)
+}
+
+/// Adds a reference to a stream, for a clone of a value holding it.
+pub fn share(id: i64) {
+    if let Some(entry) = table().entries.get_mut(&id) {
+        entry.references += 1;
+    }
+}
+
+/// Removes a reference; the last one closes the file. Writing what is still
+/// buffered can fail here only silently, which is why `close` exists.
+pub fn release(id: i64) {
+    let mut table = table();
+    let Some(entry) = table.entries.get_mut(&id) else {
+        return;
+    };
+    entry.references -= 1;
+    if entry.references == 0 {
+        let entry = table.entries.remove(&id);
+        drop(table);
+        drop(entry);
+    }
+}
+
+/// Writes what every open stream still buffers, when the program ends.
+pub fn flush_all() {
+    for entry in table().entries.values_mut() {
+        if let Handle::Writer(writer) = &mut entry.handle {
+            let _ = writer.flush();
+        }
+    }
+}
+
+/// The next line without its line ending (LF or CRLF), or `None` at the
+/// end. A line longer than `limit` bytes is an error, and the rest of it
+/// stays unread.
+pub fn read_line(id: i64, limit: i64) -> Result<Option<String>, HostError> {
+    let limit = limit.max(0) as usize;
+    reader(id, |reader, path| {
+        let too_long = || {
+            (
+                "IOError",
+                format!("a line of \"{path}\" is longer than the limit of {limit} bytes"),
+            )
+        };
+        let mut bytes = Vec::new();
+        let mut ended = false;
+        loop {
+            let available = reader.fill_buf().map_err(|e| io_error("read", path, &e))?;
+            if available.is_empty() {
+                break;
+            }
+            if let Some(position) = available.iter().position(|&b| b == b'\n') {
+                bytes.extend_from_slice(&available[..position]);
+                reader.consume(position + 1);
+                ended = true;
+                break;
+            }
+            // Keeps no more than the limit and a carriage return.
+            let take = available.len().min(limit + 2 - bytes.len());
+            bytes.extend_from_slice(&available[..take]);
+            reader.consume(take);
+            if bytes.len() == limit + 2 {
+                return Err(too_long());
+            }
+        }
+        if !ended && bytes.is_empty() {
+            return Ok(None);
+        }
+        if ended && bytes.ends_with(b"\r") {
+            bytes.pop();
+        }
+        if bytes.len() > limit {
+            return Err(too_long());
+        }
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| ("EncodingError", format!("\"{path}\" is not valid UTF-8")))
+    })
+}
+
+/// The rest of the stream as text.
+pub fn read_rest(id: i64) -> Result<String, HostError> {
+    reader(id, |reader, path| {
+        let mut bytes = Vec::new();
+        reader
+            .read_to_end(&mut bytes)
+            .map_err(|e| io_error("read", path, &e))?;
+        String::from_utf8(bytes)
+            .map_err(|_| ("EncodingError", format!("\"{path}\" is not valid UTF-8")))
+    })
+}
+
+/// Up to `count` bytes; fewer only at the end of the stream.
+pub fn read_bytes(id: i64, count: i64) -> Result<Vec<u8>, HostError> {
+    if count < 0 {
+        return Err(("ValueError", format!("cannot read {count} bytes")));
+    }
+    reader(id, |reader, path| {
+        let mut bytes = Vec::new();
+        reader
+            .take(count as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| io_error("read", path, &e))?;
+        Ok(bytes)
+    })
+}
+
+pub fn write(id: i64, bytes: &[u8]) -> Result<(), HostError> {
+    writer(id, |writer, path| {
+        writer
+            .write_all(bytes)
+            .map_err(|e| io_error("write", path, &e))
+    })
+}
+
+/// Passes buffered output to the system. It does not wait for the data to
+/// reach the disk.
+pub fn flush(id: i64) -> Result<(), HostError> {
+    writer(id, |writer, path| {
+        writer.flush().map_err(|e| io_error("write", path, &e))
+    })
+}
+
+/// The position in bytes from the start.
+pub fn position(id: i64) -> Result<i64, HostError> {
+    let mut table = table();
+    let entry = table
+        .entries
+        .get_mut(&id)
+        .ok_or(("IOError", "the file is closed".to_string()))?;
+    let path = entry.path.clone();
+    let result = match &mut entry.handle {
+        Handle::Reader(reader) => reader.stream_position(),
+        Handle::Writer(writer) => writer.stream_position(),
+        Handle::Closed => return Err(closed(&path)),
+    };
+    result
+        .map(|position| position as i64)
+        .map_err(|e| io_error("read the position in", &path, &e))
+}
+
+/// Moves to a position in bytes from the start.
+pub fn seek(id: i64, position: i64) -> Result<(), HostError> {
+    if position < 0 {
+        return Err((
+            "ValueError",
+            format!("{position} is not a position in a file"),
+        ));
+    }
+    let mut table = table();
+    let entry = table
+        .entries
+        .get_mut(&id)
+        .ok_or(("IOError", "the file is closed".to_string()))?;
+    let path = entry.path.clone();
+    let target = SeekFrom::Start(position as u64);
+    let result = match &mut entry.handle {
+        Handle::Reader(reader) => reader.seek(target),
+        Handle::Writer(writer) => writer.seek(target),
+        Handle::Closed => return Err(closed(&path)),
+    };
+    result
+        .map(|_| ())
+        .map_err(|e| io_error("move in", &path, &e))
+}
+
+/// Finishes a stream: writes what it buffers and closes the file.
+pub fn close(id: i64) -> Result<(), HostError> {
+    let mut table = table();
+    let entry = table
+        .entries
+        .get_mut(&id)
+        .ok_or(("IOError", "the file is closed".to_string()))?;
+    let handle = std::mem::replace(&mut entry.handle, Handle::Closed);
+    let path = entry.path.clone();
+    drop(table);
+    match handle {
+        Handle::Writer(writer) => writer
+            .into_inner()
+            .map(drop)
+            .map_err(|e| io_error("write", &path, e.error())),
+        Handle::Reader(_) => Ok(()),
+        Handle::Closed => Err(("IOError", format!("\"{path}\" is already closed"))),
+    }
+}
+
+/// Copies the rest of one stream to another, a part at a time, and returns
+/// the number of bytes copied.
+pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
+    let mut table = table();
+    let Table { entries, .. } = &mut *table;
+    let [Some(source), Some(target)] = entries.get_disjoint_mut([&from, &to]) else {
+        return Err(if from == to {
+            ("ValueError", "cannot copy a file onto itself".to_string())
+        } else {
+            ("IOError", "the file is closed".to_string())
+        });
+    };
+    let reader = match &mut source.handle {
+        Handle::Reader(reader) => reader,
+        Handle::Writer(_) => {
+            return Err((
+                "IOError",
+                format!("\"{}\" was opened for writing, not reading", source.path),
+            ));
+        }
+        Handle::Closed => return Err(closed(&source.path)),
+    };
+    let writer = match &mut target.handle {
+        Handle::Writer(writer) => writer,
+        Handle::Reader(_) => {
+            return Err((
+                "IOError",
+                format!("\"{}\" was opened for reading, not writing", target.path),
+            ));
+        }
+        Handle::Closed => return Err(closed(&target.path)),
+    };
+    let mut buffer = [0u8; 64 * 1024];
+    let mut total = 0i64;
+    loop {
+        let count = reader
+            .read(&mut buffer)
+            .map_err(|e| io_error("read", &source.path, &e))?;
+        if count == 0 {
+            return Ok(total);
+        }
+        writer
+            .write_all(&buffer[..count])
+            .map_err(|e| io_error("write", &target.path, &e))?;
+        total += count as i64;
+    }
+}

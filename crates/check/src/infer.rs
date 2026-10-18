@@ -362,7 +362,11 @@ impl Unifier {
                     });
                 }
                 // Function values have no meaningful equality.
-                Type::Range | Type::Param(_) | Type::Function(_) | Type::View(..) => false,
+                Type::Range
+                | Type::Param(_)
+                | Type::Function(_)
+                | Type::View(..)
+                | Type::Stream => false,
                 _ => true,
             },
             _ => true,

@@ -1,0 +1,67 @@
+# Open files: reading and writing a part at a time
+io = import("standard/io.sayon")
+
+out = io.open("streams_output.tmp", "w")
+out.write_line("first")
+out.write("second\r\nthird")
+print(out.position())
+out.close()
+
+file = io.open("streams_output.tmp")
+for line in file.lines()
+    print("[{line}]")
+file.seek(0)
+print(file.read_line(), file.read())
+file.close()
+
+numbers = io.open("streams_output.tmp")
+print(numbers.read_bytes(3), length(numbers.read_bytes(100)), numbers.read_bytes(5))
+
+appended = io.open("streams_output.tmp", "a")
+appended.write("\nfourth\n")
+appended.close()
+print(io.read_lines("streams_output.tmp"))
+
+# Copying streams a part at a time.
+target = io.open("streams_copy.tmp", "w")
+source = io.open("streams_output.tmp")
+print(io.copy(source, target))
+target.close()
+print(io.read_file("streams_copy.tmp") == io.read_file("streams_output.tmp"))
+
+# Bytes are kept as they are.
+io.write_file_bytes("streams_bytes.tmp", [0, 255, 10, 13])
+print(io.read_file_bytes("streams_bytes.tmp"))
+
+# A line longer than the limit is an error rather than filling memory.
+limited = io.open("streams_output.tmp")
+limited.line_limit = 5
+print(limited.read_line())
+outcome = try limited.read_line()
+if outcome is error
+    print(outcome.code, outcome.message)
+
+missing = try io.open("streams_missing.tmp")
+if missing is error
+    print(missing.message)
+mode = try io.open("streams_output.tmp", "x")
+if mode is error
+    print(mode.code)
+reader = io.open("streams_output.tmp")
+attempt = try reader.write("x")
+if attempt is error
+    print(attempt.message)
+
+# A clone refers to the same open file, so closing one closes both.
+shared = clone(reader)
+reader.close()
+again = try shared.read_line()
+if again is error
+    print(again.message)
+
+# A file that is not closed is closed when it is no longer used.
+function first_line(path: string) -> string or nothing
+    opened = io.open(path)
+    return opened.read_line()
+
+print(first_line("streams_output.tmp"))

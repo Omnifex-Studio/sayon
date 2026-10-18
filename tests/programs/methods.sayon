@@ -1,0 +1,100 @@
+# Methods: `value.name(...)` calls a function declared beside the value's type
+collections = import("standard/collections.sayon")
+
+type Point = [x: float, y: float]
+
+function length_squared(point: Point) -> float
+    return point.x * point.x + point.y * point.y
+
+# The `point_` prefix keeps the name free for other types' methods.
+function point_move(update point: Point, dx: float, dy: float)
+    point.x += dx
+    point.y += dy
+
+function describe(point: Point, label = "point") -> string
+    return "{label} ({point.x}, {point.y})"
+
+p = Point(x = 3.0, y = 4.0)
+print(p.length_squared())
+p.move(1.0, 1.0)
+print(p.describe(), p.describe("moved"))
+
+# A field holding a function is called, not a method.
+type Button = [label: string, press: function() -> string]
+button = Button(label = "ok", press = function() return "pressed")
+print(button.press())
+
+# Library types have methods too.
+seen = collections.new_set()
+print(seen.add("a"), seen.add("b"), seen.add("a"), seen.size(), seen.contains("b"))
+waiting = collections.new_queue()
+waiting.add(1)
+waiting.add(2)
+print(waiting.take(), waiting.size())
+
+# A `for` loop goes through a value whose type has a `next` method, until
+# `next` returns nothing.
+type Countdown = [from: integer]
+
+function next(update countdown: Countdown) -> integer or nothing
+    if countdown.from == 0
+        return nothing
+    countdown.from -= 1
+    return countdown.from + 1
+
+countdown = Countdown(from = 3)
+for value in countdown
+    print(value)
+print(countdown.from)
+
+function counting(from: integer) -> Countdown
+    return Countdown(from = from)
+
+for value in counting(5)
+    if value == 4
+        continue
+    if value == 2
+        break
+    print("value", value)
+
+# Each value belongs to the loop variable, so it can be kept.
+type Words = [items: Array<string>, position: integer]
+
+function words_next(update words: Words) -> string or nothing
+    if words.position >= length(words.items)
+        return nothing
+    words.position += 1
+    return words.items[words.position - 1] + "!"
+
+kept: Array<string> = []
+for word in Words(items = ["a", "b", "c"], position = 0)
+    push(kept, word)
+print(kept)
+
+type Mixed = [step: integer]
+
+function mixed_next(update mixed: Mixed) -> integer or string or nothing
+    mixed.step += 1
+    if mixed.step == 1
+        return 10
+    if mixed.step == 2
+        return "ten"
+    return nothing
+
+for item in Mixed(step = 0)
+    print(typeof(item), item)
+
+# An error in `next` leaves the loop.
+type Failing = [count: integer]
+
+function failing_next(update failing: Failing) -> integer or nothing
+    failing.count += 1
+    if failing.count == 3
+        error("no third value")
+    return failing.count
+
+try
+    for value in Failing(count = 0)
+        print("got", value)
+catch problem
+    print(problem.message)

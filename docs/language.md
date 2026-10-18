@@ -294,6 +294,23 @@ for character in "abc"
 
 `range(end)`, `range(start, end)`, and `range(start, end, step)` count from `start` (default 0) up to, but not including, `end`. A zero step is an error. A loop over a dictionary visits keys in insertion order, either keys alone (`for key in dict`) or keys with values (`for key, value in dict`). `break` and `continue` apply to the innermost loop.
 
+A loop also goes through an iterator: a value whose type has a `next` [method](#methods) that returns the next value, or `nothing` at the end. The loop calls `next` before each iteration, and each value belongs to the loop variable, which may keep it.
+
+```sayon
+type Countdown = [from: integer]
+
+function next(update countdown: Countdown) -> integer or nothing
+    if countdown.from == 0
+        return nothing
+    countdown.from -= 1
+    return countdown.from + 1
+
+for value in Countdown(from = 3)     # 3, 2, 1
+    print(value)
+```
+
+`next` declares its result as `T or nothing`. A loop over an iterator in a variable changes that variable, and the variable cannot be changed or transferred inside the loop; neither can a variable the iterator was made from with `update`, such as the file of `file.lines()`.
+
 ### Matching
 
 `match` runs the first `case` whose pattern matches the value, and whose guard, if it has one, is true:
@@ -393,6 +410,31 @@ How a function uses a parameter decides what the call does with the argument:
 Values of Copy types (numbers, booleans, `nothing`, ranges, structures and enums whose fields are all Copy, and unions of these) are passed to read and own parameters as copies; a function may change its copy without affecting the caller. An `update` parameter always receives the caller's variable, so `function translate(update p: Point)` moves the caller's point.
 
 An annotated parameter defaults to read; changing or keeping it requires `update` or `own`. An unannotated parameter's mode is inferred from the function's body: the least mode it needs. A parameter whose type holds a function value has its mode inferred even when annotated, because calling a function value borrows it for changes (see below).
+
+### Methods
+
+`value.name(arguments)` calls a function with `value` as its first argument. The function is found beside the value's type: in the module that declares the type, a function named `type_name` (`point_move` for `Point`), or else one named `name`, whose first parameter is declared with the type.
+
+```sayon
+type Point = [x: float, y: float]
+
+function length_squared(point: Point) -> float
+    return point.x * point.x + point.y * point.y
+
+function point_move(update point: Point, dx: float, dy: float)
+    point.x += dx
+    point.y += dy
+
+p = Point(x = 3.0, y = 4.0)
+p.move(1.0, 1.0)
+print(p.length_squared())      # 41.0
+```
+
+- A method is an ordinary function, also callable as `length_squared(p)`. Its first parameter's mode applies to the value: `point.move(...)` changes `point`, and a method taking `own` transfers it.
+- The `type_` prefix lets one module give several types methods of the same name, as `standard/collections` does with `set_add` and `queue_add`.
+- A structure field holding a function value is called as before; a field comes before a method of the same name.
+- The value's type must be known where the method is called; a parameter used this way needs an annotation (`E_UNKNOWN_METHOD`).
+- A private method can be called only inside its module.
 
 ### Function values and closures
 
@@ -564,13 +606,13 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 
 | Module | Functions |
 |---|---|
-| `standard/io.sayon` | `read_file`, `write_file`, `append_file`, `read_lines`, `read_line` (standard input; `nothing` at the end), `write` (no newline), `write_error` |
+| `standard/io.sayon` | `read_file`, `write_file`, `append_file`, `read_lines`, `read_file_bytes`, `write_file_bytes`, `read_line` (standard input; `nothing` at the end), `write` (no newline), `write_error`; `open` for a `File` with the methods `read_line`, `lines`, `read`, `read_bytes`, `write`, `write_line`, `write_bytes`, `flush`, `position`, `seek`, `close`; `copy` |
 | `standard/os.sayon` | `arguments` (the words after `--` with `sayon run`), `environment`, `platform`, `current_directory` |
 | `standard/filesystem.sayon` | `exists`, `is_file`, `is_directory`, `list` (sorted names), `size`, `create_directory`, `remove`, `rename`, `copy`, `join`, `name`, `parent`, `extension` |
 | `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters`, `code` (a character's Unicode code), `character` (the character with a code) |
 | `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer` |
 | `standard/time.sayon` | `Duration` (`nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `add`, `subtract`, `scale`, `in_seconds`, `in_milliseconds`, `describe`), the monotonic clock (`start`, `elapsed`, `between`, `sleep`), and UTC dates (`DateTime`, `now`, `unix_seconds`, `from_unix`, `to_unix`, `shift`, `difference`, `weekday`, `is_leap_year`, `days_in_month`, `format` and `parse` for ISO 8601) |
-| `standard/collections.sayon` | `sort` and `sort_by` (stable), `reverse`; `Set<T>` with `new_set`, `set_add`, `set_contains`, `set_remove`, `set_size`, `set_values`; `Queue<T>` with `new_queue`, `queue_add`, `queue_take`, `queue_size` |
+| `standard/collections.sayon` | `sort` and `sort_by` (stable), `reverse`; `Set<T>` with `new_set`, `set_add`, `set_contains`, `set_remove`, `set_size`, `set_values` (as methods: `set.add(value)`); `Queue<T>` with `new_queue`, `queue_add`, `queue_take`, `queue_size` |
 | `standard/math.sayon` | `PI`, `E`, `TAU`, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `log`, `log10`, `log2`, `pow`, `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`, `clamp`, `random` |
 
 ```sayon
@@ -585,6 +627,30 @@ while true
 ```
 
 String positions count Unicode characters. File and directory failures raise `IOError`; text that is not UTF-8 raises `EncodingError`. `math.random()` is not suitable for security.
+
+### Files
+
+`io.open(path, mode)` opens a file to read a part at a time (mode `"r"`, the default), to write from the start (`"w"`, which creates the file or empties it), or to write at its end (`"a"`). Reading and writing go through a buffer.
+
+```sayon
+io = import("standard/io.sayon")
+
+log = io.open("log.txt", "w")
+log.write_line("started")
+log.close()
+
+file = io.open("large.txt")
+for line in file.lines()
+    print(line)
+file.close()
+```
+
+- `read_line` and `lines` give lines without their endings, accepting LF and CRLF; the last line need not end with one. A line longer than the file's `line_limit` (`io.LINE_LIMIT`, 1 MiB, unless changed with `file.line_limit = ...`) raises `IOError`, and the rest of that line stays unread, so a hostile file cannot fill memory.
+- `read` gives the rest of the file as text; `read_bytes(count)` and `write_bytes(bytes)` work with `Array<byte>`, keeping any bytes as they are. `position()` and `seek(position)` count bytes from the start.
+- `close()` writes what is still buffered and closes the file, raising `IOError` if writing fails; the file cannot be used afterwards. A file that is not closed is closed when it is no longer used, but without a report, and before the program ends every open file's buffer is written. `flush()` passes buffered output to the system; it does not wait for the disk.
+- While a loop over `file.lines()` runs, the file is borrowed: closing it, or reading or writing it another way, is `E_BORROW_CONFLICT`.
+- `clone(file)` refers to the same open file, so closing either closes both; using a closed file raises `IOError`.
+- `io.copy(source, target)` copies the rest of one file to another 64 KiB at a time and returns the number of bytes.
 
 ### JSON
 

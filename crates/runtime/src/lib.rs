@@ -5,4 +5,5 @@
 
 pub mod ffi;
 pub mod host;
+pub mod streams;
 pub mod text;

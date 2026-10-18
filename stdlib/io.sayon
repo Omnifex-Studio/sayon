@@ -3,6 +3,13 @@
 #     io = import("standard/io.sayon")
 #     for line in io.read_lines("notes.txt")
 #         print(line)
+#
+# A file can also be opened and read or written a part at a time:
+#
+#     file = io.open("large.txt")
+#     for line in file.lines()
+#         print(line)
+#     file.close()
 
 # The whole content of a text file. Fails with IOError, or EncodingError
 # when the file is not UTF-8.
@@ -21,6 +28,14 @@ function append_file(path: string, content: string)
 function read_lines(path: string) -> Array<string>
     return host_split_lines(readfile(path))
 
+# The whole content of a file as bytes, whatever they are.
+function read_file_bytes(path: string) -> Array<byte>
+    return host_read_file_bytes(path)
+
+# Replaces a file's content with bytes, creating the file when needed.
+function write_file_bytes(path: string, bytes: Array<byte>)
+    host_write_file_bytes(path, bytes)
+
 # The next line of standard input without its line ending, or nothing at the
 # end of input.
 function read_line() -> string or nothing
@@ -33,3 +48,79 @@ function write(text: string)
 # Writes a line to standard error.
 function write_error(text: string)
     host_write_error(text + "\n")
+
+# ----- open files -----------------------------------------------------------------
+
+# The longest line, in bytes, that a file's `read_line` and `lines` accept
+# unless its `line_limit` is changed. A longer line fails with IOError
+# instead of filling memory.
+constant LINE_LIMIT = 1_048_576
+
+# An open file, from `open`. Reading and writing go through a buffer.
+# `file.close()` finishes with it and reports any error in writing what is
+# still buffered; a file that is not closed is closed when it is no longer
+# used, without a report. A clone of a file refers to the same open file.
+type File = [stream: HostStream, path: string, line_limit: integer]
+
+# Opens a file: with "r" to read it, "w" to write it from the start (creating
+# it, or emptying it first), or "a" to write at its end (creating it when
+# needed). Fails with IOError when the file cannot be opened.
+function open(path: string, mode = "r") -> File
+    return File(stream = host_open(path, mode), path = clone(path), line_limit = LINE_LIMIT)
+
+# The next line without its line ending (LF or CRLF), or nothing at the end
+# of the file. The last line need not end with a line ending.
+function file_read_line(update file: File) -> string or nothing
+    return host_stream_read_line(file.stream, file.line_limit)
+
+# The lines that remain, for a `for` loop. The loop borrows the file until
+# it finishes.
+function file_lines(update file: File) -> Lines
+    return Lines(stream = clone(file.stream), limit = file.line_limit)
+
+# The rest of the file as text. Fails with EncodingError when it is not UTF-8.
+function file_read(update file: File) -> string
+    return host_stream_read(file.stream)
+
+# Up to `count` bytes; fewer, or none, only at the end of the file.
+function file_read_bytes(update file: File, count: integer) -> Array<byte>
+    return host_stream_read_bytes(file.stream, count)
+
+function file_write(update file: File, text: string)
+    host_stream_write(file.stream, text)
+
+# Writes text and a line ending.
+function file_write_line(update file: File, text: string)
+    host_stream_write(file.stream, text + "\n")
+
+function file_write_bytes(update file: File, bytes: Array<byte>)
+    host_stream_write_bytes(file.stream, bytes)
+
+# Passes what the file buffers to the system. This does not wait for it to
+# reach the disk.
+function file_flush(update file: File)
+    host_stream_flush(file.stream)
+
+# The position in the file, in bytes from its start.
+function file_position(file: File) -> integer
+    return host_stream_position(file.stream)
+
+# Moves to a position, in bytes from the start, for the next read or write.
+function file_seek(update file: File, position: integer)
+    host_stream_seek(file.stream, position)
+
+# Finishes with a file: writes what it still buffers and closes it. Fails
+# with IOError if writing fails. The file cannot be used afterwards.
+function file_close(own file: File)
+    host_stream_close(file.stream)
+
+# The lines of a file, from `file.lines()`.
+type Lines = [stream: HostStream, limit: integer]
+
+function lines_next(lines: Lines) -> string or nothing
+    return host_stream_read_line(lines.stream, lines.limit)
+
+# Copies the rest of `source` to the end of what was written to `target`, a
+# part at a time, and returns the number of bytes copied.
+function copy(update source: File, update target: File) -> integer
+    return host_stream_copy(source.stream, target.stream)

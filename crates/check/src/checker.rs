@@ -233,6 +233,20 @@ impl FnCtx {
         id
     }
 
+    /// A local no name refers to.
+    pub fn hidden(&mut self, ty: Type, span: Span) -> LocalId {
+        let id = LocalId(self.locals.len() as u32);
+        self.locals.push(hir::Local {
+            name: "<iterator>".to_string(),
+            ty,
+            span,
+            kind: LocalKind::Hidden,
+            borrowed: false,
+            implicit: false,
+        });
+        id
+    }
+
     /// Declares a local in the function's outermost scope, visible for the
     /// rest of the body.
     pub fn declare_outermost(
@@ -514,6 +528,38 @@ impl<'a> Checker<'a> {
         visibility == Some(ast::Visibility::Private)
     }
 
+    /// The type a function is a method of: the type its first parameter is
+    /// declared with, when the function's own module declares that type.
+    pub fn method_receiver(&self, id: FuncId) -> Option<TypeId> {
+        let entry = &self.functions[id.0 as usize];
+        let first = entry.ast?.params.first()?;
+        let ast::TypeExprKind::Named {
+            module: None, name, ..
+        } = &first.ty.as_ref()?.kind
+        else {
+            return None;
+        };
+        match self.item(entry.module, &name.name) {
+            Some(Item::Type(ty)) if self.types[ty.0 as usize].module == entry.module => Some(ty),
+            _ => None,
+        }
+    }
+
+    /// The method `name` of a type, which `value.name(...)` calls: the
+    /// function `type_name` of the type's module (`set_add` for `Set`), or
+    /// else its function `name`, whose first parameter is declared with the
+    /// type.
+    pub fn method(&self, ty: TypeId, name: &str) -> Option<FuncId> {
+        let entry = &self.types[ty.0 as usize];
+        let prefixed = format!("{}_{name}", snake_case(&entry.name));
+        [prefixed.as_str(), name].into_iter().find_map(|candidate| {
+            match self.item(entry.module, candidate) {
+                Some(Item::Function(id)) if self.method_receiver(id) == Some(ty) => Some(id),
+                _ => None,
+            }
+        })
+    }
+
     /// Resolves `alias.member` from `module`, reporting missing and private members.
     pub fn module_member(
         &mut self,
@@ -726,6 +772,27 @@ impl<'a> Checker<'a> {
         let index_of: HashMap<Item, usize> =
             nodes.iter().enumerate().map(|(i, n)| (*n, i)).collect();
 
+        // A method call names no module, so it may use any method of that
+        // name; `for` loops use `next`.
+        let mut methods: HashMap<String, Vec<usize>> = HashMap::new();
+        for index in 0..self.functions.len() {
+            let id = FuncId(index as u32);
+            let Some(ty) = self.method_receiver(id) else {
+                continue;
+            };
+            let name = &self.functions[index].name;
+            let prefix = format!("{}_", snake_case(&self.types[ty.0 as usize].name));
+            for method in [Some(name.as_str()), name.strip_prefix(&prefix)]
+                .into_iter()
+                .flatten()
+            {
+                methods
+                    .entry(method.to_string())
+                    .or_default()
+                    .push(index_of[&Item::Function(id)]);
+            }
+        }
+
         let mut edges: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
         for (index, node) in nodes.iter().enumerate() {
             let mut names = Vec::new();
@@ -742,6 +809,14 @@ impl<'a> Checker<'a> {
                 Item::Type(_) => {}
             }
             for name in names {
+                if let Some(method) = name.strip_prefix('.') {
+                    for &target in methods.get(method).into_iter().flatten() {
+                        if !edges[index].contains(&target) {
+                            edges[index].push(target);
+                        }
+                    }
+                    continue;
+                }
                 // Qualified references are recorded as `alias.member`.
                 let found = match name.split_once('.') {
                     Some((alias, member)) => self
@@ -911,6 +986,7 @@ impl<'a> Checker<'a> {
                     "nothing" => Type::Nothing,
                     "Error" => Type::Error,
                     "Range" => Type::Range,
+                    "HostStream" if self.modules[module.0 as usize].standard => Type::Stream,
                     "Array" => {
                         if !arity(self, 1) {
                             return Type::Unknown;
@@ -1724,13 +1800,21 @@ impl<'a> Checker<'a> {
                     vec![(**key).clone()]
                 }
             }
-            Type::Unknown => return,
+            // Already reported; the loop variables are unknown too.
+            Type::Unknown => {
+                for item in items {
+                    if let Type::Var(var) = self.unifier.shallow(item) {
+                        self.unifier.force_bind(var, Type::Unknown);
+                    }
+                }
+                return;
+            }
             Type::String => vec![Type::String],
             other => {
                 self.error(
                     Diagnostic::error("E_NOT_ITERABLE", format!("cannot iterate over {other}"))
                         .primary(span, "")
-                        .help("`for` loops iterate over arrays, dictionaries, strings, and ranges"),
+                        .help("`for` loops iterate over arrays, views, dictionaries, strings, ranges, and values whose type has a `next` method"),
                 );
                 return;
             }
@@ -1906,8 +1990,16 @@ impl<'a> Checker<'a> {
                 self.finalize_expr(condition);
                 self.finalize_block(body);
             }
-            For { iterable, body, .. } => {
+            For {
+                iterable,
+                body,
+                next,
+                ..
+            } => {
                 self.finalize_expr(iterable);
+                if let Some(next) = next {
+                    self.finalize_expr(&mut next.call);
+                }
                 self.finalize_block(body);
             }
             Return(value) => {
@@ -2195,6 +2287,7 @@ fn collect_stmt_names(stmt: &ast::Stmt, names: &mut Vec<String>) {
             collect_block_names(body, names);
         }
         StmtKind::For { iterable, body, .. } => {
+            names.push(".next".to_string());
             collect_expr_names(iterable, names);
             collect_block_names(body, names);
         }
@@ -2247,6 +2340,10 @@ pub(crate) fn collect_expr_names(expr: &ast::Expr, names: &mut Vec<String>) {
             .iter()
             .for_each(|(_, v)| collect_expr_names(v, names)),
         Call { callee, args, .. } => {
+            // A call of a member may be a method call, recorded as `.name`.
+            if let Member { name, .. } = &callee.kind {
+                names.push(format!(".{}", name.name));
+            }
             collect_expr_names(callee, names);
             args.iter().for_each(|arg| collect_expr_names(arg, names));
         }
@@ -2275,6 +2372,23 @@ pub(crate) fn collect_expr_names(expr: &ast::Expr, names: &mut Vec<String>) {
         Function(function) => collect_function_names(function, names),
         Integer { .. } | Float(_) | Boolean(_) | Nothing | Import { .. } | Error => {}
     }
+}
+
+/// A type name in snake_case, as it prefixes its methods: `JsonValue`
+/// becomes `json_value`.
+pub(crate) fn snake_case(name: &str) -> String {
+    let mut out = String::new();
+    for (index, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if index > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Tarjan's algorithm; components are returned in reverse topological order

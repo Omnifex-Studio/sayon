@@ -20,6 +20,10 @@ pub enum HostType {
     StringArray,
     /// `string or nothing`.
     OptionalString,
+    /// An open file of `standard/io`, `HostStream` in the library's code.
+    Stream,
+    /// `Array<byte>`.
+    Bytes,
 }
 
 macro_rules! hosts {
@@ -103,6 +107,19 @@ hosts! {
     Round = "round"(Float) -> Float;
     Trunc = "trunc"(Float) -> Float;
     Random = "random"() -> Float;
+    Open = "open"(String, String) -> Stream;
+    StreamReadLine = "stream_read_line"(Stream, Integer) -> OptionalString;
+    StreamRead = "stream_read"(Stream) -> String;
+    StreamReadBytes = "stream_read_bytes"(Stream, Integer) -> Bytes;
+    StreamWrite = "stream_write"(Stream, String) -> Nothing;
+    StreamWriteBytes = "stream_write_bytes"(Stream, Bytes) -> Nothing;
+    StreamFlush = "stream_flush"(Stream) -> Nothing;
+    StreamPosition = "stream_position"(Stream) -> Integer;
+    StreamSeek = "stream_seek"(Stream, Integer) -> Nothing;
+    StreamClose = "stream_close"(Stream) -> Nothing;
+    StreamCopy = "stream_copy"(Stream, Stream) -> Integer;
+    ReadFileBytes = "read_file_bytes"(String) -> Bytes;
+    WriteFileBytes = "write_file_bytes"(String, Bytes) -> Nothing;
 }
 
 impl Host {
@@ -126,6 +143,8 @@ pub enum HostArg<'a> {
     Float(f64),
     Boolean(bool),
     Strings(Vec<&'a str>),
+    Stream(i64),
+    Bytes(Vec<u8>),
 }
 
 /// A primitive's result.
@@ -138,6 +157,9 @@ pub enum HostValue {
     Nothing,
     Strings(Vec<String>),
     OptionalString(Option<String>),
+    /// A new stream, with one reference.
+    Stream(i64),
+    Bytes(Vec<u8>),
 }
 
 /// A recoverable error: code and message.
@@ -150,7 +172,7 @@ pub fn set_arguments(arguments: Vec<String>) {
     *ARGUMENTS.lock().unwrap_or_else(|e| e.into_inner()) = arguments;
 }
 
-fn io_error(action: &str, path: &str, error: &std::io::Error) -> HostError {
+pub(crate) fn io_error(action: &str, path: &str, error: &std::io::Error) -> HostError {
     let reason = match error.kind() {
         std::io::ErrorKind::NotFound => "it does not exist".to_string(),
         std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
@@ -175,6 +197,20 @@ fn integer(args: &[HostArg], index: usize) -> i64 {
     match args.get(index) {
         Some(HostArg::Integer(value)) => *value,
         other => panic!("host argument {index} should be an integer, found {other:?}"),
+    }
+}
+
+fn stream(args: &[HostArg], index: usize) -> i64 {
+    match args.get(index) {
+        Some(HostArg::Stream(id)) => *id,
+        other => panic!("host argument {index} should be a stream, found {other:?}"),
+    }
+}
+
+fn bytes<'b>(args: &'b [HostArg], index: usize) -> &'b [u8] {
+    match args.get(index) {
+        Some(HostArg::Bytes(bytes)) => bytes,
+        other => panic!("host argument {index} should be bytes, found {other:?}"),
     }
 }
 
@@ -281,6 +317,39 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
             file.write_all(string(args, 1).as_bytes())
                 .map_err(|e| io_error("write", path, &e))?;
             Ok(V::Nothing)
+        }
+        Host::Open => crate::streams::open(string(args, 0), string(args, 1)).map(V::Stream),
+        Host::StreamReadLine => {
+            crate::streams::read_line(stream(args, 0), integer(args, 1)).map(V::OptionalString)
+        }
+        Host::StreamRead => crate::streams::read_rest(stream(args, 0)).map(V::String),
+        Host::StreamReadBytes => {
+            crate::streams::read_bytes(stream(args, 0), integer(args, 1)).map(V::Bytes)
+        }
+        Host::StreamWrite => {
+            crate::streams::write(stream(args, 0), string(args, 1).as_bytes()).map(|()| V::Nothing)
+        }
+        Host::StreamWriteBytes => {
+            crate::streams::write(stream(args, 0), bytes(args, 1)).map(|()| V::Nothing)
+        }
+        Host::StreamFlush => crate::streams::flush(stream(args, 0)).map(|()| V::Nothing),
+        Host::StreamPosition => crate::streams::position(stream(args, 0)).map(V::Integer),
+        Host::StreamSeek => {
+            crate::streams::seek(stream(args, 0), integer(args, 1)).map(|()| V::Nothing)
+        }
+        Host::StreamClose => crate::streams::close(stream(args, 0)).map(|()| V::Nothing),
+        Host::StreamCopy => crate::streams::copy(stream(args, 0), stream(args, 1)).map(V::Integer),
+        Host::ReadFileBytes => {
+            let path = string(args, 0);
+            std::fs::read(path)
+                .map(V::Bytes)
+                .map_err(|e| io_error("read", path, &e))
+        }
+        Host::WriteFileBytes => {
+            let path = string(args, 0);
+            std::fs::write(path, bytes(args, 1))
+                .map(|()| V::Nothing)
+                .map_err(|e| io_error("write", path, &e))
         }
         Host::Arguments => Ok(V::Strings(
             ARGUMENTS.lock().unwrap_or_else(|e| e.into_inner()).clone(),
