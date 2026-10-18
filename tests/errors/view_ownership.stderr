@@ -52,5 +52,24 @@ error[E_VIEW_TEMPORARY]: a view needs a variable to borrow from
     |
     = help: store the array in a variable first, and make the view of that
 
-6 errors found; nothing was run
+error[E_BORROW_CONFLICT]: cannot change `items` while the loop is reading it
+   --> view_ownership.sayon:31:10
+    |
+ 30 | for value in view(items)
+    |              ----------- the loop reads `items` here until it finishes
+ 31 |     push(items, value)
+    |          ^^^^^
+    |
+    = help: collect the changes in another collection and apply them after the loop
+
+error[E_BORROW_CONFLICT]: `items` is used twice in one call to `grow`
+   --> view_ownership.sayon:36:19
+    |
+ 36 | grow(view(items), items)
+    |      ----------- borrowed for reading here
+    |                   ^^^^^ and borrowed for changes here
+    |
+    = help: `grow` needs exclusive access; pass a clone or split the call
+
+8 errors found; nothing was run
 run `sayon explain E_BORROW_CONFLICT` to learn more about an error

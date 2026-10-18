@@ -1133,6 +1133,17 @@ impl<'p> Analyzer<'p> {
                 if let Some(access) = access {
                     accesses.push((root, access, arg.expr.span));
                 }
+            } else if let Type::View(_, mutable) = arg.expr.ty {
+                // A view made for the call borrows its array until the call
+                // returns.
+                let access = if mutable {
+                    Access::Update
+                } else {
+                    Access::Read
+                };
+                for owner in self.view_source(&arg.expr) {
+                    accesses.push((owner, access, arg.expr.span));
+                }
             }
         }
         self.reason = saved;
@@ -1432,12 +1443,17 @@ impl<'p> Analyzer<'p> {
                 }
                 // A loop over a string reads it in place too; each character
                 // is a new string the loop variable owns.
-                let borrow = if collection || iterable_ty == Type::String {
-                    Self::root(iterable)
+                // A loop over a view made for it reads the view's arrays.
+                let borrows = if !collection && iterable_ty != Type::String {
+                    Vec::new()
+                } else if let Some(local) = Self::root(iterable) {
+                    vec![local]
+                } else if matches!(iterable_ty, Type::View(..)) {
+                    self.view_source(iterable)
                 } else {
-                    None
+                    Vec::new()
                 };
-                if let Some(local) = borrow {
+                for &local in &borrows {
                     self.loop_borrows.push(LoopBorrow {
                         local,
                         span: iterable.span,
@@ -1450,7 +1466,7 @@ impl<'p> Analyzer<'p> {
                     this.block(body, head);
                     exit
                 });
-                if borrow.is_some() {
+                for _ in &borrows {
                     self.loop_borrows.pop();
                 }
             }

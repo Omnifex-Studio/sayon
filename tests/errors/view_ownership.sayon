@@ -25,3 +25,12 @@ function local_view() -> View<integer>
 
 temporary = view([1, 2, 3])
 print(temporary)
+
+# A view made for a loop or a call borrows its array until it finishes.
+for value in view(items)
+    push(items, value)
+
+function grow(values: View<integer>, update target: Array<integer>)
+    push(target, values[0])
+
+grow(view(items), items)
