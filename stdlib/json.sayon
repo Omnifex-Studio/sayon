@@ -1,0 +1,401 @@
+# JSON: reading text into values, and writing values as text.
+#
+#     json = import("standard/json.sayon")
+#     value = json.parse("{{\"name\": \"Ada\", \"born\": 1815}}")
+#     print(json.encode(value))
+#
+# A number keeps the exact text it was written with, so integers of any
+# size, and decimals, come back unchanged when the value is encoded again;
+# `number_value` reads one as `integer or float`. An object keeps its fields
+# in the order they were written, and encoding writes them in that order.
+#
+# Parsing raises a `ParseError` naming the line and column for text that is
+# not JSON: a value followed by anything but whitespace, a field name that
+# appears twice in one object, an escape for half of a surrogate pair, a
+# control character inside a string, or nesting more than 512 levels deep.
+
+strings = import("standard/strings.sayon")
+
+enum Json
+    null
+    flag(value: boolean)
+    number(digits: string)
+    text(value: string)
+    list(items: Array<Json>)
+    object(fields: Dict<string, Json>)
+
+private constant MAXIMUM_DEPTH = 512
+private constant DIGITS = "0123456789"
+private constant HEX_DIGITS = "0123456789abcdef"
+
+private type Reader = [characters: Array<string>, position: integer, depth: integer]
+
+# Reads JSON text into a value.
+function parse(source: string) -> Json
+    reader = Reader(characters = strings.characters(source), position = 0, depth = 0)
+    skip_space(reader)
+    value = read_value(reader)
+    skip_space(reader)
+    if reader.position < length(reader.characters)
+        fail(reader, "unexpected text after the value")
+    return value
+
+# Writes a value as compact JSON text.
+function encode(value: Json) -> string
+    parts: Array<string> = []
+    write(parts, value, "", "")
+    return strings.join(parts, "")
+
+# Writes a value as JSON text with one field or item per line, indented by
+# two spaces for each level.
+function pretty(value: Json) -> string
+    parts: Array<string> = []
+    write(parts, value, "  ", "")
+    return strings.join(parts, "")
+
+# A number's value, as `tonumber` reads its text, or nothing for another
+# kind of value.
+function number_value(value: Json) -> integer or float or nothing
+    match value
+        case number(digits)
+            return tonumber(digits)
+        case _
+            return nothing
+
+# A text's string, or nothing for another kind of value.
+function text_value(value: Json) -> string or nothing
+    match value
+        case text(content)
+            return clone(content)
+        case _
+            return nothing
+
+# A flag's boolean, or nothing for another kind of value.
+function flag_value(value: Json) -> boolean or nothing
+    match value
+        case flag(truth)
+            return truth
+        case _
+            return nothing
+
+# A copy of an object's field, or nothing when the value is not an object
+# or has no such field.
+function field(value: Json, name: string) -> Json or nothing
+    match value
+        case object(fields)
+            if haskey(fields, name)
+                return clone(fields[name])
+        case _
+            return nothing
+    return nothing
+
+# A copy of a list's item, or nothing when the value is not a list or the
+# position is outside it.
+function item(value: Json, position: integer) -> Json or nothing
+    match value
+        case list(items)
+            if position >= 0 and position < length(items)
+                return clone(items[position])
+        case _
+            return nothing
+    return nothing
+
+# A number from an integer.
+function from_integer(value: integer) -> Json
+    return number(tostring(value))
+
+# ----- reading -----------------------------------------------------------------
+
+private function fail(reader: Reader, message: string)
+    line = 1
+    column = 1
+    limit = reader.position
+    if limit > length(reader.characters)
+        limit = length(reader.characters)
+    for index in range(limit)
+        if reader.characters[index] == "\n"
+            line += 1
+            column = 1
+        else
+            column += 1
+    host_parse_error("{message} at line {line}, column {column}")
+
+private function at_end(reader: Reader) -> boolean
+    return reader.position >= length(reader.characters)
+
+private function sees(reader: Reader, expected: string) -> boolean
+    return reader.position < length(reader.characters) and reader.characters[reader.position] == expected
+
+private function sees_digit(reader: Reader) -> boolean
+    return reader.position < length(reader.characters) and strings.contains(DIGITS, reader.characters[reader.position])
+
+private function skip_space(update reader: Reader)
+    while sees(reader, " ") or sees(reader, "\n") or sees(reader, "\t") or sees(reader, "\r")
+        reader.position += 1
+
+private function read_value(update reader: Reader) -> Json
+    if at_end(reader)
+        fail(reader, "expected a value, but the text ended")
+    if sees(reader, "{{")
+        return read_object(reader)
+    if sees(reader, "[")
+        return read_list(reader)
+    if sees(reader, "\"")
+        return text(read_string(reader))
+    if sees(reader, "t")
+        read_word(reader, "true")
+        return flag(true)
+    if sees(reader, "f")
+        read_word(reader, "false")
+        return flag(false)
+    if sees(reader, "n")
+        read_word(reader, "null")
+        return null
+    if sees(reader, "-") or sees_digit(reader)
+        return number(read_number(reader))
+    fail(reader, "expected a value")
+    return null
+
+private function read_word(update reader: Reader, word: string)
+    for letter in word
+        if not sees(reader, letter)
+            fail(reader, "expected `{word}`")
+        reader.position += 1
+
+private function enter(update reader: Reader)
+    reader.depth += 1
+    if reader.depth > MAXIMUM_DEPTH
+        fail(reader, "the value is nested more than {MAXIMUM_DEPTH} levels deep")
+    reader.position += 1
+
+private function read_list(update reader: Reader) -> Json
+    enter(reader)
+    items: Array<Json> = []
+    skip_space(reader)
+    variable more = not sees(reader, "]")
+    if not more
+        reader.position += 1
+    while more
+        skip_space(reader)
+        push(items, read_value(reader))
+        skip_space(reader)
+        if sees(reader, ",")
+            reader.position += 1
+        elseif sees(reader, "]")
+            reader.position += 1
+            more = false
+        else
+            fail(reader, "expected `,` or `]` after a list item")
+    reader.depth -= 1
+    return list(items)
+
+private function read_object(update reader: Reader) -> Json
+    enter(reader)
+    fields: Dict<string, Json> = []
+    skip_space(reader)
+    variable more = not sees(reader, "}}")
+    if not more
+        reader.position += 1
+    while more
+        skip_space(reader)
+        if not sees(reader, "\"")
+            fail(reader, "expected a field name in double quotes")
+        name = read_string(reader)
+        if haskey(fields, name)
+            fail(reader, "the field \"{name}\" appears twice in one object")
+        skip_space(reader)
+        if not sees(reader, ":")
+            fail(reader, "expected `:` after the field name")
+        reader.position += 1
+        skip_space(reader)
+        fields[name] = read_value(reader)
+        skip_space(reader)
+        if sees(reader, ",")
+            reader.position += 1
+        elseif sees(reader, "}}")
+            reader.position += 1
+            more = false
+        else
+            fail(reader, "expected `,` or `}}` after a field")
+    reader.depth -= 1
+    return object(fields)
+
+private function read_string(update reader: Reader) -> string
+    reader.position += 1
+    parts: Array<string> = []
+    while not at_end(reader) and not sees(reader, "\"")
+        if sees(reader, "\\")
+            reader.position += 1
+            push(parts, read_escape(reader))
+        else
+            character = clone(reader.characters[reader.position])
+            if strings.code(character) < 32
+                fail(reader, "a control character in a string must be written as an escape")
+            push(parts, character)
+            reader.position += 1
+    if at_end(reader)
+        fail(reader, "a string is not closed")
+    reader.position += 1
+    return strings.join(parts, "")
+
+private function read_escape(update reader: Reader) -> string
+    if at_end(reader)
+        fail(reader, "a string is not closed")
+    reader.position += 1
+    if sees_back(reader, "\"")
+        return "\""
+    if sees_back(reader, "\\")
+        return "\\"
+    if sees_back(reader, "/")
+        return "/"
+    if sees_back(reader, "b")
+        return strings.character(8)
+    if sees_back(reader, "f")
+        return strings.character(12)
+    if sees_back(reader, "n")
+        return "\n"
+    if sees_back(reader, "r")
+        return "\r"
+    if sees_back(reader, "t")
+        return "\t"
+    if sees_back(reader, "u")
+        code = read_hex(reader)
+        if code >= 0xDC00 and code <= 0xDFFF
+            fail(reader, "an escape for the second half of a surrogate pair appears alone")
+        if code >= 0xD800 and code <= 0xDBFF
+            if not (sees(reader, "\\") and next_is(reader, "u"))
+                fail(reader, "an escape for the first half of a surrogate pair is not followed by the second half")
+            reader.position += 2
+            low = read_hex(reader)
+            if low < 0xDC00 or low > 0xDFFF
+                fail(reader, "an escape for the first half of a surrogate pair is not followed by the second half")
+            code = 0x10000 + (code - 0xD800) * 0x400 + (low - 0xDC00)
+        return strings.character(code)
+    reader.position -= 1
+    fail(reader, "unknown escape in a string")
+    return ""
+
+# Whether the character just read is `expected`.
+private function sees_back(reader: Reader, expected: string) -> boolean
+    return reader.characters[reader.position - 1] == expected
+
+private function next_is(reader: Reader, expected: string) -> boolean
+    return reader.position + 1 < length(reader.characters) and reader.characters[reader.position + 1] == expected
+
+private function read_hex(update reader: Reader) -> integer
+    value = 0
+    for _ in range(4)
+        if at_end(reader)
+            fail(reader, "expected four hexadecimal digits after `\\u`")
+        digit = strings.find(HEX_DIGITS, strings.lower(reader.characters[reader.position]))
+        if digit == nothing
+            fail(reader, "expected four hexadecimal digits after `\\u`")
+        else
+            value = value * 16 + digit
+        reader.position += 1
+    return value
+
+private function read_number(update reader: Reader) -> string
+    start = reader.position
+    if sees(reader, "-")
+        reader.position += 1
+    if sees(reader, "0")
+        reader.position += 1
+    elseif sees_digit(reader)
+        skip_digits(reader)
+    else
+        fail(reader, "expected digits in a number")
+    if sees(reader, ".")
+        reader.position += 1
+        if not sees_digit(reader)
+            fail(reader, "expected digits after the decimal point")
+        skip_digits(reader)
+    if sees(reader, "e") or sees(reader, "E")
+        reader.position += 1
+        if sees(reader, "+") or sees(reader, "-")
+            reader.position += 1
+        if not sees_digit(reader)
+            fail(reader, "expected digits in the exponent")
+        skip_digits(reader)
+    parts: Array<string> = []
+    for index in range(start, reader.position)
+        push(parts, clone(reader.characters[index]))
+    return strings.join(parts, "")
+
+private function skip_digits(update reader: Reader)
+    while sees_digit(reader)
+        reader.position += 1
+
+# ----- writing -----------------------------------------------------------------
+
+# Appends the text of a value. `step` is the indentation of one level, empty
+# for compact output, and `indentation` the current level's.
+private function write(update parts: Array<string>, value: Json, step: string, indentation: string)
+    match value
+        case null
+            push(parts, "null")
+        case flag(truth)
+            push(parts, tostring(truth))
+        case number(digits)
+            push(parts, clone(digits))
+        case text(content)
+            write_string(parts, content)
+        case list(items)
+            if length(items) == 0
+                push(parts, "[]")
+            else
+                inner = indentation + step
+                push(parts, "[")
+                for position in range(length(items))
+                    if position > 0
+                        push(parts, ",")
+                    if step != ""
+                        push(parts, "\n" + inner)
+                    write(parts, items[position], step, inner)
+                if step != ""
+                    push(parts, "\n" + indentation)
+                push(parts, "]")
+        case object(fields)
+            if length(fields) == 0
+                push(parts, "{{}}")
+            else
+                inner = indentation + step
+                push(parts, "{{")
+                variable first = true
+                for name, member in fields
+                    if not first
+                        push(parts, ",")
+                    first = false
+                    if step != ""
+                        push(parts, "\n" + inner)
+                    write_string(parts, name)
+                    if step != ""
+                        push(parts, ": ")
+                    else
+                        push(parts, ":")
+                    write(parts, member, step, inner)
+                if step != ""
+                    push(parts, "\n" + indentation)
+                push(parts, "}}")
+
+private function write_string(update parts: Array<string>, content: string)
+    push(parts, "\"")
+    for character in content
+        if character == "\""
+            push(parts, "\\\"")
+        elseif character == "\\"
+            push(parts, "\\\\")
+        elseif character == "\n"
+            push(parts, "\\n")
+        elseif character == "\r"
+            push(parts, "\\r")
+        elseif character == "\t"
+            push(parts, "\\t")
+        elseif strings.code(character) < 32
+            push(parts, "\\u00" + hex_pair(strings.code(character)))
+        else
+            push(parts, character)
+    push(parts, "\"")
+
+private function hex_pair(code: integer) -> string
+    return strings.slice(HEX_DIGITS, code / 16, code / 16 + 1) + strings.slice(HEX_DIGITS, code % 16, code % 16 + 1)

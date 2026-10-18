@@ -478,7 +478,7 @@ A numeric conversion cannot represent its value, such as a float that is not fin
 
 ### ParseError
 
-`tonumber(text)` was given text that is not a number. The whole text must be a number, without spaces.
+Text could not be read as what was asked for: `tonumber(text)` was given text that is not a number (the whole text must be a number, without spaces), or `json.parse` was given text that is not JSON. A JSON error names the line and column where reading stopped.
 
 ### RangeError
 

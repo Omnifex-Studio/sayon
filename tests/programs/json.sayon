@@ -1,0 +1,33 @@
+json = import("standard/json.sayon")
+
+source = "{{\"name\": \"Ada\", \"born\": 1815, \"big\": 123456789012345678901234567890, \"ratio\": 1.50e3, \"tags\": [true, false, null], \"nested\": {{\"empty\": [], \"none\": {{}}}}, \"escaped\": \"a\\\"b\\\\c\\n\\u00e9\\ud83d\\ude00\"}}"
+value = json.parse(source)
+print(json.encode(value))
+print(json.pretty(value))
+name = json.field(value, "name")
+if name != nothing
+    print(json.text_value(name))
+born = json.field(value, "born")
+if born != nothing
+    print(json.number_value(born))
+print(json.encode(json.parse("  [1, -2.5, 3e2]  ")))
+for bad in ["[1, 2", "{{\"a\": 1, \"a\": 2}}", "[1] x", "\"\\ud800\"", "tru", "01", "{{\"a\" 1}}", "\"tab\there\""]
+    outcome = try json.parse(bad)
+    if outcome is error
+        print(outcome.code, outcome.message)
+
+# Building values, and matching them with qualified names.
+
+fields: Dict<string, json.Json> = []
+fields["title"] = json.Json.text("Notes")
+fields["count"] = json.from_integer(3)
+fields["done"] = json.Json.flag(false)
+fields["items"] = json.Json.list([json.Json.text("a"), json.Json.null])
+document = json.Json.object(fields)
+print(json.encode(document))
+
+match json.parse("[1, \"two\", [3]]")
+    case json.Json.list(items)
+        print(length(items))
+    case _
+        print("not a list")

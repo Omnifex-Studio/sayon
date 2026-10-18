@@ -91,3 +91,15 @@ function take(own note: Note) -> string
             return "a count"
 
 print(take(body("kept")), take(count(1)))
+
+# Qualified names in patterns.
+function kind(shape: Shape) -> string
+    match shape
+        case Shape.circle(_) or Shape.square(_)
+            return "round or square"
+        case Shape.point
+            return "point"
+        case _
+            return "rectangle"
+
+print(kind(Shape.point), kind(circle(1.0)), kind(Shape.rectangle(1.0, 2.0)))

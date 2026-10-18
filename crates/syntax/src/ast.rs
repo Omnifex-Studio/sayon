@@ -135,14 +135,19 @@ pub enum PatternKind {
     /// A binding or a payload-free variant, decided during checking.
     Name(Ident),
     /// A variant with a pattern for each field, or a structure with a
-    /// pattern for each field in declaration order.
+    /// pattern for each field in declaration order. `qualifier` holds the
+    /// names before the last dot of `Shape.circle(r)` or
+    /// `geometry.Point(x, y)`; a qualified name without parentheses is a
+    /// variant without fields.
     Variant {
+        qualifier: Vec<Ident>,
         name: Ident,
         args: Vec<Pattern>,
     },
     /// A variant or structure with patterns for the named fields; the other
     /// fields match anything.
     Fields {
+        qualifier: Vec<Ident>,
         name: Ident,
         fields: Vec<(Ident, Pattern)>,
     },

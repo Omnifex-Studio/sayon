@@ -1,0 +1,30 @@
+{"name":"Ada","born":1815,"big":123456789012345678901234567890,"ratio":1.50e3,"tags":[true,false,null],"nested":{"empty":[],"none":{}},"escaped":"a\"b\\c\né😀"}
+{
+  "name": "Ada",
+  "born": 1815,
+  "big": 123456789012345678901234567890,
+  "ratio": 1.50e3,
+  "tags": [
+    true,
+    false,
+    null
+  ],
+  "nested": {
+    "empty": [],
+    "none": {}
+  },
+  "escaped": "a\"b\\c\né😀"
+}
+Ada
+1815
+[1,-2.5,3e2]
+ParseError expected `,` or `]` after a list item at line 1, column 6
+ParseError the field "a" appears twice in one object at line 1, column 13
+ParseError unexpected text after the value at line 1, column 5
+ParseError an escape for the first half of a surrogate pair is not followed by the second half at line 1, column 8
+ParseError expected `true` at line 1, column 4
+ParseError unexpected text after the value at line 1, column 2
+ParseError expected `:` after the field name at line 1, column 6
+ParseError a control character in a string must be written as an escape at line 1, column 5
+{"title":"Notes","count":3,"done":false,"items":["a",null]}
+3

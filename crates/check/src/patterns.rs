@@ -252,9 +252,11 @@ impl<'a> Checker<'a> {
         match &pattern.kind {
             PatternKind::Wildcard => Pattern::Wildcard,
             PatternKind::Or(alternatives) => self.or_pattern(cx, alternatives, ty, bound),
-            PatternKind::Fields { name, fields } => {
-                self.fields_pattern(cx, name, fields, ty, pattern.span, bound)
-            }
+            PatternKind::Fields {
+                qualifier,
+                name,
+                fields,
+            } => self.fields_pattern(cx, qualifier, name, fields, ty, pattern.span, bound),
             PatternKind::Name(name) => {
                 if let Some((enum_ty, member, variant)) =
                     self.pattern_variant(cx, ty, &name.name, name.span)
@@ -356,11 +358,17 @@ impl<'a> Checker<'a> {
                 let local = cx.declare(&name.name, binding_ty, name.span, LocalKind::CaseBinding);
                 Pattern::Binding(local)
             }
-            PatternKind::Variant { name, args } => {
+            PatternKind::Variant {
+                qualifier,
+                name,
+                args,
+            } => {
                 let Some((enum_ty, member, variant)) =
                     self.pattern_variant(cx, ty, &name.name, name.span)
                 else {
-                    if let Some((record_ty, member)) = self.pattern_structure(cx, ty, name) {
+                    if let Some((record_ty, member)) =
+                        self.pattern_structure(cx, ty, qualifier, name)
+                    {
                         let field_types = self.record_field_types(&record_ty);
                         if args.len() != field_types.len() {
                             let fields = self.record_field_names(&record_ty);
@@ -416,6 +424,7 @@ impl<'a> Checker<'a> {
                     }
                     return Pattern::Wildcard;
                 };
+                self.check_qualifier(cx, qualifier, &enum_ty, name);
                 let field_types = self.variant_field_types(&enum_ty, variant);
                 if args.len() != field_types.len() {
                     let fields: Vec<String> = self
@@ -550,9 +559,11 @@ impl<'a> Checker<'a> {
 
     /// `Name(field = pattern, ...)`: the named fields of a variant or a
     /// structure; the others match anything.
+    #[allow(clippy::too_many_arguments)]
     fn fields_pattern(
         &mut self,
         cx: &mut FnCtx,
+        qualifier: &[Ident],
         name: &Ident,
         given: &[(Ident, ast::Pattern)],
         ty: &Type,
@@ -562,6 +573,7 @@ impl<'a> Checker<'a> {
         if let Some((enum_ty, member, variant)) =
             self.pattern_variant(cx, ty, &name.name, name.span)
         {
+            self.check_qualifier(cx, qualifier, &enum_ty, name);
             let id = enum_ty.as_named().expect("enum").id;
             let names: Vec<String> = self.type_def(id).variants()[variant as usize]
                 .fields
@@ -579,7 +591,7 @@ impl<'a> Checker<'a> {
                 },
             );
         }
-        if let Some((record_ty, member)) = self.pattern_structure(cx, ty, name) {
+        if let Some((record_ty, member)) = self.pattern_structure(cx, ty, qualifier, name) {
             let names = self.record_field_names(&record_ty);
             let types = self.record_field_types(&record_ty);
             let fields = self.named_fields(cx, &name.name, &names, &types, given, bound);
@@ -651,15 +663,54 @@ impl<'a> Checker<'a> {
         fields
     }
 
+    /// Checks that `Enum.variant` names the enum the variant belongs to, and
+    /// that `module.Enum.variant` names an imported module.
+    fn check_qualifier(&mut self, cx: &FnCtx, qualifier: &[Ident], owner: &Type, name: &Ident) {
+        let (Some(last), Type::Named(named)) = (qualifier.last(), owner) else {
+            return;
+        };
+        let owner_name = self.type_def(named.id).name.clone();
+        let module_known = match qualifier {
+            [_] => true,
+            [module, _] => self.import(cx.module, &module.name).is_some(),
+            _ => false,
+        };
+        if last.name != owner_name || !module_known {
+            let written: Vec<&str> = qualifier.iter().map(|q| q.name.as_str()).collect();
+            self.error(
+                Diagnostic::error(
+                    "E_UNKNOWN_VARIANT",
+                    format!(
+                        "`{}.{}` cannot match a `{owner_name}`",
+                        written.join("."),
+                        name.name
+                    ),
+                )
+                .primary(last.span, format!("the matched value is a `{owner_name}`"))
+                .help(format!(
+                    "write `{owner_name}.{}`, or the variant's name alone",
+                    name.name
+                )),
+            );
+        }
+    }
+
     /// The structure a pattern name refers to, given the type it matches: the
-    /// type itself, or the member of a union that is that structure.
+    /// type itself, or the member of a union that is that structure. A
+    /// qualifier names the module that declares it.
     fn pattern_structure(
         &mut self,
         cx: &FnCtx,
         ty: &Type,
+        qualifier: &[Ident],
         name: &Ident,
     ) -> Option<(Type, Option<Type>)> {
-        let Some(Item::Type(id)) = self.item(cx.module, &name.name) else {
+        let module = match qualifier {
+            [] => cx.module,
+            [alias] => self.import(cx.module, &alias.name)?,
+            _ => return None,
+        };
+        let Some(Item::Type(id)) = self.item(module, &name.name) else {
             return None;
         };
         if self.type_def(id).is_enum() {

@@ -485,11 +485,21 @@ fn pattern_names(pattern: &ast::Pattern, used: &mut HashSet<String>) {
         PatternKind::Name(name) => {
             used.insert(name.name.clone());
         }
-        PatternKind::Variant { name, args } => {
+        PatternKind::Variant {
+            qualifier,
+            name,
+            args,
+        } => {
+            used.extend(qualifier.iter().map(|q| q.name.clone()));
             used.insert(name.name.clone());
             args.iter().for_each(|arg| pattern_names(arg, used));
         }
-        PatternKind::Fields { name, fields } => {
+        PatternKind::Fields {
+            qualifier,
+            name,
+            fields,
+        } => {
+            used.extend(qualifier.iter().map(|q| q.name.clone()));
             used.insert(name.name.clone());
             fields.iter().for_each(|(_, p)| pattern_names(p, used));
         }

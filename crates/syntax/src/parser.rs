@@ -1000,7 +1000,12 @@ impl<'t> Parser<'t> {
                 PatternKind::Wildcard
             }
             TokenKind::Identifier(_) => {
-                let name = self.expect_ident("a pattern")?;
+                let mut name = self.expect_ident("a pattern")?;
+                let mut qualifier = Vec::new();
+                while self.eat(&TokenKind::Dot) {
+                    qualifier.push(name);
+                    name = self.expect_ident("a variant or type name")?;
+                }
                 if self.eat(&TokenKind::LeftParen) {
                     self.nesting += 1;
                     let named = matches!(self.peek().kind, TokenKind::Identifier(_))
@@ -1022,9 +1027,23 @@ impl<'t> Parser<'t> {
                     self.expect(&TokenKind::RightParen, "`)`")?;
                     self.nesting -= 1;
                     if named {
-                        PatternKind::Fields { name, fields }
+                        PatternKind::Fields {
+                            qualifier,
+                            name,
+                            fields,
+                        }
                     } else {
-                        PatternKind::Variant { name, args }
+                        PatternKind::Variant {
+                            qualifier,
+                            name,
+                            args,
+                        }
+                    }
+                } else if !qualifier.is_empty() {
+                    PatternKind::Variant {
+                        qualifier,
+                        name,
+                        args: Vec::new(),
                     }
                 } else {
                     PatternKind::Name(name)

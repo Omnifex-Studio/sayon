@@ -79,10 +79,11 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `standard/io`: whole files, lines, standard input and output | experimental | M1 |
 | `standard/os`: arguments, environment, platform, current directory | experimental | M1 |
 | `standard/filesystem`: listing, metadata, create, remove, rename, copy, paths | experimental | M1 |
-| `standard/strings`: split, join, trim, case, replace, search, slicing | experimental | M1 |
+| `standard/strings`: split, join, trim, case, replace, search, slicing, character codes | experimental | M1 |
 | `standard/math`: functions, constants, `random` | experimental | M1 |
 | Streams and file handles (`io.open`, `file.lines()`), process spawning, `os.exit`, directory walking | planned | M2 to M3 |
-| `standard.json` | planned | M1 to M2 |
+| `standard/json`: `Json` values, parse with positions in errors, compact and pretty encoding, exact number text, duplicate-field and depth limits | experimental | M2 |
+| `standard/json` typed decoding and encoding into structures | planned | M2 to M3 |
 | `standard.collections`, `standard.time` | planned | M1 to M3 |
 | `standard.network`, `standard.threads` | planned | M3 |
 | `standard.graphics` | planned | M4 baseline |

@@ -56,3 +56,11 @@ function slice(text: string, start: integer, end: integer) -> string
 # Each character as a one-character string.
 function characters(text: string) -> Array<string>
     return host_characters(text)
+
+# The Unicode code of a one-character string, such as 65 for "A".
+function code(character: string) -> integer
+    return host_code(character)
+
+# The one-character string with a Unicode code, such as "A" for 65.
+function character(code: integer) -> string
+    return host_character(code)

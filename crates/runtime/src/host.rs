@@ -79,6 +79,9 @@ hosts! {
     Repeat = "repeat"(String, Integer) -> String;
     Substring = "substring"(String, Integer, Integer) -> String;
     Characters = "characters"(String) -> StringArray;
+    Code = "code"(String) -> Integer;
+    Character = "character"(Integer) -> String;
+    ParseError = "parse_error"(String) -> Nothing;
     Sqrt = "sqrt"(Float) -> Float;
     Sin = "sin"(Float) -> Float;
     Cos = "cos"(Float) -> Float;
@@ -440,6 +443,31 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
         Host::Characters => Ok(V::Strings(
             string(args, 0).chars().map(|c| c.to_string()).collect(),
         )),
+        Host::Code => {
+            let text = string(args, 0);
+            let mut chars = text.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => Ok(V::Integer(c as i64)),
+                _ => Err((
+                    "ValueError",
+                    format!(
+                        "`code` takes one character, but the text has {}",
+                        text.chars().count()
+                    ),
+                )),
+            }
+        }
+        Host::Character => {
+            let code = integer(args, 0);
+            match u32::try_from(code).ok().and_then(char::from_u32) {
+                Some(c) => Ok(V::String(c.to_string())),
+                None => Err((
+                    "ValueError",
+                    format!("{code} is not a Unicode character code"),
+                )),
+            }
+        }
+        Host::ParseError => Err(("ParseError", string(args, 0).to_string())),
         Host::Sqrt => unary(f64::sqrt),
         Host::Sin => unary(f64::sin),
         Host::Cos => unary(f64::cos),

@@ -585,16 +585,28 @@ impl<'s> Printer<'s> {
             PatternKind::Wildcard => "_".to_string(),
             PatternKind::Literal(expr) => self.expr(expr, 0),
             PatternKind::Name(name) => name.name.clone(),
-            PatternKind::Variant { name, args } => {
+            PatternKind::Variant {
+                qualifier,
+                name,
+                args,
+            } => {
+                let path = qualified(qualifier, name);
+                if args.is_empty() && !qualifier.is_empty() {
+                    return path;
+                }
                 let args: Vec<String> = args.iter().map(|a| self.pattern(a)).collect();
-                format!("{}({})", name.name, args.join(", "))
+                format!("{path}({})", args.join(", "))
             }
-            PatternKind::Fields { name, fields } => {
+            PatternKind::Fields {
+                qualifier,
+                name,
+                fields,
+            } => {
                 let fields: Vec<String> = fields
                     .iter()
                     .map(|(field, pattern)| format!("{} = {}", field.name, self.pattern(pattern)))
                     .collect();
-                format!("{}({})", name.name, fields.join(", "))
+                format!("{}({})", qualified(qualifier, name), fields.join(", "))
             }
             PatternKind::Or(alternatives) => {
                 let alternatives: Vec<String> =
@@ -999,6 +1011,16 @@ fn stmt_print(stmt: &Stmt, source: &str, out: &mut String) {
     out.push(';');
 }
 
+/// `a.b.name` for a qualified name in a pattern.
+fn qualified(qualifier: &[Ident], name: &Ident) -> String {
+    qualifier
+        .iter()
+        .chain(std::iter::once(name))
+        .map(|part| part.name.as_str())
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 fn pattern_shape(pattern: &Pattern, source: &str) -> String {
     match &pattern.kind {
         PatternKind::Wildcard => "_".into(),
@@ -1008,18 +1030,26 @@ fn pattern_shape(pattern: &Pattern, source: &str) -> String {
             out
         }
         PatternKind::Name(name) => name.name.clone(),
-        PatternKind::Variant { name, args } => {
+        PatternKind::Variant {
+            qualifier,
+            name,
+            args,
+        } => {
             let args: Vec<String> = args.iter().map(|a| pattern_shape(a, source)).collect();
-            format!("{}({})", name.name, args.join(","))
+            format!("{}({})", qualified(qualifier, name), args.join(","))
         }
-        PatternKind::Fields { name, fields } => {
+        PatternKind::Fields {
+            qualifier,
+            name,
+            fields,
+        } => {
             let fields: Vec<String> = fields
                 .iter()
                 .map(|(field, pattern)| {
                     format!("{}={}", field.name, pattern_shape(pattern, source))
                 })
                 .collect();
-            format!("{}({})", name.name, fields.join(","))
+            format!("{}({})", qualified(qualifier, name), fields.join(","))
         }
         PatternKind::Or(alternatives) => {
             let alternatives: Vec<String> = alternatives

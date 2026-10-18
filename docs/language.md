@@ -318,6 +318,7 @@ function area(shape: Shape) -> float
 | `variant(pattern, ...)` | that variant, with each field matching its pattern |
 | `Structure(pattern, ...)` | a structure whose fields, in declaration order, match the patterns |
 | `Name(field = pattern, ...)` | a variant or structure whose named fields match; fields left out match anything |
+| `Enum.variant(...)`, `module.Enum.variant(...)`, `module.Structure(...)` | the same, naming where the variant or structure comes from; `Shape.point` alone is a variant without fields |
 | `pattern or pattern` | a value either alternative matches |
 
 Patterns nest: `case some(circle(r))`. On a union, a literal or variant pattern selects the member it belongs to, and a name after cases that handled some members holds only the remaining ones:
@@ -534,7 +535,8 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 | `standard/io.sayon` | `read_file`, `write_file`, `append_file`, `read_lines`, `read_line` (standard input; `nothing` at the end), `write` (no newline), `write_error` |
 | `standard/os.sayon` | `arguments` (the words after `--` with `sayon run`), `environment`, `platform`, `current_directory` |
 | `standard/filesystem.sayon` | `exists`, `is_file`, `is_directory`, `list` (sorted names), `size`, `create_directory`, `remove`, `rename`, `copy`, `join`, `name`, `parent`, `extension` |
-| `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters` |
+| `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters`, `code` (a character's Unicode code), `character` (the character with a code) |
+| `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer` |
 | `standard/math.sayon` | `PI`, `E`, `TAU`, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `log`, `log10`, `log2`, `pow`, `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`, `clamp`, `random` |
 
 ```sayon
@@ -549,6 +551,30 @@ while true
 ```
 
 String positions count Unicode characters. File and directory failures raise `IOError`; text that is not UTF-8 raises `EncodingError`. `math.random()` is not suitable for security.
+
+### JSON
+
+`json.parse(text)` reads JSON into a `Json` value, an enum with the variants `null`, `flag(value: boolean)`, `number(digits: string)`, `text(value: string)`, `list(items: Array<Json>)`, and `object(fields: Dict<string, Json>)`. `json.encode(value)` writes compact JSON and `json.pretty(value)` indents it by two spaces per level.
+
+```sayon
+json = import("standard/json.sayon")
+
+value = json.parse("{{\"name\": \"Ada\", \"born\": 1815}}")
+match value
+    case json.Json.object(fields)
+        print(length(fields))                            # 2
+    case _
+        print("not an object")
+born = json.field(value, "born")                         # Json or nothing
+if born != nothing
+    print(json.number_value(born))                       # 1815
+```
+
+- A number keeps the exact text it was written with, so integers of any size and decimals come back unchanged from `encode`; `number_value` reads it as `integer or float`.
+- An object keeps its fields in the order they were written, and `encode` writes them in that order.
+- `parse` raises a `ParseError` naming the line and column for text that is not JSON, including anything but whitespace after the value, a field name repeated in one object, an unpaired surrogate escape, a raw control character in a string, and nesting deeper than 512 levels.
+- Build values with the variants, written through the module: `json.Json.text("hi")`, `json.Json.list([...])`, or `json.from_integer(3)`.
+- Braces in a Sayon string start interpolation, so JSON written as a literal doubles them: `"{{\"a\": 1}}"`.
 
 ### Display
 
