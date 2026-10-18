@@ -1,0 +1,138 @@
+# Tasks and channels
+threads = import("standard/threads.sayon")
+time = import("standard/time.sayon")
+
+handle = threads.spawn(function() -> integer
+    print("running in a task")
+    return 42
+)
+print("before join")
+print(threads.join(handle))
+
+channel: Channel<string> = threads.new_channel()
+sender = threads.spawn(function()
+    for word in ["one", "two", "three"]
+        threads.send(channel, clone(word))
+    threads.close(channel)
+)
+while true
+    result = threads.receive_result(channel)
+    match result
+        case message(text)
+            print("got", text)
+        case closed
+            break
+threads.join(sender)
+
+# Rendezvous: each send waits for its receive.
+meeting: Channel<integer> = threads.new_channel(0)
+worker = threads.spawn(function()
+    for n in range(3)
+        threads.send(meeting, n)
+        print("sent", n)
+)
+for n in range(3)
+    print("received", threads.receive(meeting))
+threads.join(worker)
+
+# Select takes turns among ready channels.
+a: Channel<string> = threads.new_channel()
+b: Channel<string> = threads.new_channel()
+threads.send(a, "a1")
+threads.send(b, "b1")
+threads.send(a, "a2")
+for n in range(3)
+    threads.select([a, b], function(own value: string, position: integer)
+        print("select", position, value)
+    )
+
+failing = threads.spawn(function() -> integer
+    error("task failed")
+)
+outcome = try threads.join(failing)
+if outcome is error
+    print("joined error:", outcome.message)
+
+# Cancellation, sleeping, and many tasks
+
+forever: Channel<integer> = threads.new_channel()
+waiter = threads.spawn(function()
+    try
+        print("waiting forever")
+        threads.receive(forever)
+    catch problem
+        print("never caught", problem.code)
+    finally
+        print("cleanup runs on cancel")
+)
+threads.detach(waiter)
+
+slow = threads.spawn(function() -> string
+    time.sleep(time.milliseconds(30))
+    return "slow"
+)
+fast = threads.spawn(function() -> string
+    time.sleep(time.milliseconds(5))
+    print("fast done first")
+    return "fast"
+)
+print(threads.join(slow), threads.join(fast))
+
+unjoined = threads.spawn(function()
+    print("runs when the main task next waits")
+)
+print("main ends")
+
+# Owned values move between tasks; leftovers are destroyed with the channel.
+words: Channel<Array<string>> = threads.new_channel(4)
+threads.send(words, ["left", "over"])
+threads.send(words, ["kept"])
+print(threads.receive(words))
+
+# Tasks spawn and join tasks.
+function fib(n: integer) -> integer
+    if n < 2
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+outer = threads.spawn(function() -> integer
+    inner = threads.spawn(function() -> integer
+        return fib(20)
+    )
+    return threads.join(inner) + 1
+)
+print(threads.join(outer))
+
+# A message sent on a closed channel is destroyed with the error.
+done: Channel<string> = threads.new_channel()
+threads.close(done)
+attempt = try threads.send(done, "late")
+if attempt is error
+    print(attempt.code)
+pick = try threads.select([done], function(own value: string, position: integer)
+    print(value, position)
+)
+if pick is error
+    print("select:", pick.code)
+
+# Many tasks, each sending its number back.
+results: Channel<integer> = threads.new_channel()
+handles: Array<Task<nothing>> = []
+for n in range(1000)
+    push(handles, threads.spawn(function()
+        threads.send(results, n * 2)
+    ))
+total = 0
+for n in range(1000)
+    total += threads.receive(results)
+while length(handles) > 0
+    last = pop(handles)
+    if last != nothing
+        threads.join(last)
+print(total)
+
+# Waiting for what can never come fails.
+empty: Channel<integer> = threads.new_channel()
+value = try threads.receive(empty)
+if value is error
+    print(value.code, value.message)

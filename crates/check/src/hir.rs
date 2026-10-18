@@ -364,6 +364,28 @@ pub enum Builtin {
     CellSet,
     /// `cell.replace(own value)`: the value it held.
     CellReplace,
+    /// `task_spawn(own body)` in `standard/threads`: a new task running a
+    /// function value; the built-ins below are the rest of that module's.
+    TaskSpawn,
+    /// `task_join(own task)`: its result, waiting for it.
+    TaskJoin,
+    /// `task_detach(own task)`: lets it run on without a handle.
+    TaskDetach,
+    /// `task_yield()`: lets the other tasks run.
+    TaskYield,
+    /// `task_sleep(nanoseconds)`: waits without stopping the other tasks.
+    TaskSleep,
+    /// `channel_new(capacity)`.
+    ChannelNew,
+    /// `channel_send(channel, own message)`, waiting while it is full.
+    ChannelSend,
+    /// `channel_receive(channel)`, waiting while it is empty.
+    ChannelReceive,
+    /// `channel_close(channel)`.
+    ChannelClose,
+    /// `channel_select(channels)`: the position of a channel with a message
+    /// or closed, waiting until one is.
+    ChannelSelect,
     HasKey,
     ReadFile,
     WriteFile,
@@ -401,6 +423,16 @@ impl Builtin {
             Builtin::CellGet => "get",
             Builtin::CellSet => "set",
             Builtin::CellReplace => "replace",
+            Builtin::TaskSpawn => "task_spawn",
+            Builtin::TaskJoin => "task_join",
+            Builtin::TaskDetach => "task_detach",
+            Builtin::TaskYield => "task_yield",
+            Builtin::TaskSleep => "task_sleep",
+            Builtin::ChannelNew => "channel_new",
+            Builtin::ChannelSend => "channel_send",
+            Builtin::ChannelReceive => "channel_receive",
+            Builtin::ChannelClose => "channel_close",
+            Builtin::ChannelSelect => "channel_select",
             Builtin::View => "view",
             Builtin::MutableView => "mutable_view",
             Builtin::HasKey => "haskey",

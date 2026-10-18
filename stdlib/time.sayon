@@ -124,7 +124,7 @@ function between(earlier: Instant, later: Instant) -> Duration
 # Waits for at least a duration. The program does nothing else meanwhile.
 function sleep(duration: Duration)
     if duration.nanoseconds > 0
-        host_sleep(duration.nanoseconds)
+        task_sleep(duration.nanoseconds)
 
 # ----- the wall clock and dates ------------------------------------------------
 

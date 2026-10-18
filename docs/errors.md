@@ -207,6 +207,10 @@ An `Outcome` from `try` may hold the value or the error, so its contents cannot 
 
 The result of a `try` expression is never inspected, so an error would go unnoticed. Keep the result and test it with `is error`, or leave out `try` so the error propagates.
 
+### W_UNUSED_TASK
+
+A task is spawned and its handle dropped at once, as in a statement `threads.spawn(...)` on its own. A task whose handle is dropped without a `join` or a `detach` is cancelled, and one that has not started then never runs. Keep the handle and `threads.join` it for the result, or `threads.detach(handle)` to let it run on its own until the main task ends.
+
 ### E_BORROWED_UNION
 
 An owned value that is only borrowed here is used where a union is expected, which would need a copy. Pass `clone(value)` for a copy, or `move(value)` to hand it over.
@@ -505,6 +509,14 @@ A numeric conversion cannot represent its value, such as a float that is not fin
 ### ParseError
 
 Text could not be read as what was asked for: `tonumber(text)` was given text that is not a number (the whole text must be a number, without spaces), or `json.parse` was given text that is not JSON. A JSON error names the line and column where reading stopped.
+
+### ChannelClosedError
+
+A `threads.send` on a closed channel, whose message is then destroyed, or a `threads.receive` (or `select`) on a closed channel that has no messages left. `threads.receive_result` tells the end of a channel apart without an error.
+
+### DeadlockError
+
+A task waited for something no task could ever provide: every task was waiting, and none on a timer. For example, a `threads.receive` from a channel nothing else sends on, or a `join` of tasks that wait for each other.
 
 ### DecodeError
 

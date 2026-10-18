@@ -7,7 +7,12 @@
 use crate::value::*;
 use sayon_check::types::{FloatType, IntType, Type};
 use sayon_ir::*;
-use sayon_runtime::host::{EXIT_CODE, Host, HostArg, HostType, HostValue, exit_status, invoke};
+use sayon_runtime::host::{
+    CANCELLED_CODE, EXIT_CODE, Host, HostArg, HostType, HostValue, exit_status, invoke,
+};
+use tasks::{Fiber, Progress};
+
+mod tasks;
 use sayon_runtime::text::{
     Number, parse_number, position_error, range_length, split_bounds_message, view_bounds_message,
 };
@@ -23,6 +28,8 @@ pub const MAX_CALL_DEPTH: usize = 100_000;
 pub enum RunError {
     /// A recoverable error nothing caught.
     Uncaught(ErrorValue),
+    /// Tasks failed and nothing joined them, though the main task finished.
+    TaskFailures(Vec<ErrorValue>),
     /// A failure that ends execution without running cleanup.
     Fatal(String),
 }
@@ -55,9 +62,16 @@ pub struct Machine<'m> {
     globals: Vec<Option<Value>>,
     frames: Vec<Frame>,
     out: &'m mut dyn Write,
+    /// Every task; the running one's frames are `frames`.
+    fibers: Vec<Fiber>,
+    current: usize,
+    /// Set when every task is to stop where it waits: at the end of the
+    /// main task, or when a task called `os.exit`.
+    stopping: bool,
+    /// The status a task's `os.exit` asked for.
+    exit_status: Option<i32>,
 }
 
-/// The part of a value that one step leads to.
 /// The first step of `steps` through a view: its position, the viewed
 /// array, and the element of the array it reaches.
 fn view_step(current: &Value, steps: &[Step], index: usize) -> Option<(usize, Ref, usize)> {
@@ -106,6 +120,7 @@ fn write_steps<R>(current: &mut Value, steps: &[Step], f: impl FnOnce(&mut Value
     write_steps(next, rest, f)
 }
 
+/// The part of a value that one step leads to.
 fn step_into(step: Step, value: &Value) -> &Value {
     match (step, value) {
         (Step::Index(i), Value::Array(items)) => &items[i],
@@ -137,18 +152,22 @@ impl<'m> Machine<'m> {
             globals: vec![None; module.globals.len()],
             frames: Vec::new(),
             out,
+            fibers: vec![Fiber::main()],
+            current: 0,
+            stopping: false,
+            exit_status: None,
         }
     }
 
     /// Initializes globals, runs the entry function, and returns its exit
     /// status, or the one `os.exit` gave.
     pub fn run(&mut self) -> Result<i32, RunError> {
-        match self.run_program() {
-            Err(RunError::Uncaught(error)) if error.code == EXIT_CODE => {
-                Ok(exit_status(&error.message))
-            }
-            other => other,
-        }
+        let result = self.run_program();
+        let result = self.finish(result);
+        let _ = self.out.flush();
+        // Files kept by constants stay open until the program ends.
+        sayon_runtime::streams::flush_all();
+        result
     }
 
     fn run_program(&mut self) -> Result<i32, RunError> {
@@ -157,13 +176,33 @@ impl<'m> Machine<'m> {
             let value = self.call(*initializer)?;
             self.globals[global.0 as usize] = Some(value);
         }
-        let result = self.call(module.entry);
-        let _ = self.out.flush();
-        // Files kept by constants stay open until the program ends.
-        sayon_runtime::streams::flush_all();
-        match result? {
+        match self.call(module.entry)? {
             Value::Int(code) => Ok(code.clamp(i32::MIN as i128, i32::MAX as i128) as i32),
             _ => Ok(0),
+        }
+    }
+
+    /// Ends the tasks still running, then gives the program's result: the
+    /// status `os.exit` asked for, the main task's own, or the failures of
+    /// tasks nothing joined.
+    fn finish<T>(&mut self, result: Result<T, RunError>) -> Result<T, RunError>
+    where
+        T: From<i32>,
+    {
+        self.shutdown();
+        let result = match result {
+            Err(RunError::Uncaught(error)) if error.code == EXIT_CODE => {
+                Ok(T::from(exit_status(&error.message)))
+            }
+            other => other,
+        };
+        if let Some(status) = self.exit_status {
+            return Ok(T::from(status));
+        }
+        let failures = self.task_failures();
+        match result {
+            Ok(_) if !failures.is_empty() => Err(RunError::TaskFailures(failures)),
+            other => other,
         }
     }
 
@@ -174,7 +213,8 @@ impl<'m> Machine<'m> {
             let value = self.call(*initializer)?;
             self.globals[global.0 as usize] = Some(value);
         }
-        let result = self.call(test).map(|_| ());
+        let result = self.call(test).map(|_| 0);
+        let result = self.finish(result).map(|_| ());
         let _ = self.out.flush();
         result
     }
@@ -186,6 +226,12 @@ impl<'m> Machine<'m> {
     }
 
     fn push_frame(&mut self, function: FunctionId, args: Vec<SlotValue>) -> Result<(), RunError> {
+        let frame = self.new_frame(function, args)?;
+        self.frames.push(frame);
+        Ok(())
+    }
+
+    fn new_frame(&self, function: FunctionId, args: Vec<SlotValue>) -> Result<Frame, RunError> {
         if self.frames.len() >= MAX_CALL_DEPTH {
             return Err(RunError::Fatal(format!(
                 "the call depth limit of {MAX_CALL_DEPTH} nested calls was exceeded (runaway recursion?)"
@@ -198,14 +244,13 @@ impl<'m> Machine<'m> {
             slots[slot.0 as usize] = value;
         }
         slots[definition.argc_slot.0 as usize] = SlotValue::Value(Value::Int(count as i128));
-        self.frames.push(Frame {
+        Ok(Frame {
             function,
             slots,
             block: BlockId(0),
             inst: 0,
             waiting: None,
-        });
-        Ok(())
+        })
     }
 
     fn top(&mut self) -> &mut Frame {
@@ -251,7 +296,14 @@ impl<'m> Machine<'m> {
                         _ => Value::Nothing,
                     };
                     if self.frames.len() == base {
-                        return Ok(value);
+                        if self.current == 0 {
+                            return Ok(value);
+                        }
+                        // A task finished; another goes on.
+                        if !self.finish_task(Ok(value)) {
+                            return Ok(Value::Nothing);
+                        }
+                        continue;
                     }
                     let (dest, normal, _) = self.top().waiting.take().expect("waiting call");
                     if let Some(dest) = dest {
@@ -273,7 +325,13 @@ impl<'m> Machine<'m> {
                         },
                     };
                     if self.frames.len() == base {
-                        return Err(RunError::Uncaught(error));
+                        if self.current == 0 {
+                            return Err(RunError::Uncaught(error));
+                        }
+                        if !self.finish_task(Err(error)) {
+                            return Ok(Value::Nothing);
+                        }
+                        continue;
                     }
                     let (_, _, error_block) = self.top().waiting.take().expect("waiting call");
                     let caller = module.function(self.top().function);
@@ -314,6 +372,40 @@ impl<'m> Machine<'m> {
                     self.top().waiting = Some((dest.clone(), *normal, *error));
                     self.push_frame(code, values)?;
                 }
+                Terminator::Op {
+                    op,
+                    dest,
+                    normal,
+                    error,
+                    span,
+                } if Self::is_task_op(op) => match self.task_op(op, *span) {
+                    Progress::Done(value) => {
+                        if let Some(dest) = dest {
+                            self.write(dest, value);
+                        }
+                        self.jump(*normal);
+                    }
+                    Progress::Failed(problem) => {
+                        let slot = function.error_slot.0 as usize;
+                        self.top().slots[slot] = SlotValue::Value(Value::Error(Box::new(problem)));
+                        self.jump(*error);
+                    }
+                    // Another task runs now; this one runs the operation
+                    // again when it is resumed.
+                    Progress::Wait(wait) => {
+                        if !self.suspend(wait) {
+                            let problem = self.error(
+                                "DeadlockError",
+                                "every task is waiting, so none can go on",
+                                *span,
+                            );
+                            let slot = function.error_slot.0 as usize;
+                            self.top().slots[slot] =
+                                SlotValue::Value(Value::Error(Box::new(problem)));
+                            self.jump(*error);
+                        }
+                    }
+                },
                 Terminator::Op {
                     op,
                     dest,
@@ -889,6 +981,16 @@ impl<'m> Machine<'m> {
             Op::Call { .. } | Op::CallValue { .. } => {
                 unreachable!("calls are handled by the frame loop")
             }
+            Op::Spawn { .. }
+            | Op::Join { .. }
+            | Op::Detach { .. }
+            | Op::Yield
+            | Op::Sleep { .. }
+            | Op::ChannelNew { .. }
+            | Op::Send { .. }
+            | Op::Receive { .. }
+            | Op::Close { .. }
+            | Op::Select { .. } => unreachable!("task operations are handled by the frame loop"),
             Op::IntArith { op, ty, lhs, rhs } => {
                 let (a, b) = (self.int(lhs), self.int(rhs));
                 let symbol = match op {

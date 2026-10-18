@@ -357,6 +357,20 @@ impl<'m> Codegen<'m> {
         body.line(format!("br i1 {ok}, label %finished, label %{failed}"));
         body.start("finished");
         let release_globals = self.release_globals();
+        // Tasks still running are cancelled and cleaned up first; a task's
+        // `os.exit`, or one that failed unjoined, decides the status.
+        let tasks = body.tmp();
+        body.line(format!("{tasks} = call i32 @sayon_tasks_finish(i1 false)"));
+        let decided = body.tmp();
+        body.line(format!("{decided} = icmp sge i32 {tasks}, 0"));
+        body.line(format!(
+            "br i1 {decided}, label %tasks_decided, label %main_decides"
+        ));
+        body.start("tasks_decided");
+        body.code.push_str(&release_globals);
+        body.line("call void @sayon_runtime_finish()");
+        body.line(format!("ret i32 {tasks}"));
+        body.start("main_decides");
         body.code.push_str(&release_globals);
         body.line("call void @sayon_runtime_finish()");
         if let Type::Int(int) = &entry.ret {
@@ -380,6 +394,19 @@ impl<'m> Codegen<'m> {
             body.line("ret i32 0");
         }
         body.start(failed);
+        // The tasks stop first, so their cleanup comes before the report;
+        // a task's `os.exit` replaces it.
+        let tasks = body.tmp();
+        body.line(format!("{tasks} = call i32 @sayon_tasks_finish(i1 true)"));
+        let exiting = body.tmp();
+        body.line(format!("{exiting} = icmp sge i32 {tasks}, 0"));
+        body.line(format!("br i1 {exiting}, label %task_exit, label %report"));
+        body.start("task_exit");
+        body.line(format!("call void @sayon_error_drop(ptr {error})"));
+        body.code.push_str(&release_globals);
+        body.line("call void @sayon_runtime_finish()");
+        body.line(format!("ret i32 {tasks}"));
+        body.start("report");
         let problem = body.tmp();
         body.line(format!("{problem} = load ptr, ptr {error}"));
         let code = body.tmp();
@@ -1535,6 +1562,130 @@ impl<'c, 'm> FnEmit<'c, 'm> {
     fn op(&mut self, op: &Op, dest: Option<&Place>, span: Span, error: BlockId) -> Option<String> {
         let err = self.error_slot();
         match op {
+            Op::Spawn { body, result } => {
+                // The task takes the function value over.
+                let (llvm, value, _) = self.value(body);
+                let function = self.body.alloca(&llvm);
+                self.body
+                    .line(format!("store {llvm} {value}, ptr {function}"));
+                let size = self.cg.layouts.size_of(result);
+                let drop = if needs_drop(result) {
+                    self.cg.helper(Helper::Drop, result)
+                } else {
+                    "null".to_string()
+                };
+                let out = match dest {
+                    Some(place) => self.place_ptr(place).0,
+                    None => self.body.alloca("ptr"),
+                };
+                self.body.line(format!(
+                    "call void @sayon_task_spawn(ptr {function}, i64 {size}, ptr {drop}, ptr {out})"
+                ));
+                Some("0".to_string())
+            }
+            Op::Join { task } => {
+                let (task, _) = self.place_ptr(task);
+                let out = match dest {
+                    Some(place) => self.place_ptr(place).0,
+                    None => self.body.alloca("i64"),
+                };
+                let location = self.cg.location(span);
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_task_join(ptr {err}, ptr {task}, ptr {out}, ptr {location})"
+                ));
+                Some(status)
+            }
+            Op::Detach { task } => {
+                let (task, _) = self.place_ptr(task);
+                self.body
+                    .line(format!("call void @sayon_task_detach(ptr {task})"));
+                Some("0".to_string())
+            }
+            Op::Yield => {
+                let location = self.cg.location(span);
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_task_yield(ptr {err}, ptr {location})"
+                ));
+                Some(status)
+            }
+            Op::Sleep { nanoseconds } => {
+                let (_, nanoseconds, _) = self.value(nanoseconds);
+                let location = self.cg.location(span);
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_task_sleep(ptr {err}, i64 {nanoseconds}, ptr {location})"
+                ));
+                Some(status)
+            }
+            Op::ChannelNew { capacity, element } => {
+                let (_, capacity, _) = self.value(capacity);
+                let size = self.cg.layouts.size_of(element);
+                let drop = if needs_drop(element) {
+                    self.cg.helper(Helper::Drop, element)
+                } else {
+                    "null".to_string()
+                };
+                let out = match dest {
+                    Some(place) => self.place_ptr(place).0,
+                    None => self.body.alloca("ptr"),
+                };
+                let location = self.cg.location(span);
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_channel_new(ptr {err}, i64 {capacity}, i64 {size}, ptr {drop}, ptr {out}, ptr {location})"
+                ));
+                Some(status)
+            }
+            Op::Send { channel, message } => {
+                let (channel, _) = self.pointer(channel);
+                let (message, _) = self.place_ptr(message);
+                let location = self.cg.location(span);
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_channel_send(ptr {err}, ptr {channel}, ptr {message}, ptr {location})"
+                ));
+                Some(status)
+            }
+            Op::Receive { channel } => {
+                let (channel, channel_ty) = self.pointer(channel);
+                let out = match dest {
+                    Some(place) => self.place_ptr(place).0,
+                    None => {
+                        let Type::Wrapper(_, element) = &channel_ty else {
+                            panic!("receive from {channel_ty}")
+                        };
+                        let llvm = self.cg.llvm(element);
+                        self.body.alloca(&llvm)
+                    }
+                };
+                let location = self.cg.location(span);
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_channel_receive(ptr {err}, ptr {channel}, ptr {out}, ptr {location})"
+                ));
+                Some(status)
+            }
+            Op::Close { channel } => {
+                let (channel, _) = self.pointer(channel);
+                self.body
+                    .line(format!("call void @sayon_channel_close(ptr {channel})"));
+                Some("0".to_string())
+            }
+            Op::Select { channels } => {
+                let (channels, _) = self.pointer(channels);
+                let out = match dest {
+                    Some(place) => self.place_ptr(place).0,
+                    None => self.body.alloca("i64"),
+                };
+                let location = self.cg.location(span);
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_channel_select(ptr {err}, ptr {channels}, ptr {out}, ptr {location})"
+                ));
+                Some(status)
+            }
             Op::Call { function, args } => {
                 let callee = self.cg.module.function(*function);
                 let mut values = Vec::new();
@@ -2412,6 +2563,20 @@ declare void @sayon_weak_retain(ptr)
 declare void @sayon_weak_release(ptr)
 declare void @sayon_weak_clone(ptr, ptr)
 declare i32 @sayon_check_split(ptr, i64, i64, ptr)
+declare void @sayon_task_spawn(ptr, i64, ptr, ptr)
+declare i32 @sayon_task_join(ptr, ptr, ptr, ptr)
+declare void @sayon_task_detach(ptr)
+declare void @sayon_task_drop(ptr)
+declare i32 @sayon_task_yield(ptr, ptr)
+declare i32 @sayon_task_sleep(ptr, i64, ptr)
+declare i32 @sayon_tasks_finish(i1)
+declare i32 @sayon_channel_new(ptr, i64, i64, ptr, ptr, ptr)
+declare void @sayon_channel_clone(ptr, ptr)
+declare void @sayon_channel_release(ptr)
+declare i32 @sayon_channel_send(ptr, ptr, ptr, ptr)
+declare i32 @sayon_channel_receive(ptr, ptr, ptr, ptr)
+declare void @sayon_channel_close(ptr)
+declare i32 @sayon_channel_select(ptr, ptr, ptr, ptr)
 declare void @sayon_stream_clone(ptr, ptr)
 declare void @sayon_error_clone(ptr, ptr)
 declare void @sayon_error_message(ptr, ptr)

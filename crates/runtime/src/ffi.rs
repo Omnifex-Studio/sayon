@@ -27,11 +27,11 @@ use std::sync::atomic::{AtomicI64, Ordering};
 /// when it exits; a correct program reports zero.
 static LIVE: AtomicI64 = AtomicI64::new(0);
 
-fn allocated() {
+pub(crate) fn allocated() {
     LIVE.fetch_add(1, Ordering::Relaxed);
 }
 
-fn released() {
+pub(crate) fn released() {
     LIVE.fetch_sub(1, Ordering::Relaxed);
 }
 
@@ -80,7 +80,7 @@ pub struct SayonDict {
 
 pub struct Builder(String);
 
-type DropFn = Option<unsafe extern "C" fn(*mut u8)>;
+pub(crate) type DropFn = Option<unsafe extern "C" fn(*mut u8)>;
 type CloneFn = Option<unsafe extern "C" fn(*const u8, *mut u8)>;
 type EqFn = unsafe extern "C" fn(*const u8, *const u8) -> bool;
 
@@ -147,7 +147,7 @@ fn character(ch: char) -> SayonStr {
     }
 }
 
-unsafe fn set_error(
+pub(crate) unsafe fn set_error(
     slot: *mut *mut SayonError,
     code: &str,
     message: String,

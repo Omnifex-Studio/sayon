@@ -396,6 +396,8 @@ impl Unifier {
                 Type::Wrapper(Wrapper::Cell, inner) => {
                     return self.require_trait(inner, Traits::CLONE);
                 }
+                // A task has one owner, which joins it once.
+                Type::Wrapper(Wrapper::Task, _) => false,
                 Type::Param(index) => {
                     self.record_param_trait(*index, one);
                     true

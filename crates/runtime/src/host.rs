@@ -90,7 +90,6 @@ hosts! {
     ParseError = "parse_error"(String) -> Nothing;
     Monotonic = "monotonic"() -> Integer;
     UnixTime = "unix_time"() -> Integer;
-    Sleep = "sleep"(Integer) -> Nothing;
     Sqrt = "sqrt"(Float) -> Float;
     Sin = "sin"(Float) -> Float;
     Cos = "cos"(Float) -> Float;
@@ -146,6 +145,10 @@ hosts! {
 /// cleanup; the entry boundary turns it into the exit status, which is the
 /// last word of its message.
 pub const EXIT_CODE: &str = "Exit";
+
+/// The code of the error a cancelled task stops with where it waits. Like
+/// `Exit`, `catch` and `try` let it pass, so the task unwinds in order.
+pub const CANCELLED_CODE: &str = "Cancelled";
 
 /// The exit status an `Exit` error carries.
 pub fn exit_status(message: &str) -> i32 {
@@ -778,17 +781,6 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
                 Err(before) => -(before.duration().as_nanos().min(i64::MAX as u128) as i64),
             };
             Ok(V::Integer(nanoseconds))
-        }
-        Host::Sleep => {
-            let nanoseconds = integer(args, 0);
-            if nanoseconds < 0 {
-                return Err((
-                    "ValueError",
-                    format!("cannot sleep for a negative time ({nanoseconds} nanoseconds)"),
-                ));
-            }
-            std::thread::sleep(std::time::Duration::from_nanos(nanoseconds as u64));
-            Ok(V::Nothing)
         }
         Host::Sqrt => unary(f64::sqrt),
         Host::Sin => unary(f64::sin),

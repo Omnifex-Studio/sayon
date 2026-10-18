@@ -205,6 +205,14 @@ The value is destroyed when the `Shared` count reaches zero, and the block freed
 
 A `Cell<T>` has its value's layout. `get` clones the value, `set` destroys it and stores the new one, and `replace` moves it out first; all three work through a read-only place, which is sound because no place inside a cell can be borrowed, and none of them runs other code while it changes the cell. A cell is stored inline, so a type that holds itself through a cell is `E_RECURSIVE_TYPE`.
 
+## Tasks
+
+A task is a fiber with a call stack of its own. An operation that waits (receiving, sending to a full channel or a rendezvous, joining, sleeping, `pause`, `select`) records what it waits for and switches to the next task that can go on, scanning the tasks round from the one after the running task. A task can go on when what it waits for has come or it is to stop; when none can but some sleep, the scheduler waits for the earliest to wake, and when none can at all, the waiting operation raises `DeadlockError`. A new task starts when another waits.
+
+In the interpreter a task is a frame stack of its own; the running task's stack is the machine's, and switching swaps them. A waiting operation leaves its frame at the operation and runs it again when resumed, which then finds what it waited for; the operations that act and then wait (a rendezvous send, sleeping, `pause`) are told how they were resumed so that they finish instead. In compiled programs a task is an operating-system fiber (on Windows, `CreateFiber` and `SwitchToFiber`), and a waiting runtime function loops around its wait on the task's own stack. A task's block holds the function value it runs, a buffer for its result, and its outcome, and is shared by its handle and the scheduler; a channel is a counted handle to a queue of messages, each in a buffer of whole words so that it can be destroyed in place.
+
+Cancellation sets a flag the task's next wait sees: the wait fails with the internal code `Cancelled`, which, like `Exit`, every `catch` and `try` handler passes on, so the task unwinds through its cleanup. When the main task's function returns or fails, the program cancels every task left, runs each until it has finished, destroys the tasks that never started with what they captured, reports the failures nobody joined, and only then ends; an `Exit` from a task decides the exit status.
+
 ## Typed JSON
 
 `json.from_json<T>` and `json.to_json<T>` contain `typed_decode` and `typed_encode`, built-ins only `standard/json` can call. They require the `JSON` trait, which, like `CLONE`, is recorded on an explicit type parameter, so a call of `json.decode<T>` is checked against its caller's type. The trait holds for numbers, booleans, strings, `nothing`, arrays and string-keyed dictionaries of such types, structures and enums whose fields have it, and unions whose members read disjoint kinds of JSON value (an enum reads text and objects; `Json` reads every kind).

@@ -316,6 +316,11 @@ impl<'a> Checker<'a> {
             );
         }
 
+        if literal.ret.is_none()
+            && let Type::Var(var) = self.unifier.shallow(&ret)
+        {
+            self.failing_results.push(var);
+        }
         let declared_result = self.unifier.resolve(&ret);
         if literal.ret.is_some()
             && !matches!(declared_result, Type::Nothing | Type::Unknown)

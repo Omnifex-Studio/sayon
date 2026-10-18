@@ -26,6 +26,7 @@ pub const LINTS: &[&str] = &[
 /// Warnings the compiler reports on its own, which can be suppressed too.
 const COMPILER_WARNINGS: &[&str] = &[
     "W_UNUSED_OUTCOME",
+    "W_UNUSED_TASK",
     "W_UNREACHABLE_CASE",
     "W_SHADOWED_BUILTIN",
 ];

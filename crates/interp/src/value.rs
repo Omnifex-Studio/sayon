@@ -43,6 +43,59 @@ pub enum Value {
     /// A `Shared` handle; cloning the value retains it.
     Shared(Rc<RefCell<Value>>),
     Weak(std::rc::Weak<RefCell<Value>>),
+    Task(TaskHandle),
+    /// A channel handle; cloning the value retains it.
+    Channel(Rc<RefCell<ChannelState>>),
+}
+
+/// What the scheduler and a task's handle know of the task.
+#[derive(Debug, Default)]
+pub struct TaskState {
+    /// The task's result once it has finished.
+    pub result: Option<Result<Value, ErrorValue>>,
+    /// Set when the task is to stop at its next wait.
+    pub cancel: bool,
+    pub joined: bool,
+    pub detached: bool,
+}
+
+/// The handle of a task. The scheduler holds the task's state too, so when
+/// the last handle goes without a join or a detach, the task is cancelled.
+#[derive(Debug, Clone)]
+pub struct TaskHandle(pub Rc<RefCell<TaskState>>);
+
+impl Drop for TaskHandle {
+    fn drop(&mut self) {
+        if Rc::strong_count(&self.0) == 2 {
+            let mut state = self.0.borrow_mut();
+            if !state.joined && !state.detached {
+                state.cancel = true;
+            }
+        }
+    }
+}
+
+/// A channel's messages, in the order they were sent.
+#[derive(Debug)]
+pub struct ChannelState {
+    pub queue: std::collections::VecDeque<Value>,
+    /// 0 for a rendezvous: each message waits until it is received.
+    pub capacity: usize,
+    pub closed: bool,
+    pub sent: u64,
+    pub received: u64,
+}
+
+impl ChannelState {
+    /// Whether a receive would not wait: a message is there, or none will come.
+    pub fn receivable(&self) -> bool {
+        !self.queue.is_empty() || self.closed
+    }
+
+    /// Whether a send would not wait for room.
+    pub fn has_room(&self) -> bool {
+        self.closed || self.queue.len() < self.capacity.max(1)
+    }
 }
 
 /// A reference to an open stream of the runtime. A clone refers to the
@@ -329,6 +382,8 @@ pub fn display(value: &Value, out: &mut String, nested: bool, types: &[TypeDef])
         // A shared value and a cell show their value.
         Value::Shared(shared) => display(&shared.borrow(), out, nested),
         Value::Weak(_) => out.push_str("weak"),
+        Value::Task(_) => out.push_str("task"),
+        Value::Channel(_) => out.push_str("channel"),
         // The machine shows a view's elements before displaying it.
         Value::View(view) => {
             let _ = write!(out, "view of {} elements", view.length);

@@ -1370,6 +1370,10 @@ impl<'a> Checker<'a> {
                     Wrapper::Shared => "`weak()`, and the field `value`",
                     Wrapper::Weak => "`upgrade()`",
                     Wrapper::Cell => "`get()`, `set(value)`, and `replace(value)`",
+                    Wrapper::Task => "none; use `threads.join(task)` and `threads.detach(task)`",
+                    Wrapper::Channel => {
+                        "none; use `threads.send`, `threads.receive`, and `threads.close`"
+                    }
                 };
                 let receiver_ty = self.unifier.resolve(&receiver.ty);
                 self.error(
@@ -1512,7 +1516,9 @@ impl<'a> Checker<'a> {
             | Builtin::HasKey
             | Builtin::WriteFile
             | Builtin::Remove
-            | Builtin::SplitView => (2, 2),
+            | Builtin::SplitView
+            | Builtin::ChannelSend => (2, 2),
+            Builtin::TaskYield => (0, 0),
             Builtin::Host(host) => (host.params().len(), host.params().len()),
             _ => (1, 1),
         };
@@ -1711,6 +1717,80 @@ impl<'a> Checker<'a> {
             | Builtin::CellGet
             | Builtin::CellSet
             | Builtin::CellReplace => unreachable!("methods are checked as methods"),
+            Builtin::TaskSpawn => {
+                let result = self.fresh_var(span);
+                let body_ty = Type::function(crate::types::FunctionType {
+                    params: Vec::new(),
+                    ret: result.clone(),
+                });
+                let body = self.check_expr_as(
+                    cx,
+                    &args[0],
+                    &body_ty,
+                    "a task runs a function of no arguments",
+                );
+                let owned = Arg {
+                    expr: body,
+                    mode: ParamMode::Own,
+                };
+                (vec![owned], Type::wrapper(Wrapper::Task, result))
+            }
+            Builtin::TaskJoin | Builtin::TaskDetach => {
+                let result = self.fresh_var(span);
+                let task_ty = Type::wrapper(Wrapper::Task, result.clone());
+                let task = self.check_expr_as(cx, &args[0], &task_ty, "a task");
+                let owned = Arg {
+                    expr: task,
+                    mode: ParamMode::Own,
+                };
+                let ty = if builtin == Builtin::TaskJoin {
+                    result
+                } else {
+                    Type::Nothing
+                };
+                (vec![owned], ty)
+            }
+            Builtin::TaskYield => (Vec::new(), Type::Nothing),
+            Builtin::TaskSleep => {
+                let duration = self.check_expr_as(cx, &args[0], &Type::INTEGER, "nanoseconds");
+                (vec![read(duration)], Type::Nothing)
+            }
+            Builtin::ChannelNew => {
+                let capacity = self.check_expr_as(cx, &args[0], &Type::INTEGER, "a capacity");
+                let ty = match expected.map(|ty| self.unifier.resolve(ty)) {
+                    Some(ty @ Type::Wrapper(Wrapper::Channel, _)) => ty,
+                    _ => Type::wrapper(Wrapper::Channel, self.fresh_var(span)),
+                };
+                (vec![read(capacity)], ty)
+            }
+            Builtin::ChannelSend
+            | Builtin::ChannelReceive
+            | Builtin::ChannelClose
+            | Builtin::ChannelSelect => {
+                let message = self.fresh_var(span);
+                let channel_ty = Type::wrapper(Wrapper::Channel, message.clone());
+                let channels = if builtin == Builtin::ChannelSelect {
+                    Type::array(channel_ty)
+                } else {
+                    channel_ty
+                };
+                let channel = self.check_expr_as(cx, &args[0], &channels, "a channel");
+                let mut checked = vec![read(channel)];
+                let ty = match builtin {
+                    Builtin::ChannelSend => {
+                        let value = self.check_expr_as(cx, &args[1], &message, "the message");
+                        checked.push(Arg {
+                            expr: value,
+                            mode: ParamMode::Own,
+                        });
+                        Type::Nothing
+                    }
+                    Builtin::ChannelReceive => message,
+                    Builtin::ChannelSelect => Type::INTEGER,
+                    _ => Type::Nothing,
+                };
+                (checked, ty)
+            }
             Builtin::TypedDecode | Builtin::TypedEncode => {
                 let Some(Item::Type(json_id)) = self.item(cx.module, "Json") else {
                     panic!("typed JSON conversion outside standard/json");

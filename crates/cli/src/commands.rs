@@ -23,6 +23,20 @@ fn report_run_error(error: sayon_interp::RunError, options: &Options) -> u8 {
             }
             status::PROGRAM_FAILED
         }
+        sayon_interp::RunError::TaskFailures(failures) => {
+            let label = if options.color {
+                "[1;31merror[0m"
+            } else {
+                "error"
+            };
+            for error in failures {
+                eprintln!("{label}: a task failed: {}: {}", error.code, error.message);
+                if let Some(location) = error.location {
+                    eprintln!("  --> {location}");
+                }
+            }
+            status::PROGRAM_FAILED
+        }
         sayon_interp::RunError::Fatal(message) => {
             eprintln!("fatal error: {message}");
             status::FATAL
@@ -341,6 +355,17 @@ pub fn test(files: &[String], options: &Options) -> u8 {
                             println!("          {}: {}", error.code, error.message);
                             if let Some(location) = error.location {
                                 println!("            --> {location}");
+                            }
+                        }
+                        sayon_interp::RunError::TaskFailures(failures) => {
+                            for error in failures {
+                                println!(
+                                    "          a task failed: {}: {}",
+                                    error.code, error.message
+                                );
+                                if let Some(location) = error.location {
+                                    println!("            --> {location}");
+                                }
                             }
                         }
                         sayon_interp::RunError::Fatal(message) => {

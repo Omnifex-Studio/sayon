@@ -11,7 +11,7 @@ use sayon_check::hir::{self, Builtin, ErrorField, LocalId, Usage};
 use sayon_check::types::{
     FieldDef, IntType, NamedType, Type, TypeDef, TypeDefKind, TypeId, Wrapper,
 };
-use sayon_runtime::host::EXIT_CODE;
+use sayon_runtime::host::{CANCELLED_CODE, EXIT_CODE};
 use sayon_syntax::ast::{BinaryOp, ParamMode, UnaryOp};
 use sayon_syntax::{Diagnostic, Span};
 use std::collections::HashMap;
@@ -1458,27 +1458,34 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 mutable: false,
             }),
         );
-        let flag = self.new_slot(Type::Boolean, SlotKind::Value, None);
-        self.assign(
-            Place::slot(flag),
-            Rvalue::Compare {
-                op: CompareOp::Equal,
-                ty: Type::String,
-                lhs: Operand::Borrow {
-                    place: Place::slot(code),
-                    mutable: false,
+        // `Exit` ends the program and `Cancelled` a task; neither stops.
+        let mut flags = Vec::new();
+        for passing in [EXIT_CODE, CANCELLED_CODE] {
+            let flag = self.new_slot(Type::Boolean, SlotKind::Value, None);
+            self.assign(
+                Place::slot(flag),
+                Rvalue::Compare {
+                    op: CompareOp::Equal,
+                    ty: Type::String,
+                    lhs: Operand::Borrow {
+                        place: Place::slot(code),
+                        mutable: false,
+                    },
+                    rhs: Operand::Const(Constant::Str(passing.to_string())),
                 },
-                rhs: Operand::Const(Constant::Str(EXIT_CODE.to_string())),
-            },
-        );
+            );
+            flags.push(flag);
+        }
         self.pop_scope();
-        let handle = self.new_block();
-        self.terminate(Terminator::Branch {
-            condition: Operand::Copy(Place::slot(flag)),
-            then_block: exiting,
-            else_block: handle,
-        });
-        self.switch_to(handle);
+        for flag in flags {
+            let next = self.new_block();
+            self.terminate(Terminator::Branch {
+                condition: Operand::Copy(Place::slot(flag)),
+                then_block: exiting,
+                else_block: next,
+            });
+            self.switch_to(next);
+        }
     }
 
     /// Runs the `finally` block of the region at `depth` on a normal exit.
@@ -2660,6 +2667,78 @@ impl<'l, 'p> FnLower<'l, 'p> {
                     self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing)));
                 }
                 self.assign(cell, Rvalue::Use(value));
+            }
+            Builtin::TaskSpawn => {
+                let Type::Wrapper(_, result) = ty.clone() else {
+                    panic!("spawn without a task type")
+                };
+                let body = self.operand(&args[0].expr, Want::Owned);
+                self.op(
+                    Op::Spawn {
+                        body,
+                        result: *result,
+                    },
+                    Some(dest),
+                    span,
+                );
+            }
+            // A task waited for is read in place, so that waiting again
+            // finds it; it is destroyed with its variable.
+            Builtin::TaskJoin | Builtin::TaskDetach => {
+                let task = self.place_of(&args[0].expr, Want::Read);
+                if builtin == Builtin::TaskJoin {
+                    self.op(Op::Join { task }, Some(dest), span);
+                } else {
+                    self.op(Op::Detach { task }, None, span);
+                    self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing)));
+                }
+            }
+            Builtin::TaskYield => {
+                self.op(Op::Yield, None, span);
+                self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing)));
+            }
+            Builtin::TaskSleep => {
+                let nanoseconds = self.operand(&args[0].expr, Want::Read);
+                self.op(Op::Sleep { nanoseconds }, None, span);
+                self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing)));
+            }
+            Builtin::ChannelNew => {
+                let Type::Wrapper(_, element) = ty.clone() else {
+                    panic!("channel without a channel type")
+                };
+                let capacity = self.operand(&args[0].expr, Want::Read);
+                self.op(
+                    Op::ChannelNew {
+                        capacity,
+                        element: *element,
+                    },
+                    Some(dest),
+                    span,
+                );
+            }
+            Builtin::ChannelSend => {
+                let channel = self.operand(&args[0].expr, Want::Read);
+                // The message stays in place until the channel takes it.
+                let message = self.value_temp(&args[1].expr);
+                let message = match message {
+                    Operand::Copy(place) | Operand::Move(place) => place,
+                    other => panic!("message operand {other:?}"),
+                };
+                self.op(Op::Send { channel, message }, None, span);
+                self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing)));
+            }
+            Builtin::ChannelReceive => {
+                let channel = self.operand(&args[0].expr, Want::Read);
+                self.op(Op::Receive { channel }, Some(dest), span);
+            }
+            Builtin::ChannelClose => {
+                let channel = self.operand(&args[0].expr, Want::Read);
+                self.op(Op::Close { channel }, None, span);
+                self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing)));
+            }
+            Builtin::ChannelSelect => {
+                let channels = self.operand(&args[0].expr, Want::Read);
+                self.op(Op::Select { channels }, Some(dest), span);
             }
             Builtin::SplitView => {
                 let view = self.place_of(&args[0].expr, Want::Mut);

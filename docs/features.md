@@ -51,7 +51,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `Shared<T>`, `Weak<T>`, `Cell<T>`: `share`, `cell`, `.value`, `.weak()`, `.upgrade()`, `.get()`, `.set()`, `.replace()` | experimental | M3 |
 | `Mutex<T>` and sharing between threads | planned | M3, with threads |
 | `foreign` declarations, `unsafe`, pointers, C interoperability | planned | M3 |
-| Fibers, channels, `select` | planned | M3 |
+| Tasks (fibers) and channels: `standard/threads` `spawn`, `join`, `detach`, `pause`, bounded and rendezvous channels, `receive_result`, `select`; cancellation with cleanup, shutdown of tasks at the end of `main`, deadlock detection; native on Windows | experimental | M3 |
+| Native tasks on Linux and macOS | planned | with each platform's validation |
 | Compile-time `platform` branches | planned | M4 |
 | `async`/`await`, hygienic macros | planned | M8 |
 
@@ -98,7 +99,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `standard/collections`: stable sorting, `Set`, `Queue`; `remove` and `swap` built-ins | experimental | M2 |
 | `standard/time`: durations, monotonic clock, sleep, UTC dates, ISO 8601 | experimental | M2 |
 | `standard/time` time zones, timers, deadlines | planned | M3 |
-| `standard.network`, `standard.threads` | planned | M3 |
+| `standard/network`; tasks on several threads in parallel | planned | M3 |
 | `standard.graphics` | planned | M4 baseline |
 
 ## Platforms

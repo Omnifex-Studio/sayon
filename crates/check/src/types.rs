@@ -159,6 +159,11 @@ pub enum Wrapper {
     /// A value that can be replaced through a read-only path, such as
     /// inside a shared value. Nothing inside it can be borrowed.
     Cell,
+    /// A task of `standard/threads`: its one owner joins it for its result.
+    Task,
+    /// A channel of `standard/threads`, a counted handle every task holding
+    /// it sends and receives through.
+    Channel,
 }
 
 impl Wrapper {
@@ -167,6 +172,8 @@ impl Wrapper {
             Wrapper::Shared => "Shared",
             Wrapper::Weak => "Weak",
             Wrapper::Cell => "Cell",
+            Wrapper::Task => "Task",
+            Wrapper::Channel => "Channel",
         }
     }
 }
@@ -183,7 +190,7 @@ impl Type {
     /// `Shared`, `Weak`, and unions of them with Copy types.
     pub fn is_retained(&self) -> bool {
         match self {
-            Type::Wrapper(Wrapper::Shared | Wrapper::Weak, _) => true,
+            Type::Wrapper(Wrapper::Shared | Wrapper::Weak | Wrapper::Channel, _) => true,
             Type::Union(members) => {
                 members.iter().any(Type::is_retained)
                     && members.iter().all(|m| m.is_copy() || m.is_retained())

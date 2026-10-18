@@ -304,6 +304,9 @@ pub(crate) struct Checker<'a> {
     pub reported_view_spans: HashSet<Span>,
     /// Functions declared inside functions whose bodies are being checked.
     pub defining_nested: Vec<String>,
+    /// The result types of function literals whose bodies never return a
+    /// value, to be `nothing` if nothing else decides them.
+    pub failing_results: Vec<TyVar>,
     /// Types written with a view inside them, already reported where they
     /// were written.
     pub annotated_view_types: HashSet<Type>,
@@ -353,6 +356,7 @@ impl<'a> Checker<'a> {
             reported_key_spans: HashSet::new(),
             reported_view_spans: HashSet::new(),
             defining_nested: Vec::new(),
+            failing_results: Vec::new(),
             annotated_view_types: HashSet::new(),
             typed_dict_literals: HashSet::new(),
             scc_order: Vec::new(),
@@ -1054,7 +1058,7 @@ impl<'a> Checker<'a> {
                         Type::view(element, name.name == "MutableView")
                     }
                     // A module's own type of the same name comes first.
-                    "Shared" | "Weak" | "Cell"
+                    "Shared" | "Weak" | "Cell" | "Task" | "Channel"
                         if !matches!(self.item(module, &name.name), Some(Item::Type(_))) =>
                     {
                         if !arity(self, 1) {
@@ -1064,6 +1068,8 @@ impl<'a> Checker<'a> {
                         let kind = match name.name.as_str() {
                             "Shared" => Wrapper::Shared,
                             "Weak" => Wrapper::Weak,
+                            "Task" => Wrapper::Task,
+                            "Channel" => Wrapper::Channel,
                             _ => Wrapper::Cell,
                         };
                         Type::wrapper(kind, inner)
@@ -1133,7 +1139,7 @@ impl<'a> Checker<'a> {
                                     other.to_lowercase()
                                 )),
                             );
-                        } else if matches!(other, "Path" | "Channel") {
+                        } else if matches!(other, "Path") {
                             self.unavailable(ty.span, &format!("the `{other}` type"), "M3");
                         } else if let Some((feature, milestone)) = crate::builtins::planned(other) {
                             self.unavailable(ty.span, feature, milestone);
@@ -1762,6 +1768,8 @@ impl<'a> Checker<'a> {
                     Wrapper::Cell => {
                         "nothing inside a cell can be borrowed; copy its value out with `cell.get()`"
                     }
+                    Wrapper::Task => "a task's result comes from `threads.join(task)`",
+                    Wrapper::Channel => "messages come from `threads.receive(channel)`",
                 };
                 self.error(
                     Diagnostic::error("E_UNKNOWN_FIELD", format!("{ty} has no field `{name}`"))
@@ -1996,6 +2004,15 @@ impl<'a> Checker<'a> {
     /// Defaults literal variables created since `first_var`, then reports any
     /// variable that is still unresolved.
     pub fn default_vars(&mut self, first_var: u32) {
+        // A function literal that only fails returns `nothing`, as a named
+        // function does, unless something else decided its result.
+        for var in std::mem::take(&mut self.failing_results) {
+            if let Type::Var(var) = self.unifier.shallow(&Type::Var(var))
+                && self.unifier.bounds(var) == Bounds::default()
+            {
+                self.unifier.force_bind(var, Type::Nothing);
+            }
+        }
         for index in first_var..self.unifier.var_count() {
             self.unifier.default_var(TyVar(index));
         }

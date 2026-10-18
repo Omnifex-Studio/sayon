@@ -22,6 +22,16 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
         match name {
             "typed_decode" => return Some(PreludeItem::Builtin(Builtin::TypedDecode)),
             "typed_encode" => return Some(PreludeItem::Builtin(Builtin::TypedEncode)),
+            "task_spawn" => return Some(PreludeItem::Builtin(Builtin::TaskSpawn)),
+            "task_join" => return Some(PreludeItem::Builtin(Builtin::TaskJoin)),
+            "task_detach" => return Some(PreludeItem::Builtin(Builtin::TaskDetach)),
+            "task_yield" => return Some(PreludeItem::Builtin(Builtin::TaskYield)),
+            "task_sleep" => return Some(PreludeItem::Builtin(Builtin::TaskSleep)),
+            "channel_new" => return Some(PreludeItem::Builtin(Builtin::ChannelNew)),
+            "channel_send" => return Some(PreludeItem::Builtin(Builtin::ChannelSend)),
+            "channel_receive" => return Some(PreludeItem::Builtin(Builtin::ChannelReceive)),
+            "channel_close" => return Some(PreludeItem::Builtin(Builtin::ChannelClose)),
+            "channel_select" => return Some(PreludeItem::Builtin(Builtin::ChannelSelect)),
             _ => {}
         }
     }

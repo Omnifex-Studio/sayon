@@ -1,0 +1,28 @@
+before join
+running in a task
+42
+got one
+got two
+got three
+received 0
+sent 0
+received 1
+sent 1
+received 2
+sent 2
+select 0 a1
+select 1 b1
+select 0 a2
+joined error: task failed
+waiting forever
+fast done first
+slow fast
+main ends
+["left", "over"]
+runs when the main task next waits
+6766
+ChannelClosedError
+select: ChannelClosedError
+999000
+DeadlockError every task is waiting, so none can go on
+cleanup runs on cancel

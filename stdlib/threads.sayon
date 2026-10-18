@@ -1,0 +1,85 @@
+# Tasks that run together, and channels between them.
+#
+#     threads = import("standard/threads.sayon")
+#     channel: Channel<string> = threads.new_channel()
+#     sender = threads.spawn(function()
+#         threads.send(channel, "hello")
+#     )
+#     print(threads.receive(channel))
+#     threads.join(sender)
+#
+# Tasks are fibers: they take turns on one thread, and one runs until it
+# waits, for a message, for room in a channel, for another task, for time
+# to pass, or in `pause`. A spawned task starts when the task that spawned
+# it first waits. A task owns what its function captured; a channel is a
+# handle that every copy refers to, so the tasks holding it share it.
+#
+# When the program's main task finishes, the tasks still running are
+# cancelled: each stops where it waits, with its `finally` blocks and
+# cleanup, which `catch` and `try` do not stop. A task that failed without
+# being joined makes the program fail after it reports the error. A task
+# whose handle is dropped without a `join` is cancelled; `detach` lets it
+# run on instead. Waiting when no other task can run raises DeadlockError.
+
+# What `receive_result` gives: a message, or the end of a closed channel.
+enum ReceiveResult<T>
+    message(value: T)
+    closed
+
+# Starts a task running `body`, and gives its handle.
+function spawn<T>(own body: function() -> T) -> Task<T>
+    return task_spawn(body)
+
+# Waits for a task to finish and gives its result. When the task failed,
+# fails with its error.
+function join<T>(own task: Task<T>) -> T
+    return task_join(task)
+
+# Lets a task run on without a handle. The program still waits for it to
+# finish, or cancels it, when the main task ends.
+function detach<T>(own task: Task<T>)
+    task_detach(task)
+
+# Lets the other tasks that are ready run before this one continues.
+function pause()
+    task_yield()
+
+# A channel of messages, kept in the order they were sent. Up to
+# `capacity` messages wait in it; then `send` waits for room. A capacity of
+# 0 makes each `send` wait until its message is received.
+function new_channel<T>(capacity = 64) -> Channel<T>
+    return channel_new(capacity)
+
+# Sends a message, waiting while the channel is full. Fails with
+# ChannelClosedError when the channel is closed; the message is then destroyed.
+function send<T>(channel: Channel<T>, own message: T)
+    channel_send(channel, message)
+
+# The next message, waiting while the channel is empty. Fails with
+# ChannelClosedError when the channel is closed and has none left.
+function receive<T>(channel: Channel<T>) -> T
+    return channel_receive(channel)
+
+# The next message, or `closed` at the end of a closed channel, which tells
+# the end apart from any message.
+function receive_result<T>(channel: Channel<T>) -> ReceiveResult<T>
+    outcome = try channel_receive(channel)
+    if outcome is error
+        if outcome.code == "ChannelClosedError"
+            return closed
+        raise(outcome)
+    return message(outcome)
+
+# Closes a channel: no more messages can be sent, and receivers get the
+# ones already sent and then ChannelClosedError.
+function close<T>(channel: Channel<T>)
+    channel_close(channel)
+
+# Waits until one of the channels has a message or is closed and empty,
+# receives from it, and calls `handler` with the message and the channel's
+# position. A closed, empty channel fails with ChannelClosedError. When several
+# are ready, the choice goes round, starting after the last one this task
+# chose.
+function select<T>(channels: Array<Channel<T>>, update handler: function(own T, integer))
+    position = channel_select(channels)
+    handler(channel_receive(channels[position]), position)

@@ -446,6 +446,50 @@ pub enum Op {
         view: Place,
         count: Operand,
     },
+    /// A new task running the function value `body`, whose result has the
+    /// type `result`.
+    Spawn {
+        body: Operand,
+        result: Type,
+    },
+    /// The result of the task at `task`, once it has finished; its error
+    /// when it failed.
+    Join {
+        task: Place,
+    },
+    /// Lets the task at `task` run without a handle.
+    Detach {
+        task: Place,
+    },
+    /// Lets other tasks run before continuing.
+    Yield,
+    /// Waits `nanoseconds` while other tasks run.
+    Sleep {
+        nanoseconds: Operand,
+    },
+    /// A new channel of `element` values holding up to `capacity`.
+    ChannelNew {
+        capacity: Operand,
+        element: Type,
+    },
+    /// Moves the message at `message` into the channel, once it has room.
+    Send {
+        channel: Operand,
+        message: Place,
+    },
+    /// The next message of the channel, once it has one; fails when it is
+    /// closed and empty.
+    Receive {
+        channel: Operand,
+    },
+    Close {
+        channel: Operand,
+    },
+    /// The position of a channel of the array that has a message or is
+    /// closed, once one has.
+    Select {
+        channels: Operand,
+    },
     /// Exchanges two elements of an array; fails outside the array.
     Swap {
         array: Place,

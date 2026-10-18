@@ -1,0 +1,14 @@
+# os.exit in a task ends the whole program
+threads = import("standard/threads.sayon")
+os = import("standard/os.sayon")
+
+broken = threads.spawn(function()
+    error("lost")
+)
+threads.detach(broken)
+quitter = threads.spawn(function()
+    os.exit(4)
+)
+threads.detach(quitter)
+threads.pause()
+print("main never reaches here")

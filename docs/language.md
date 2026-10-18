@@ -693,6 +693,7 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 | `standard/filesystem.sayon` | `exists`, `is_file`, `is_directory`, `is_link`, `list` (sorted names), `walk` (everything below a directory), `size`, `create_directory`, `remove`, `rename`, `copy`, `join`, `name`, `parent`, `extension` |
 | `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters`, `code` (a character's Unicode code), `character` (the character with a code), `graphemes`, `grapheme_count`, `bytes`, `byte_view`, `from_bytes` (strict UTF-8), `from_bytes_lossy` |
 | `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer`; typed values: `decode`, `encode_value`, `from_json`, `to_json` |
+| `standard/threads.sayon` | `spawn`, `join`, `detach`, `pause`, `new_channel`, `send`, `receive`, `receive_result` (a `ReceiveResult<T>`), `close`, `select`; see [Tasks and channels](#tasks-and-channels) |
 | `standard/time.sayon` | `Duration` (`nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `add`, `subtract`, `scale`, `in_seconds`, `in_milliseconds`, `describe`), the monotonic clock (`start`, `elapsed`, `between`, `sleep`), and UTC dates (`DateTime`, `now`, `unix_seconds`, `from_unix`, `to_unix`, `shift`, `difference`, `weekday`, `is_leap_year`, `days_in_month`, `format` and `parse` for ISO 8601) |
 | `standard/collections.sayon` | `sort` and `sort_by` (stable), `reverse`; `Set<T>` with `new_set`, `set_add`, `set_contains`, `set_remove`, `set_size`, `set_values` (as methods: `set.add(value)`); `Queue<T>` with `new_queue`, `queue_add`, `queue_take`, `queue_size` |
 | `standard/math.sayon` | `PI`, `E`, `TAU`, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `log`, `log10`, `log2`, `pow`, `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`, `clamp`, `random` |
@@ -805,6 +806,35 @@ print(time.format(time.now()))                # such as 2026-10-18T09:30:00Z
 moment = time.parse("2026-10-18T09:30:00+02:00")
 print(time.format(moment), time.weekday(moment))   # 2026-10-18T07:30:00Z 7
 ```
+
+### Tasks and channels
+
+`standard/threads.sayon` runs tasks together. A task is a fiber: the tasks take turns on one thread, and one runs until it waits, for a message, for room in a channel, for another task, for time to pass, or in `threads.pause()`. A spawned task starts when the task that spawned it first waits.
+
+```sayon
+threads = import("standard/threads.sayon")
+
+handle = threads.spawn(function() -> integer
+    return 42
+)
+print(threads.join(handle))           # 42
+
+channel: Channel<string> = threads.new_channel()
+sender = threads.spawn(function()
+    threads.send(channel, "message")
+)
+print(threads.receive(channel))       # message
+threads.join(sender)
+```
+
+- `spawn(function)` gives a `Task<T>`, and `join(task)` waits for its result, or fails with the task's error. A task owns what its function captured, as any closure does; `Shared` values and channels are handles, so tasks that capture them share them.
+- `new_channel(capacity)` makes a `Channel<T>` holding up to `capacity` messages (64 unless given); `send` waits while it is full, and a capacity of 0 makes each `send` wait until its message is received. `receive` waits while it is empty. Messages keep the order they were sent in, and sending transfers a message's ownership.
+- `close(channel)` stops sends, which then fail with `ChannelClosedError` and destroy their message; receivers get the messages already sent and then `ChannelClosedError`. `receive_result` gives `message(value)` or `closed` instead.
+- `select(channels, handler)` waits until one of the channels has a message or is closed and empty, receives from it, and calls `handler(message, position)`. When several are ready, the choice goes round, starting after the last one the task chose.
+- `time.sleep` lets other tasks run while it waits. Waiting when no task could ever go on raises `DeadlockError`.
+- When the main task finishes, the tasks still running are cancelled: each stops where it waits, running its `finally` blocks and cleanup, which `catch` and `try` do not stop. A task whose handle is dropped without a `join` is cancelled the same way (`W_UNUSED_TASK` warns of a handle dropped at once), and one that has not started never runs; `detach(task)` lets a task run on until the main task ends. A task that fails without being joined is reported and makes the program fail. `os.exit` in any task ends the whole program in order.
+
+Tasks run on one thread, so values they share through `Shared` and `Cell` never change under them in the middle of an operation; running tasks in parallel on several threads arrives with `Mutex` in this milestone. Compiled programs can run tasks on Windows so far.
 
 ### Display
 

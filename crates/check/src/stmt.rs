@@ -123,7 +123,20 @@ impl<'a> Checker<'a> {
                         .help("keep the result and test it with `is error`, or leave out `try` so the error propagates"),
                     );
                 }
-                StmtKind::Expr(self.check_expr(cx, value, None))
+                let checked = self.check_expr(cx, value, None);
+                if let Type::Wrapper(crate::types::Wrapper::Task, _) =
+                    self.unifier.resolve(&checked.ty)
+                {
+                    self.error(
+                        Diagnostic::warning(
+                            "W_UNUSED_TASK",
+                            "this task is cancelled at once, since nothing keeps its handle",
+                        )
+                        .primary(value.span, "")
+                        .help("keep the handle and `threads.join` it, or `threads.detach` it to let it run on its own"),
+                    );
+                }
+                StmtKind::Expr(checked)
             }
             ast::StmtKind::Assign { target, value } => {
                 return self.check_assign(cx, target, value, span);
