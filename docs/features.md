@@ -65,7 +65,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Installers for Windows ARM64, Linux, and macOS | planned | with each platform's validation (M5, M1 to M3, M7) |
 | `sayon explain` for every diagnostic and runtime error code | experimental | M2 |
 | `sayon lint`: unused names, naming conventions, shadowing, likely typos; `# allow(...)` suppressions; `--deny warnings` | experimental | M2 |
-| Package installation and lock files | planned | M2 |
+| Dependencies from local folders and pinned Git commits, `sayon install` (`--locked`, `--offline`), `sayon.lock` with source digests | experimental | M2 |
+| Dependencies by version from a registry | planned | M5 |
 | Registry commands: `publish`, `search`, `info`, `login`, `logout` | planned | M5 |
 | Language server | planned | before M6 |
 | Debugger, REPL, watch mode | planned | M8 |

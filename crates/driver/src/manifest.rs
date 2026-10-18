@@ -13,6 +13,13 @@
 //! authors = ["Ada"]             # optional
 //! description = "A greeting"    # optional
 //! language = "1"                # optional
+//!
+//! [dependencies]
+//! utilities = { path = "../utilities" }
+//! codec = { git = "https://example.com/codec.git", revision = "<full commit id>" }
+//!
+//! [dev_dependencies]            # only for the package's own tests
+//! checks = { path = "../checks" }
 //! ```
 
 use sayon_syntax::{Diagnostic, FileId, Span};
@@ -26,14 +33,36 @@ pub struct Manifest {
     pub entry: String,
     pub authors: Vec<String>,
     pub description: Option<String>,
+    pub dependencies: Vec<Dependency>,
+    /// Dependencies of the package's tests only.
+    pub dev_dependencies: Vec<Dependency>,
+}
+
+/// One entry of `[dependencies]`: the alias imports use, and where the
+/// package comes from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dependency {
+    pub alias: String,
+    pub source: Source,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Source {
+    /// A directory, relative to the package that depends on it.
+    Path(String),
+    /// A Git repository at one exact commit.
+    Git { url: String, revision: String },
 }
 
 #[derive(Debug, Clone, PartialEq)]
-enum Value {
+pub(crate) enum Value {
     String(String),
     Integer(i64),
     Boolean(bool),
     Strings(Vec<String>),
+    /// `{ key = "value", ... }`
+    Table(Vec<(String, String)>),
 }
 
 impl Value {
@@ -43,6 +72,7 @@ impl Value {
             Value::Integer(_) => "an integer",
             Value::Boolean(_) => "a boolean",
             Value::Strings(_) => "an array of strings",
+            Value::Table(_) => "a table",
         }
     }
 }
@@ -63,11 +93,129 @@ const PACKAGE_KEYS: [&str; 6] = [
     "description",
     "language",
 ];
-const LATER_TABLES: [(&str, &str); 3] = [
-    ("dependencies", "M2"),
-    ("dev_dependencies", "M2"),
-    ("compiler", "M4"),
-];
+const LATER_TABLES: [(&str, &str); 1] = [("compiler", "M4")];
+const DEPENDENCY_TABLES: [&str; 2] = ["dependencies", "dev_dependencies"];
+
+fn valid_name(text: &str) -> bool {
+    text.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && text
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// Reads one dependency entry.
+fn dependency(item: &Entry, errors: &mut Vec<Diagnostic>) -> Option<Dependency> {
+    if !valid_name(&item.key) {
+        errors.push(
+            Diagnostic::error(
+                "E_MANIFEST",
+                format!("`{}` is not a valid dependency name", item.key),
+            )
+            .primary(item.key_span, "")
+            .help("imports write it as `dependencies/name/...`: use lowercase letters, digits, and underscores, starting with a letter"),
+        );
+        return None;
+    }
+    let forms = "use a local package, `{ path = \"../name\" }`, or a Git commit, `{ git = \"https://...\", revision = \"<full commit id>\" }`";
+    let fields = match &item.value {
+        Value::Table(fields) => fields,
+        Value::String(_) => {
+            errors.push(
+                Diagnostic::error(
+                    "E_UNAVAILABLE",
+                    "dependencies by version from a package registry are not available yet",
+                )
+                .primary(item.value_span, "planned for milestone M5")
+                .help(forms),
+            );
+            return None;
+        }
+        other => {
+            errors.push(
+                Diagnostic::error(
+                    "E_MANIFEST",
+                    format!("a dependency is a table, not {}", other.kind()),
+                )
+                .primary(item.value_span, "")
+                .help(forms),
+            );
+            return None;
+        }
+    };
+    let get = |key: &str| {
+        fields
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+    for (key, _) in fields {
+        if !["path", "git", "revision"].contains(&key.as_str()) {
+            let help = if key == "branch" || key == "tag" {
+                "a Git dependency names one exact commit: `revision = \"<full commit id>\"`"
+            } else {
+                "a dependency has `path`, or `git` with `revision`"
+            };
+            errors.push(
+                Diagnostic::error("E_MANIFEST", format!("unknown key `{key}` in a dependency"))
+                    .primary(item.value_span, "")
+                    .help(help),
+            );
+            return None;
+        }
+    }
+    let source = match (get("path"), get("git"), get("revision")) {
+        (Some(path), None, None) => {
+            if path.is_empty() || path.contains('\\') {
+                errors.push(
+                    Diagnostic::error("E_MANIFEST", format!("\"{path}\" is not a usable path"))
+                        .primary(item.value_span, "")
+                        .help("write the directory with forward slashes, relative to this package"),
+                );
+                return None;
+            }
+            Source::Path(path)
+        }
+        (None, Some(url), Some(revision)) => {
+            let full = (revision.len() == 40 || revision.len() == 64)
+                && revision
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
+            if !full {
+                errors.push(
+                    Diagnostic::error(
+                        "E_MANIFEST",
+                        format!("\"{revision}\" is not a full commit id"),
+                    )
+                    .primary(item.value_span, "")
+                    .help("write all 40 lowercase hexadecimal digits, as `git rev-parse HEAD` prints them"),
+                );
+                return None;
+            }
+            Source::Git { url, revision }
+        }
+        (None, Some(_), None) => {
+            errors.push(
+                Diagnostic::error("E_MANIFEST", "a Git dependency needs a `revision`")
+                    .primary(item.value_span, "")
+                    .help("pin the exact commit: `revision = \"<full commit id>\"`"),
+            );
+            return None;
+        }
+        _ => {
+            errors.push(
+                Diagnostic::error("E_MANIFEST", "a dependency has either `path` or `git`")
+                    .primary(item.value_span, "")
+                    .help(forms),
+            );
+            return None;
+        }
+    };
+    Some(Dependency {
+        alias: item.key.clone(),
+        source,
+        span: item.key_span,
+    })
+}
 
 /// Reads a manifest, reporting every problem found.
 pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
@@ -78,6 +226,8 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
     let mut entry = None;
     let mut authors = Vec::new();
     let mut description = None;
+    let mut dependencies: Vec<Dependency> = Vec::new();
+    let mut dev_dependencies: Vec<Dependency> = Vec::new();
     let mut seen: Vec<(String, String, Span)> = Vec::new();
 
     for item in &entries {
@@ -93,6 +243,31 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
             continue;
         }
         seen.push((item.table.clone(), item.key.clone(), item.key_span));
+        if DEPENDENCY_TABLES.contains(&item.table.as_str()) {
+            let other = dependencies
+                .iter()
+                .chain(&dev_dependencies)
+                .find(|d| d.alias == item.key);
+            if let Some(previous) = other {
+                errors.push(
+                    Diagnostic::error(
+                        "E_MANIFEST",
+                        format!("the dependency `{}` is declared twice", item.key),
+                    )
+                    .primary(item.key_span, "declared again here")
+                    .secondary(previous.span, "first declared here"),
+                );
+                continue;
+            }
+            if let Some(found) = dependency(item, &mut errors) {
+                if item.table == "dependencies" {
+                    dependencies.push(found);
+                } else {
+                    dev_dependencies.push(found);
+                }
+            }
+            continue;
+        }
         if item.table != "package" {
             continue;
         }
@@ -114,12 +289,7 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
         match item.key.as_str() {
             "name" => {
                 if let Some(text) = expect_string(&mut errors) {
-                    let valid = !text.is_empty()
-                        && text.chars().next().is_some_and(|c| c.is_ascii_lowercase())
-                        && text
-                            .chars()
-                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-                    if !valid {
+                    if !valid_name(&text) {
                         errors.push(
                             Diagnostic::error("E_MANIFEST", format!("\"{text}\" is not a valid package name"))
                                 .primary(item.value_span, "")
@@ -218,6 +388,8 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
         entry: entry.unwrap_or_else(|| "src/main.sayon".to_string()),
         authors,
         description,
+        dependencies,
+        dev_dependencies,
     })
 }
 
@@ -266,7 +438,7 @@ fn read_entries(file: FileId, text: &str, errors: &mut Vec<Diagnostic>) -> Vec<E
             };
             let name = name.trim().to_string();
             let span = span_of(indent, trimmed.len());
-            if name == "package" {
+            if name == "package" || DEPENDENCY_TABLES.contains(&name.as_str()) {
                 table = Some(name);
             } else if let Some((_, milestone)) = LATER_TABLES.iter().find(|(t, _)| *t == name) {
                 errors.push(
@@ -278,7 +450,7 @@ fn read_entries(file: FileId, text: &str, errors: &mut Vec<Diagnostic>) -> Vec<E
                 errors.push(
                     Diagnostic::error("E_MANIFEST", format!("unknown table [{name}]"))
                         .primary(span, "")
-                        .help("the manifest has a [package] table"),
+                        .help("the manifest has [package], [dependencies], and [dev_dependencies] tables"),
                 );
                 table = Some(String::new());
             }
@@ -351,7 +523,7 @@ fn strip_comment(line: &str) -> &str {
     line
 }
 
-fn parse_string(text: &str) -> Result<(String, &str), String> {
+pub(crate) fn parse_string(text: &str) -> Result<(String, &str), String> {
     let mut chars = text.char_indices();
     if chars.next().map(|(_, c)| c) != Some('"') {
         return Err("expected a string in double quotes".to_string());
@@ -374,7 +546,36 @@ fn parse_string(text: &str) -> Result<(String, &str), String> {
     Err("unterminated string".to_string())
 }
 
-fn parse_value(text: &str) -> Result<Value, String> {
+pub(crate) fn parse_value(text: &str) -> Result<Value, String> {
+    if let Some(inner) = text.strip_prefix('{') {
+        let Some(inner) = inner.trim_end().strip_suffix('}') else {
+            return Err("inline tables must close on the same line with `}`".to_string());
+        };
+        let mut fields = Vec::new();
+        let mut rest = inner.trim();
+        while !rest.is_empty() {
+            let Some(equals) = rest.find('=') else {
+                return Err("expected `key = \"value\"` inside the table".to_string());
+            };
+            let key = rest[..equals].trim();
+            if key.is_empty() || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                return Err("invalid key inside the table".to_string());
+            }
+            let (value, after) = parse_string(rest[equals + 1..].trim_start())
+                .map_err(|_| format!("`{key}` needs a string value in double quotes"))?;
+            if fields.iter().any(|(k, _): &(String, String)| k == key) {
+                return Err(format!("`{key}` is set twice in the table"));
+            }
+            fields.push((key.to_string(), value));
+            rest = after.trim_start();
+            if let Some(after_comma) = rest.strip_prefix(',') {
+                rest = after_comma.trim_start();
+            } else if !rest.is_empty() {
+                return Err("separate table entries with commas".to_string());
+            }
+        }
+        return Ok(Value::Table(fields));
+    }
     if text.starts_with('"') {
         let (value, rest) = parse_string(text)?;
         if !rest.trim().is_empty() {
@@ -440,6 +641,31 @@ mod tests {
     }
 
     #[test]
+    fn reads_dependencies() {
+        let revision = "0123456789abcdef0123456789abcdef01234567";
+        let manifest = parse(
+            FileId(0),
+            &format!("[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\nutilities = {{ path = \"../utilities\" }}\ncodec = {{ git = \"https://example.com/codec.git\", revision = \"{revision}\" }}\n\n[dev_dependencies]\nchecks = {{ path = \"vendor/checks\" }}\n"),
+        )
+        .ok()
+        .unwrap();
+        assert_eq!(manifest.dependencies.len(), 2);
+        assert_eq!(manifest.dependencies[0].alias, "utilities");
+        assert_eq!(
+            manifest.dependencies[0].source,
+            Source::Path("../utilities".to_string())
+        );
+        assert_eq!(
+            manifest.dependencies[1].source,
+            Source::Git {
+                url: "https://example.com/codec.git".to_string(),
+                revision: revision.to_string()
+            }
+        );
+        assert_eq!(manifest.dev_dependencies[0].alias, "checks");
+    }
+
+    #[test]
     fn reports_problems() {
         assert_eq!(
             codes("[package]\nname = \"x\"\nverison = \"0.1.0\"\n"),
@@ -459,7 +685,19 @@ mod tests {
         );
         assert_eq!(
             codes("[package]\nname = \"a\"\nversion = \"0.1.0\"\n[dependencies]\nx = \"1.0.0\"\n"),
-            vec!["[dependencies] is not available yet"]
+            vec!["dependencies by version from a package registry are not available yet"]
+        );
+        assert_eq!(
+            codes(
+                "[package]\nname = \"a\"\nversion = \"0.1.0\"\n[dependencies]\nx = { git = \"u\", branch = \"main\" }\n"
+            ),
+            vec!["unknown key `branch` in a dependency"]
+        );
+        assert_eq!(
+            codes(
+                "[package]\nname = \"a\"\nversion = \"0.1.0\"\n[dependencies]\nx = { git = \"u\", revision = \"abc\" }\n"
+            ),
+            vec!["\"abc\" is not a full commit id"]
         );
         assert_eq!(
             codes("name = \"a\"\n"),

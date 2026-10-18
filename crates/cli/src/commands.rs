@@ -42,6 +42,47 @@ pub fn check(target: &Target, options: &Options) -> u8 {
     }
 }
 
+/// `sayon install`: resolves the project's dependencies, fetches Git sources,
+/// and writes sayon.lock.
+pub fn install(options: &Options, locked: bool, offline: bool) -> u8 {
+    let project = match current_project(options) {
+        Ok(Some(project)) => project,
+        Ok(None) => {
+            return usage_error(
+                "`sayon install` works on a project; run it in a directory with sayon.toml",
+            );
+        }
+        Err(code) => return code,
+    };
+    let fetch = if offline {
+        sayon_driver::packages::Fetch::Offline
+    } else {
+        sayon_driver::packages::Fetch::Allowed
+    };
+    match sayon_driver::packages::install(&project.root, &project.manifest, locked, fetch) {
+        Ok(installed) => {
+            if !options.quiet {
+                let noun = if installed.packages == 1 {
+                    "package"
+                } else {
+                    "packages"
+                };
+                let lock = if installed.changed {
+                    "wrote sayon.lock"
+                } else {
+                    "sayon.lock is up to date"
+                };
+                eprintln!("{} {noun}; {lock}", installed.packages);
+            }
+            status::SUCCESS
+        }
+        Err(error) => {
+            crate::compile::print_package_error(&error, options);
+            status::COMPILE_FAILED
+        }
+    }
+}
+
 /// `sayon lint`: the compiler's checks and the lint warnings. With
 /// `deny_warnings`, any warning fails the command.
 pub fn lint(target: &Target, options: &Options, deny_warnings: bool) -> u8 {

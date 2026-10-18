@@ -32,6 +32,8 @@ pub struct ModuleSource<'a> {
     pub imports: Vec<(String, Span, usize)>,
     /// Standard library modules may use host primitives.
     pub standard: bool,
+    /// Part of a dependency package, which `sayon lint` leaves alone.
+    pub dependency: bool,
 }
 
 /// Checks a single-file program.
@@ -41,6 +43,7 @@ pub fn check_module(module: &ast::Module, span: Span) -> CheckOutput {
         name: String::new(),
         imports: Vec::new(),
         standard: false,
+        dependency: false,
     };
     check_program(&[source], 0, span)
 }

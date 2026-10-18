@@ -35,12 +35,12 @@ Sayon is in early development and not ready for real programs. What works today:
 - Functions as values and closures that own what they capture
 - An interpreter that runs checked programs, with checked integer arithmetic and cleanup on every exit path
 - A native backend: programs compile through LLVM to standalone Windows executables that need no runtime DLLs
-- Modules: programs can be split across files with `import`
+- Modules: programs can be split across files with `import`, and projects can depend on other packages from local folders or pinned Git commits, locked by `sayon install`
 - Standard library modules for files, directories, standard input and output, program arguments, text, and math
 - `test` blocks and the `sayon test` runner, and the `sayon fmt` formatter
 - Projects with a `sayon.toml` manifest, and the `run`, `build`, `check`, `test`, `fmt`, `init`, `clean`, `doctor`, `lint`, and `explain` commands
 
-Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Dependencies and lock files come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
+Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Borrowed views and the standard library's JSON, collections, and time modules come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
 
 ## Installing
 

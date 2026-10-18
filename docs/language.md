@@ -584,9 +584,36 @@ authors = ["Ada"]              # optional
 description = "Says hello"     # optional
 ```
 
-`sayon init hello` creates a project with a manifest, a program, a module with a test, and ignore rules. Inside a project (in its root or any directory below it), `sayon run`, `check`, `build`, and `test` need no file name: they use the manifest's entry file, and imports resolve from the project root. `sayon build` writes `build/debug/<name>` (`build/release/<name>` with `--release`), and `sayon clean` removes the `build` directory. Without file names, `sayon test` runs the tests in `src` and `tests`.
+`sayon init hello` creates a project with a manifest, a program, a module with a test, and ignore rules. Inside a project (in its root or any directory below it), `sayon run`, `check`, `build`, and `test` need no file name: they use the manifest's entry file. Imports in a project's files resolve from the project root, also when a file is named on the command line. `sayon build` writes `build/debug/<name>` (`build/release/<name>` with `--release`), and `sayon clean` removes the `build` directory. Without file names, `sayon test` runs the tests in `src` and `tests`.
 
-Unknown or misspelled manifest keys are errors. Dependencies arrive with milestone M2.
+Unknown or misspelled manifest keys are errors.
+
+### Dependencies
+
+A project can use other Sayon packages: folders with their own `sayon.toml`. Each dependency has an alias, and comes from a local folder or from one exact commit of a Git repository:
+
+```toml
+[dependencies]
+utilities = { path = "../utilities" }
+codec = { git = "https://example.com/team/codec.git", revision = "<full commit id>" }
+
+[dev_dependencies]
+checks = { path = "../checks" }    # only for this project's tests
+```
+
+A module imports a dependency's files through its alias, with paths inside the dependency's folder:
+
+```sayon
+utilities = import("dependencies/utilities/src/library.sayon")
+```
+
+- `sayon install` reads the manifests of the project and of every dependency, fetches Git sources into a cache, and writes `sayon.lock`, which records each package's source, version, and dependencies, and a digest of each Git source's files. Commit `sayon.lock` with the project.
+- `run`, `check`, `build`, `test`, and `lint` read `sayon.lock`. They never fetch anything or change the lock: when the manifests and the lock disagree, or a cached Git source no longer matches its digest, they stop and ask for `sayon install`.
+- `sayon install --locked` fails instead of changing the lock, for automated builds; `sayon install --offline` uses only sources already in the cache.
+- A dependency's own imports resolve inside its folder, and its `dependencies/...` imports through its own manifest. Packages cannot depend on each other in a cycle. Warnings about a dependency's code are not shown, and `sayon lint` does not lint it.
+- A local folder is used as it is, so changes to it take effect at once. A Git dependency names a full commit (`git rev-parse HEAD` prints one); branches and tags would let the code change under the lock.
+- Fetched sources are kept in `SAYON_CACHE`, or the user's cache folder (`%LOCALAPPDATA%\Sayon\cache` on Windows). Git must be installed to fetch them.
+- Dependencies by version from a package registry arrive with the registry (milestone M5).
 
 `sayon doctor` reports where the standard library, the runtime library, and clang were found. `sayon explain CODE` explains a diagnostic or runtime error code; [errors.md](errors.md) lists them all.
 

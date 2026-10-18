@@ -36,6 +36,7 @@ Usage:
     sayon test [files...]            Run test blocks
     sayon fmt [paths...] [--check]   Format source files
     sayon init <name>                Create a project
+    sayon install [--locked]         Fetch dependencies and write sayon.lock
     sayon clean                      Remove a project's build output
     sayon doctor                     Check the installation and native toolchain
     sayon explain <code>             Explain an error code, such as E_MOVED_VALUE
@@ -53,6 +54,8 @@ Options:
     --emit-llvm                      Write LLVM IR instead of an executable (build)
     --check                          Report unformatted files without changing them (fmt)
     --deny warnings                  Fail when there are warnings (lint)
+    --locked                         Fail instead of changing sayon.lock (install)
+    --offline                        Use only dependencies already fetched (install)
 
 Native builds use clang from LLVM. Set SAYON_CLANG to choose a clang
 executable, SAYON_RUNTIME_LIB the runtime library, and SAYON_STDLIB the
@@ -170,6 +173,7 @@ fn dispatch(args: &[String]) -> u8 {
         ),
         "test" => (&["--quiet"], &["--color"], false),
         "fmt" => (&["--check"], &[], false),
+        "install" => (&["--quiet", "--locked", "--offline"], &["--color"], false),
         "init" | "clean" | "doctor" | "explain" => (&[], &[], false),
         other => return usage_error(&format!("unknown command `{other}`")),
     };
@@ -242,6 +246,14 @@ fn dispatch(args: &[String]) -> u8 {
         "clean" => commands::clean(&options),
         "doctor" => commands::doctor(),
         "explain" => explain::explain(&parsed.positional),
+        "install" => {
+            if !parsed.positional.is_empty() {
+                return usage_error(
+                    "`sayon install` installs the dependencies in sayon.toml and takes no names",
+                );
+            }
+            commands::install(&options, parsed.flag("--locked"), parsed.flag("--offline"))
+        }
         _ => unreachable!("checked above"),
     }
 }

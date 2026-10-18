@@ -1,12 +1,16 @@
 //! Loads a program's modules from disk and runs the compiler phases.
 //!
-//! Import paths are resolved against the program root: the directory of the
-//! entry file for a standalone script. `standard/...` paths resolve inside
-//! the toolchain's standard library. Paths cannot leave their root, must
-//! name an existing `.sayon` file with exactly the same spelling (also on
-//! case-insensitive file systems), and imports cannot form a cycle.
+//! Import paths are resolved against the root of the importing module's
+//! package: a project's directory, or the directory of the entry file for a
+//! standalone script. `standard/...` paths resolve inside the toolchain's
+//! standard library, and `dependencies/<alias>/...` inside the package the
+//! importing package's manifest names `alias`. Paths cannot leave their root,
+//! must name an existing `.sayon` file with exactly the same spelling (also
+//! on case-insensitive file systems), and imports cannot form a cycle.
 
 pub mod manifest;
+pub mod packages;
+pub mod sha256;
 
 use sayon_check::ModuleSource;
 use sayon_syntax::ast::{self, ExprKind, StmtKind};
@@ -24,6 +28,8 @@ pub struct Options {
     pub root: Option<PathBuf>,
     /// Add the lint warnings, and stop after checking.
     pub lint: bool,
+    /// The packages `dependencies/...` imports reach, from the lock.
+    pub packages: packages::Packages,
 }
 
 pub struct Output {
@@ -42,6 +48,11 @@ struct Loaded {
     name: String,
     root: PathBuf,
     standard: bool,
+    /// Part of a dependency rather than the project itself.
+    dependency: bool,
+    /// What names of modules imported from this one start with:
+    /// `dependencies/<alias>/` inside a dependency.
+    prefix: String,
     imports: Vec<(String, Span, usize)>,
 }
 
@@ -66,6 +77,7 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
         modules: Vec::new(),
         by_path: HashMap::new(),
         stdlib: options.stdlib.clone(),
+        packages: &options.packages,
     };
     let entry_file = match decode(entry, &entry_name, text, loader.sources) {
         Ok(file) => file,
@@ -78,7 +90,17 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
             });
         }
     };
-    loader.add(entry_file, entry_name, root, false, canonical(entry));
+    loader.add(
+        entry_file,
+        entry_name,
+        Origin {
+            root,
+            standard: false,
+            dependency: false,
+            prefix: String::new(),
+        },
+        canonical(entry),
+    );
     loader.load_imports();
     let cycle_free = loader.check_cycles();
     let modules = std::mem::take(&mut loader.modules);
@@ -98,6 +120,7 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
             name: module.name.clone(),
             imports: module.imports.clone(),
             standard: module.standard,
+            dependency: module.dependency,
         })
         .collect();
     let span = Span::new(modules[0].file, 0, 0);
@@ -110,11 +133,25 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
     }
     let user_files: Vec<FileId> = modules
         .iter()
-        .filter(|m| !m.standard)
+        .filter(|m| !m.standard && !m.dependency)
         .map(|m| m.file)
         .collect();
-    let mut diagnostics =
-        sayon_check::lint::suppress(diagnostics, &sources, &user_files, options.lint);
+    // Warnings about a dependency's code are for its authors, not its users.
+    let outside: Vec<FileId> = modules
+        .iter()
+        .filter(|m| m.standard || m.dependency)
+        .map(|m| m.file)
+        .collect();
+    let mut kept = Diagnostics::new();
+    for diagnostic in diagnostics.into_vec() {
+        let foreign = diagnostic
+            .primary_span()
+            .is_some_and(|span| outside.contains(&span.file));
+        if diagnostic.is_error() || !foreign {
+            kept.push(diagnostic);
+        }
+    }
+    let mut diagnostics = sayon_check::lint::suppress(kept, &sources, &user_files, options.lint);
     let module = match checked.program {
         Some(_) if options.lint => None,
         Some(program) if !diagnostics.has_errors() => {
@@ -206,6 +243,15 @@ struct Loader<'s> {
     modules: Vec<Loaded>,
     by_path: HashMap<PathBuf, usize>,
     stdlib: Option<PathBuf>,
+    packages: &'s packages::Packages,
+}
+
+/// Where a module comes from: its package's root and kind.
+struct Origin {
+    root: PathBuf,
+    standard: bool,
+    dependency: bool,
+    prefix: String,
 }
 
 /// An `alias = import("path")` statement at the top of a module.
@@ -238,14 +284,7 @@ fn import_statements(module: &ast::Module) -> Vec<ImportStatement> {
 }
 
 impl Loader<'_> {
-    fn add(
-        &mut self,
-        file: FileId,
-        name: String,
-        root: PathBuf,
-        standard: bool,
-        key: PathBuf,
-    ) -> usize {
+    fn add(&mut self, file: FileId, name: String, origin: Origin, key: PathBuf) -> usize {
         let text = self.sources.get(file).text.clone();
         let parsed = sayon_syntax::parser::parse_source(file, &text);
         self.diagnostics.extend(parsed.diagnostics);
@@ -254,8 +293,10 @@ impl Loader<'_> {
             file,
             ast: parsed.module,
             name,
-            root,
-            standard,
+            root: origin.root,
+            standard: origin.standard,
+            dependency: origin.dependency,
+            prefix: origin.prefix,
             imports: Vec::new(),
         });
         self.by_path.insert(key, index);
@@ -296,28 +337,56 @@ impl Loader<'_> {
     fn resolve(&mut self, from: usize, statement: &ImportStatement) -> Option<usize> {
         let span = statement.path_span;
         let text = statement.path.as_str();
-        let (root, relative, standard, name) = match text.strip_prefix("standard/") {
-            Some(rest) => {
-                let Some(stdlib) = self.stdlib.clone() else {
-                    self.diagnostics.push(
-                        Diagnostic::error("E_IMPORT_NOT_FOUND", "the standard library was not found")
-                            .primary(span, "")
-                            .help("set SAYON_STDLIB to the standard library directory of your Sayon installation"),
-                    );
-                    return None;
-                };
-                (stdlib, rest.to_string(), true, text.to_string())
-            }
-            None => {
-                let module = &self.modules[from];
-                (
-                    module.root.clone(),
-                    text.to_string(),
-                    module.standard,
-                    text.to_string(),
-                )
-            }
+        let module = &self.modules[from];
+        let (origin, relative, name) = if let Some(rest) = text.strip_prefix("standard/") {
+            let Some(stdlib) = self.stdlib.clone() else {
+                self.diagnostics.push(
+                    Diagnostic::error("E_IMPORT_NOT_FOUND", "the standard library was not found")
+                        .primary(span, "")
+                        .help("set SAYON_STDLIB to the standard library directory of your Sayon installation"),
+                );
+                return None;
+            };
+            let origin = Origin {
+                root: stdlib,
+                standard: true,
+                dependency: false,
+                prefix: String::new(),
+            };
+            (origin, rest.to_string(), text.to_string())
+        } else if let Some(rest) = text.strip_prefix("dependencies/") {
+            let (alias, inner) = rest.split_once('/').unwrap_or((rest, ""));
+            let Some(dir) = self.packages.find(&module.root, alias) else {
+                self.diagnostics.push(
+                    Diagnostic::error("E_IMPORT_NOT_FOUND", format!("there is no dependency `{alias}`"))
+                        .primary(span, "")
+                        .help(format!(
+                            "declare it in sayon.toml, such as `{alias} = {{ path = \"../{alias}\" }}` under [dependencies], then run `sayon install`"
+                        )),
+                );
+                return None;
+            };
+            let origin = Origin {
+                root: dir.clone(),
+                standard: false,
+                dependency: true,
+                prefix: format!("{}dependencies/{alias}/", module.prefix),
+            };
+            (
+                origin,
+                inner.to_string(),
+                format!("{}{text}", module.prefix),
+            )
+        } else {
+            let origin = Origin {
+                root: module.root.clone(),
+                standard: module.standard,
+                dependency: module.dependency,
+                prefix: module.prefix.clone(),
+            };
+            (origin, text.to_string(), format!("{}{text}", module.prefix))
         };
+        let root = origin.root.clone();
         if !self.valid_relative_path(&relative, span) {
             return None;
         }
@@ -355,7 +424,7 @@ impl Loader<'_> {
             }
         };
         match decode(&path, &name, bytes, self.sources) {
-            Ok(file) => Some(self.add(file, name, root, standard, key)),
+            Ok(file) => Some(self.add(file, name, origin, key)),
             Err(diagnostic) => {
                 self.diagnostics.push(diagnostic);
                 None

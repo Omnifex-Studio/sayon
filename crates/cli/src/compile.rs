@@ -135,6 +135,67 @@ pub fn stdlib_dir() -> Option<PathBuf> {
     None
 }
 
+/// Prints a problem with the dependencies like a diagnostic.
+pub fn print_package_error(error: &sayon_driver::packages::PackageError, options: &Options) {
+    let label = if options.color {
+        "\x1b[1;31merror\x1b[0m"
+    } else {
+        "error"
+    };
+    eprintln!("{label}: {}", error.message);
+    if let Some(help) = &error.help {
+        eprintln!("  = help: {help}");
+    }
+}
+
+/// The project a file belongs to: the nearest directory above it with a
+/// manifest. A file of a project imports from the project's root.
+fn project_root(entry: &Path, root: Option<&Path>) -> Option<PathBuf> {
+    if let Some(root) = root {
+        return Some(root.to_path_buf());
+    }
+    let absolute = std::path::absolute(entry).ok()?;
+    sayon_driver::find_project(absolute.parent()?)
+}
+
+/// The driver's options for a program: the project's root and the packages
+/// its lock provides.
+fn driver_options(
+    entry: &Path,
+    root: Option<&Path>,
+    options: &Options,
+    tests: bool,
+    lint: bool,
+) -> Result<sayon_driver::Options, u8> {
+    let root = project_root(entry, root);
+    let mut packages = sayon_driver::packages::Packages::default();
+    if let Some(root) = &root {
+        let mut sources = SourceMap::new();
+        match sayon_driver::read_manifest(root, &mut sources) {
+            Ok(manifest) => match sayon_driver::packages::load(root, &manifest, tests) {
+                Ok(found) => packages = found,
+                Err(error) => {
+                    print_package_error(&error, options);
+                    return Err(status::COMPILE_FAILED);
+                }
+            },
+            Err(errors) => {
+                let mut diagnostics = Diagnostics::new();
+                diagnostics.extend(errors);
+                print_diagnostics(&diagnostics, &sources, options, "the manifest has errors");
+                return Err(status::COMPILE_FAILED);
+            }
+        }
+    }
+    Ok(sayon_driver::Options {
+        stdlib: stdlib_dir(),
+        tests,
+        root,
+        lint,
+        packages,
+    })
+}
+
 /// Loads, checks, and lowers a program, printing any diagnostics.
 pub fn compile(
     entry: &Path,
@@ -142,12 +203,7 @@ pub fn compile(
     options: &Options,
     tests: bool,
 ) -> Result<Compiled, u8> {
-    let driver_options = sayon_driver::Options {
-        stdlib: stdlib_dir(),
-        tests,
-        root: root.map(Path::to_path_buf),
-        lint: false,
-    };
+    let driver_options = driver_options(entry, root, options, tests, false)?;
     let output = match sayon_driver::compile(entry, &driver_options) {
         Ok(output) => output,
         Err(sayon_driver::EntryError(message)) => {
@@ -173,12 +229,7 @@ pub fn compile(
 /// Checks a program with the lint warnings, printing the diagnostics.
 /// Returns the error and warning counts, or the status for a missing entry.
 pub fn lint(entry: &Path, root: Option<&Path>, options: &Options) -> Result<(usize, usize), u8> {
-    let driver_options = sayon_driver::Options {
-        stdlib: stdlib_dir(),
-        tests: false,
-        root: root.map(Path::to_path_buf),
-        lint: true,
-    };
+    let driver_options = driver_options(entry, root, options, false, true)?;
     let output = match sayon_driver::compile(entry, &driver_options) {
         Ok(output) => output,
         Err(sayon_driver::EntryError(message)) => {

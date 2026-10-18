@@ -173,6 +173,14 @@ A closure's environment is a heap block: a pointer to a function that destroys a
 
 A dictionary keeps its keys and values in two arrays in insertion order, and finds keys through an open-addressing table of positions keyed by hash. Each key type has a static table of generated helpers the dictionary calls: hash, equality, copy, destroy, and display (for `KeyError` messages). A key's hash combines its parts' hashes in order: a union or enum includes its tag, a string hashes its bytes, and integers hash their values, so values that are equal hash alike.
 
+## Packages
+
+A package is identified by its source: `path:<folder>`, relative to the root package and written with `/`, or `git:<url>#<commit>`. `sayon install` walks the manifests depth first from the root, recording for each package its name, version, and dependency edges (`alias = source`), and fails on a cycle. The lock is written to a temporary file and renamed over `sayon.lock`, so it is never half written; the same graph always renders the same text.
+
+A Git source is cloned into `<cache>/git/<first 20 hex digits of SHA-256(url, NUL, commit)>` through a temporary folder, checked out at the commit, and verified with `git rev-parse HEAD`. Its digest is SHA-256 over the domain prefix `sayon-package-digest-1` and a NUL byte, then, for each file in order of its `/`-separated relative path, the path's length (8 bytes, little-endian), the path, the content's length, and the content. Hidden entries (such as `.git`), and `target` and `sayon.lock` at the package's top, are left out; line endings are not normalized; symbolic links are rejected. The build family recomputes the digest of every Git source it uses. Local folders are not digested, since they are meant to be edited.
+
+The loader resolves `dependencies/<alias>/<path>` against the package of the importing module, using a map from each package's canonical folder to its aliases, built from the lock. Modules from dependencies are named `dependencies/<alias>/<path>` in messages, nested for dependencies of dependencies.
+
 ## Calls and parameter passing
 
 Every compiled function has the signature `i32 f(ptr result, ptr error, i64 argument_count, parameters...)`. It returns 0 after writing its result through `result`, or 1 after storing an `Error` pointer through `error`. Callers always pass every parameter; a parameter the caller omitted is computed from its default in the callee's prologue, selected by `argument_count`.

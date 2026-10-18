@@ -39,11 +39,11 @@ fn lint_name(code: &str) -> String {
 pub fn lint(program: &hir::Program, modules: &[ModuleSource]) -> Vec<Diagnostic> {
     let files: HashSet<FileId> = modules
         .iter()
-        .filter(|m| !m.standard)
+        .filter(|m| !m.standard && !m.dependency)
         .map(|m| m.ast.file)
         .collect();
     let mut out = Vec::new();
-    for module in modules.iter().filter(|m| !m.standard) {
+    for module in modules.iter().filter(|m| !m.standard && !m.dependency) {
         lint_module(module.ast, &mut out);
     }
     for function in &program.functions {
