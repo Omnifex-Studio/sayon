@@ -298,9 +298,46 @@ impl<'a> Checker<'a> {
                 };
                 StmtKind::Return(value)
             }
+            // A function declared in a function is a closure bound to a
+            // variable: it can use the variables declared before it.
             ast::StmtKind::Function(function) => {
-                self.unavailable(function.header_span, "nested functions", "M2");
-                return None;
+                let Some(name) = &function.name else {
+                    return None;
+                };
+                if !function.generics.is_empty() {
+                    self.error(
+                        Diagnostic::error(
+                            "E_TYPE_ARGUMENTS",
+                            "a function declared inside another function cannot declare type parameters",
+                        )
+                        .primary(function.header_span, "")
+                        .help("declare it at the top level of the module"),
+                    );
+                    return None;
+                }
+                if let Some(existing) = cx.lookup(&name.name)
+                    && cx
+                        .scopes
+                        .last()
+                        .is_some_and(|scope| scope.names.contains_key(&name.name))
+                {
+                    let previous = cx.locals[existing.0 as usize].span;
+                    self.error(
+                        Diagnostic::error(
+                            "E_DUPLICATE_DECLARATION",
+                            format!("`{}` is already declared in this scope", name.name),
+                        )
+                        .primary(name.span, "declared again here")
+                        .secondary(previous, "first declared here"),
+                    );
+                    return None;
+                }
+                self.defining_nested.push(name.name.clone());
+                let value = self.check_function_literal(cx, function, None, function.header_span);
+                self.defining_nested.pop();
+                let local =
+                    cx.declare(&name.name, value.ty.clone(), name.span, LocalKind::Variable);
+                return Some(stmt(StmtKind::Let { local, value }, span));
             }
             ast::StmtKind::Try {
                 body,

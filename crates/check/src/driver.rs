@@ -142,7 +142,7 @@ impl<'a> Checker<'a> {
                     .is_some_and(|s| s.explicit_generics > 0)
                 {
                     let span = entry.span;
-                    self.unavailable(span, "mutually recursive generic functions", "M2");
+                    self.unavailable(span, "mutually recursive generic functions", "M3");
                 }
             }
         }

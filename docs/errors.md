@@ -195,7 +195,7 @@ A dictionary literal gives the same key twice; the later one would replace the e
 
 ### E_UNAVAILABLE
 
-The feature is specified but belongs to a later milestone; the message names it. The feature ledger in `docs/features.md` lists what is planned.
+The feature is specified but belongs to a later milestone; the message names it. The feature ledger in `docs/features.md` lists what is planned. Generic functions that call each other wait for M3, which limits how many specializations a program may need, since `f<T>` calling `g<Array<T>>` calling `f<Array<Array<T>>>` would need ever more.
 
 ## Unions and errors as values
 

@@ -3,3 +3,5 @@ async function work()
 
 unsafe
     print("raw")
+items: List<integer> = []
+log: File = nothing

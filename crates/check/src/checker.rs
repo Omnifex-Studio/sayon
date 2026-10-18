@@ -300,6 +300,8 @@ pub(crate) struct Checker<'a> {
     pub reported_key_spans: HashSet<Span>,
     /// The same for views kept where they cannot be.
     pub reported_view_spans: HashSet<Span>,
+    /// Functions declared inside functions whose bodies are being checked.
+    pub defining_nested: Vec<String>,
     /// Types written with a view inside them, already reported where they
     /// were written.
     pub annotated_view_types: HashSet<Type>,
@@ -348,6 +350,7 @@ impl<'a> Checker<'a> {
             reported_vars: HashSet::new(),
             reported_key_spans: HashSet::new(),
             reported_view_spans: HashSet::new(),
+            defining_nested: Vec::new(),
             annotated_view_types: HashSet::new(),
             typed_dict_literals: HashSet::new(),
             scc_order: Vec::new(),
@@ -1076,18 +1079,44 @@ impl<'a> Checker<'a> {
                         if other == "Outcome" {
                             return self.named_annotation(module, OUTCOME, ty, args, generics);
                         }
-                        if matches!(
-                            other,
-                            "File"
-                                | "Path"
-                                | "List"
-                                | "Map"
-                                | "Set"
-                                | "Queue"
-                                | "Stack"
-                                | "Channel"
-                        ) {
-                            self.unavailable(ty.span, &format!("the `{other}` type"), "M2");
+                        // Library types are named through their module.
+                        let library = match other {
+                            "File" | "Lines" => Some(("io", "standard/io.sayon")),
+                            "Set" | "Queue" => Some(("collections", "standard/collections.sayon")),
+                            "Json" => Some(("json", "standard/json.sayon")),
+                            "Duration" | "DateTime" | "Instant" => {
+                                Some(("time", "standard/time.sayon"))
+                            }
+                            "Completed" => Some(("os", "standard/os.sayon")),
+                            _ => None,
+                        };
+                        let instead = match other {
+                            "List" | "Stack" => Some("Array<T>"),
+                            "Map" => Some("Dict<K, V>"),
+                            _ => None,
+                        };
+                        if let Some((alias, path)) = library {
+                            self.error(
+                                Diagnostic::error("E_UNKNOWN_TYPE", format!("unknown type `{other}`"))
+                                    .primary(name.span, "")
+                                    .help(format!(
+                                        "`{other}` belongs to {path}: write `{alias}.{other}` after `{alias} = import(\"{path}\")`"
+                                    )),
+                            );
+                        } else if let Some(instead) = instead {
+                            self.error(
+                                Diagnostic::error(
+                                    "E_UNKNOWN_TYPE",
+                                    format!("unknown type `{other}`"),
+                                )
+                                .primary(name.span, "")
+                                .help(format!(
+                                    "use {instead}, which serves as a {}",
+                                    other.to_lowercase()
+                                )),
+                            );
+                        } else if matches!(other, "Path" | "Channel") {
+                            self.unavailable(ty.span, &format!("the `{other}` type"), "M3");
                         } else if let Some((feature, milestone)) = crate::builtins::planned(other) {
                             self.unavailable(ty.span, feature, milestone);
                         } else {

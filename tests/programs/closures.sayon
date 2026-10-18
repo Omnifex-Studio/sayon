@@ -134,3 +134,27 @@ print(second)
 constant square = function(x: integer) return x * x
 constant TOOLS = [add, function(a: integer, b: integer) return a * b]
 print(square(4), TOOLS[0](2, 3), TOOLS[1](2, 3))
+
+# Functions declared inside functions are closures.
+function summary(values: Array<integer>) -> string
+    scale = 10
+    function scaled(value: integer) -> integer
+        return value * scale
+    total = 0
+    for value in values
+        total += scaled(value)
+    function describe(number) -> string
+        return "total {number}"
+    return describe(total)
+
+print(summary([1, 2, 3]))
+
+function counting() -> function() -> integer
+    count = 0
+    function next() -> integer
+        count += 1
+        return count
+    return next
+
+step = counting()
+print(step(), step())

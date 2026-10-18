@@ -23,6 +23,15 @@ impl<'a> Checker<'a> {
         context: &str,
     ) -> hir::Expr {
         let value = self.check_expr(cx, ast, Some(expected));
+        // An expected type that was already reported leaves the value's
+        // own unknowns unknown too, rather than impossible to infer.
+        if let Type::Unknown = self.unifier.shallow(expected) {
+            let mut free = Vec::new();
+            self.unifier.free_vars(&value.ty, &mut free);
+            for var in free {
+                self.unifier.force_bind(var, Type::Unknown);
+            }
+        }
         self.coerce(value, expected, context)
     }
 
@@ -358,7 +367,11 @@ impl<'a> Checker<'a> {
             format!("`{}` is not defined", name.name),
         )
         .primary(name.span, "not found in this scope");
-        if !cx.is_script
+        if self.defining_nested.contains(&name.name) {
+            diagnostic = diagnostic
+                .note(format!("a function declared inside another function cannot call itself, since `{}` is defined only after its body", name.name))
+                .help("declare it at the top level of the module to make it recursive");
+        } else if !cx.is_script
             && cx.func.is_some()
             && self.modules[cx.module.0 as usize].entry
             && self.script_names.contains(&name.name)

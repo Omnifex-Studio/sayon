@@ -54,5 +54,22 @@ error[E_UNSUPPORTED_OPERATION]: function(_) -> _ does not support equality compa
  22 | same = identity == identity
     |        ^^^^^^^^^^^^^^^^^^^^ these values cannot be compared
 
-8 errors found; nothing was run
+error[E_UNDEFINED_NAME]: `fib` is not defined
+   --> closures.sayon:28:16
+    |
+ 28 |         return fib(n - 1)
+    |                ^^^ not found in this scope
+    |
+    = note: a function declared inside another function cannot call itself, since `fib` is defined only after its body
+    = help: declare it at the top level of the module to make it recursive
+
+error[E_TYPE_ARGUMENTS]: a function declared inside another function cannot declare type parameters
+   --> closures.sayon:29:5
+    |
+ 29 |     function pick<T>(value: T) -> T
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: declare it at the top level of the module
+
+10 errors found; nothing was run
 run `sayon explain E_NOT_CALLABLE` to learn more about an error

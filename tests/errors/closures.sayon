@@ -20,3 +20,11 @@ with_default = function(x: integer = 1) return x
 generic = function<T>(x: T) return x
 
 same = identity == identity
+
+function outer()
+    function fib(n: integer) -> integer
+        if n < 2
+            return n
+        return fib(n - 1)
+    function pick<T>(value: T) -> T
+        return value

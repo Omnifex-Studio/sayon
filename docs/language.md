@@ -493,6 +493,21 @@ What a closure captures:
 - A closure made in a loop captures that iteration's value.
 - Calling a function value borrows it for changes, since the call may change what it captured. A read-only parameter holding a function value cannot be called; an unannotated one is inferred to be `update`. A `constant` can hold named functions and closures that only read what they capture, and those can be called.
 
+A function declared inside another function is a closure bound to a variable of that name, so it can use the variables declared before it, as a literal would:
+
+```sayon
+function summary(values: Array<integer>) -> string
+    scale = 10
+    function scaled(value: integer) -> integer
+        return value * scale
+    total = 0
+    for value in values
+        total += scaled(value)
+    return "total {total}"
+```
+
+It cannot call itself, since its name is defined only after its body, and it cannot declare type parameters; a function that needs either belongs at the top level of the module.
+
 ## Ownership
 
 Each string, array, dictionary, and error, and each structure or enum value that holds one, has exactly one owner, and is destroyed when its owner's scope ends. Sayon checks ownership while compiling; there is no garbage collector, and nothing is copied unless you ask.
