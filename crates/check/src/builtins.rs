@@ -29,6 +29,8 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
         "tostring" => Builtin::ToString,
         "push" => Builtin::Push,
         "pop" => Builtin::Pop,
+        "remove" => Builtin::Remove,
+        "swap" => Builtin::Swap,
         "haskey" => Builtin::HasKey,
         "readfile" => Builtin::ReadFile,
         "writefile" => Builtin::WriteFile,

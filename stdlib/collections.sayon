@@ -1,0 +1,134 @@
+# Sorting arrays, and the Set and Queue collections.
+#
+#     collections = import("standard/collections.sayon")
+#     names = ["Grace", "Ada", "Linus"]
+#     collections.sort(names)
+#
+# An array is also a stack: `push` adds to its end and `pop` takes from it.
+# A dictionary is the map.
+
+# ----- sorting ------------------------------------------------------------------
+
+# Sorts an array in place, smallest first. Elements are numbers or strings.
+# Sorting is stable: equal elements keep their order. It takes time
+# proportional to n log n for n elements.
+function sort(update items)
+    sort_by(items, function(a, b) return a < b)
+
+# Sorts an array in place by a comparison: `before(a, b)` is true when `a`
+# must come before `b`. Sorting is stable, so elements for which neither
+# comes before the other keep their order. An error in `before` stops the
+# sort; the elements are then all still in the array, in some order.
+function sort_by(update items, update before)
+    count = length(items)
+    order: Array<integer> = []
+    for position in range(count)
+        push(order, position)
+    scratch = clone(order)
+    merge_sort(items, before, order, scratch, 0, count)
+    arrange(items, order)
+
+# Reverses an array in place.
+function reverse(update items)
+    variable low = 0
+    variable high = length(items) - 1
+    while low < high
+        swap(items, low, high)
+        low += 1
+        high -= 1
+
+# Sorts the positions in `order[start..end]` by the elements they name.
+private function merge_sort(items, update before, update order: Array<integer>, update scratch: Array<integer>, start: integer, end: integer)
+    if end - start < 2
+        return
+    middle = (start + end) / 2
+    merge_sort(items, before, order, scratch, start, middle)
+    merge_sort(items, before, order, scratch, middle, end)
+    variable left = start
+    variable right = middle
+    for slot in range(start, end)
+        take_left = left < middle and (right >= end or not before(items[order[right]], items[order[left]]))
+        if take_left
+            scratch[slot] = order[left]
+            left += 1
+        else
+            scratch[slot] = order[right]
+            right += 1
+    for slot in range(start, end)
+        order[slot] = scratch[slot]
+
+# Moves each element to its sorted place: the element at `order[i]` goes to
+# position `i`. Each cycle of the arrangement is walked once, with swaps.
+private function arrange(update items, update order: Array<integer>)
+    for start in range(length(order))
+        variable current = start
+        while order[current] != current
+            source = order[current]
+            order[current] = current
+            if source == start
+                break
+            swap(items, current, source)
+            current = source
+
+# ----- sets ---------------------------------------------------------------------
+
+# Values without duplicates, in the order they were first added. Values are
+# compared like dictionary keys, so they must be valid keys.
+type Set<T> = [members: Dict<T, boolean>]
+
+# A new, empty set.
+function new_set<T>() -> Set<T>
+    members: Dict<T, boolean> = []
+    return Set(members = members)
+
+# Adds a value, returning false when the set already had it.
+function set_add<T>(update set: Set<T>, own value: T) -> boolean
+    if haskey(set.members, value)
+        return false
+    set.members[value] = true
+    return true
+
+function set_contains<T>(set: Set<T>, value: T) -> boolean
+    return haskey(set.members, value)
+
+# Removes a value, returning whether the set had it.
+function set_remove<T>(update set: Set<T>, value: T) -> boolean
+    return remove(set.members, value) != nothing
+
+function set_size<T>(set: Set<T>) -> integer
+    return length(set.members)
+
+# The values, in the order they were first added.
+function set_values<T>(set: Set<T>) -> Array<T>
+    values: Array<T> = []
+    for value in set.members
+        push(values, clone(value))
+    return values
+
+# ----- queues -------------------------------------------------------------------
+
+# Values taken out in the order they were put in. Adding and taking take
+# constant time on average.
+type Queue<T> = [front: Array<T>, back: Array<T>]
+
+# A new, empty queue.
+function new_queue<T>() -> Queue<T>
+    front: Array<T> = []
+    back: Array<T> = []
+    return Queue(front = front, back = back)
+
+# Puts a value at the end of the queue.
+function queue_add<T>(update queue: Queue<T>, own value: T)
+    push(queue.back, value)
+
+# Takes the value at the front of the queue, or nothing when it is empty.
+function queue_take<T>(update queue: Queue<T>) -> T or nothing
+    if length(queue.front) == 0
+        while length(queue.back) > 0
+            moved = pop(queue.back)
+            if moved != nothing
+                push(queue.front, moved)
+    return pop(queue.front)
+
+function queue_size<T>(queue: Queue<T>) -> integer
+    return length(queue.front) + length(queue.back)

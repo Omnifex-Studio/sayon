@@ -2401,6 +2401,51 @@ impl<'l, 'p> FnLower<'l, 'p> {
                     },
                 );
             }
+            Builtin::Swap => {
+                let array = self.place_of(&args[0].expr, Want::Mut);
+                let first = self.operand(&args[1].expr, Want::Read);
+                let second = self.operand(&args[2].expr, Want::Read);
+                self.op(
+                    Op::Swap {
+                        array,
+                        first,
+                        second,
+                    },
+                    None,
+                    span,
+                );
+                self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing)));
+            }
+            Builtin::Remove => {
+                let collection_ty = self.ty(&args[0].expr.ty);
+                let collection = self.place_of(&args[0].expr, Want::Mut);
+                let key = self.operand(&args[1].expr, Want::Read);
+                match collection_ty {
+                    Type::Dict(_, value) => {
+                        let wraps = matches!(ty, Type::Union(_));
+                        let value_tag = (wraps && !matches!(*value, Type::Union(_)))
+                            .then(|| self.l.tag(&value));
+                        let nothing_tag = wraps.then(|| self.l.tag(&Type::Nothing));
+                        self.assign(
+                            dest,
+                            Rvalue::RemoveKey {
+                                dict: collection,
+                                key,
+                                value_tag,
+                                nothing_tag,
+                            },
+                        );
+                    }
+                    _ => self.op(
+                        Op::RemoveAt {
+                            array: collection,
+                            index: key,
+                        },
+                        Some(dest),
+                        span,
+                    ),
+                }
+            }
             Builtin::HasKey => {
                 let dict = self.operand(&args[0].expr, Want::Read);
                 let key = self.operand(&args[1].expr, Want::Read);

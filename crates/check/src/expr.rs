@@ -1286,7 +1286,8 @@ impl<'a> Checker<'a> {
             Builtin::Print => (0, usize::MAX),
             Builtin::Assert => (1, 2),
             Builtin::Range => (1, 3),
-            Builtin::Push | Builtin::HasKey | Builtin::WriteFile => (2, 2),
+            Builtin::Swap => (3, 3),
+            Builtin::Push | Builtin::HasKey | Builtin::WriteFile | Builtin::Remove => (2, 2),
             Builtin::Host(host) => (host.params().len(), host.params().len()),
             _ => (1, 1),
         };
@@ -1405,6 +1406,92 @@ impl<'a> Checker<'a> {
                         mode: ParamMode::Update,
                     }],
                     Type::union([element, Type::Nothing]),
+                )
+            }
+            Builtin::Swap => {
+                let element = self.fresh_var(span);
+                let array = self.check_expr_as(
+                    cx,
+                    &args[0],
+                    &Type::array(element),
+                    "`swap` exchanges two elements of an array",
+                );
+                let first = self.check_expr_as(
+                    cx,
+                    &args[1],
+                    &Type::INTEGER,
+                    "array positions are integers",
+                );
+                let second = self.check_expr_as(
+                    cx,
+                    &args[2],
+                    &Type::INTEGER,
+                    "array positions are integers",
+                );
+                (
+                    vec![
+                        Arg {
+                            expr: array,
+                            mode: ParamMode::Update,
+                        },
+                        read(first),
+                        read(second),
+                    ],
+                    Type::Nothing,
+                )
+            }
+            Builtin::Remove => {
+                let collection = self.check_expr(cx, &args[0], None);
+                let key = self.check_expr(cx, &args[1], None);
+                if let Type::Var(_) = self.unifier.shallow(&collection.ty) {
+                    // Unknown: an integer position means an array.
+                    let integer = match self.unifier.shallow(&key.ty) {
+                        Type::Int(_) => true,
+                        Type::Var(var) => self.unifier.bounds(var).literal.is_some(),
+                        _ => false,
+                    };
+                    let shape = if integer {
+                        Type::array(self.fresh_var(span))
+                    } else {
+                        Type::dict(key.ty.clone(), self.fresh_var(span))
+                    };
+                    self.unify_at(
+                        &shape,
+                        &collection.ty,
+                        args[0].span,
+                        "`remove` takes an array or a dictionary",
+                    );
+                }
+                let (key, ty) = match self.unifier.resolve(&collection.ty) {
+                    Type::Array(element) => (
+                        self.coerce(key, &Type::INTEGER, "array positions are integers"),
+                        *element,
+                    ),
+                    Type::Dict(key_type, value) => (
+                        self.coerce(key, &key_type, "dictionary key"),
+                        Type::union([*value, Type::Nothing]),
+                    ),
+                    Type::Unknown => (key, Type::Unknown),
+                    other => {
+                        self.error(
+                            Diagnostic::error(
+                                "E_TYPE_MISMATCH",
+                                format!("`remove` takes an array or a dictionary, not {other}"),
+                            )
+                            .primary(args[0].span, ""),
+                        );
+                        (key, Type::Unknown)
+                    }
+                };
+                (
+                    vec![
+                        Arg {
+                            expr: collection,
+                            mode: ParamMode::Update,
+                        },
+                        read(key),
+                    ],
+                    ty,
                 )
             }
             Builtin::HasKey => {

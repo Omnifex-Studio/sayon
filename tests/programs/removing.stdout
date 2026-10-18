@@ -1,0 +1,11 @@
+Grace ["Ada", "Linus", "Barbara"]
+Barbara ["Ada", "Linus"]
+85 ["Ada" = 36, "Linus" = 54]
+nothing ["Ada" = 36, "Linus" = 54]
+["Ada" = 36, "Linus" = 54, "Grace" = 86] true 54
+2 ["b", "c"]
+[1 = ["a"]]
+10 [20, 30]
+index 5 is out of bounds for an array of length 2
+50 166650 9801
+["c", "b", "a"]

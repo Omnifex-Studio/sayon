@@ -1127,6 +1127,46 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 self.body.line(format!("{result} = add i64 {v}, 1"));
                 self.body.line(format!("store i64 {result}, ptr {dest}"));
             }
+            Rvalue::RemoveKey {
+                dict,
+                key,
+                value_tag,
+                nothing_tag,
+            } => {
+                let dest_llvm = self.cg.llvm(dest_ty);
+                self.body
+                    .line(format!("store {dest_llvm} zeroinitializer, ptr {dest}"));
+                let (pointer, _) = self.place_ptr(dict);
+                let handle = self.body.tmp();
+                self.body
+                    .line(format!("{handle} = load ptr, ptr {pointer}"));
+                let (key, _) = self.pointer(key);
+                let out = if value_tag.is_some() {
+                    self.offset_pointer(dest, 8)
+                } else {
+                    dest.to_string()
+                };
+                let found = self.body.tmp();
+                self.body.line(format!(
+                    "{found} = call zeroext i1 @sayon_dict_remove(ptr {handle}, ptr {key}, ptr {out})"
+                ));
+                let present = self.body.label("removed");
+                let absent = self.body.label("absent");
+                let done = self.body.label("remove_done");
+                self.body
+                    .line(format!("br i1 {found}, label %{present}, label %{absent}"));
+                self.body.start(&present);
+                if let Some(tag) = value_tag {
+                    self.body.line(format!("store i32 {tag}, ptr {dest}"));
+                }
+                self.body.line(format!("br label %{done}"));
+                self.body.start(&absent);
+                if let Some(tag) = nothing_tag {
+                    self.body.line(format!("store i32 {tag}, ptr {dest}"));
+                }
+                self.body.line(format!("br label %{done}"));
+                self.body.start(&done);
+            }
             Rvalue::NextChar { text, offset } => {
                 let (text, _) = self.pointer(text);
                 let (offset, _) = self.place_ptr(offset);
@@ -1580,6 +1620,46 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     self.body
                         .line(format!("store i64 {position}, ptr {target}"));
                 }
+                Some(status)
+            }
+            Op::Swap {
+                array,
+                first,
+                second,
+            } => {
+                let (pointer, ty) = self.place_ptr(array);
+                let Type::Array(element) = ty else {
+                    panic!("swap in {ty}")
+                };
+                let size = self.cg.layouts.size_of(&element);
+                let (_, first, _) = self.value(first);
+                let (_, second, _) = self.value(second);
+                let location = self.cg.location(span);
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_array_swap(ptr {err}, ptr {pointer}, i64 {first}, i64 {second}, i64 {size}, ptr {location})"
+                ));
+                Some(status)
+            }
+            Op::RemoveAt { array, index } => {
+                let (pointer, ty) = self.place_ptr(array);
+                let Type::Array(element) = ty else {
+                    panic!("remove from {ty}")
+                };
+                let size = self.cg.layouts.size_of(&element);
+                let (_, position, _) = self.value(index);
+                let target = match dest {
+                    Some(place) => self.place_ptr(place).0,
+                    None => {
+                        let llvm = self.cg.llvm(&element);
+                        self.body.alloca(&llvm)
+                    }
+                };
+                let location = self.cg.location(span);
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_array_remove(ptr {err}, ptr {pointer}, i64 {position}, i64 {size}, ptr {target}, ptr {location})"
+                ));
                 Some(status)
             }
             Op::CharAt { text, index } => {
@@ -2144,6 +2224,9 @@ declare void @sayon_array_reserve(ptr, i64, i64)
 declare void @sayon_array_free(ptr, i64)
 declare i32 @sayon_check_index(ptr, i64, i64, ptr)
 declare void @sayon_dict_new(ptr, ptr, i64)
+declare zeroext i1 @sayon_dict_remove(ptr, ptr, ptr)
+declare i32 @sayon_array_remove(ptr, ptr, i64, i64, ptr, ptr)
+declare i32 @sayon_array_swap(ptr, ptr, i64, i64, i64, ptr)
 declare i64 @sayon_str_hash(ptr)
 declare i64 @sayon_dict_len(ptr)
 declare i64 @sayon_dict_find(ptr, ptr)

@@ -84,7 +84,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Streams and file handles (`io.open`, `file.lines()`), process spawning, `os.exit`, directory walking | planned | M2 to M3 |
 | `standard/json`: `Json` values, parse with positions in errors, compact and pretty encoding, exact number text, duplicate-field and depth limits | experimental | M2 |
 | `standard/json` typed decoding and encoding into structures | planned | M2 to M3 |
-| `standard.collections`, `standard.time` | planned | M1 to M3 |
+| `standard/collections`: stable sorting, `Set`, `Queue`; `remove` and `swap` built-ins | experimental | M2 |
+| `standard.time` | planned | M1 to M3 |
 | `standard.network`, `standard.threads` | planned | M3 |
 | `standard.graphics` | planned | M4 baseline |
 

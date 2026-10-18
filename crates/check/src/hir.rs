@@ -301,6 +301,10 @@ pub enum Builtin {
     ToString,
     Push,
     Pop,
+    /// `remove(update collection, position or key)`.
+    Remove,
+    /// `swap(update array, first, second)`.
+    Swap,
     HasKey,
     ReadFile,
     WriteFile,
@@ -326,6 +330,8 @@ impl Builtin {
             Builtin::ToString => "tostring",
             Builtin::Push => "push",
             Builtin::Pop => "pop",
+            Builtin::Remove => "remove",
+            Builtin::Swap => "swap",
             Builtin::HasKey => "haskey",
             Builtin::ReadFile => "readfile",
             Builtin::WriteFile => "writefile",

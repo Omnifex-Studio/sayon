@@ -533,6 +533,64 @@ pub unsafe extern "C" fn sayon_array_free(a: *mut SayonArray, element_size: i64)
     }
 }
 
+/// Exchanges two elements, or fails when either position is outside the
+/// array.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_array_swap(
+    err: *mut *mut SayonError,
+    a: *mut SayonArray,
+    first: i64,
+    second: i64,
+    element_size: i64,
+    location: *const c_char,
+) -> i32 {
+    // SAFETY: valid array and error slot.
+    unsafe {
+        let array = &mut *a;
+        for index in [first, second] {
+            if index < 0 || index >= array.len {
+                return sayon_check_index(err, index, array.len, location);
+            }
+        }
+        if first != second {
+            let size = element_size.max(0) as usize;
+            std::ptr::swap_nonoverlapping(
+                array.ptr.add(first as usize * size),
+                array.ptr.add(second as usize * size),
+                size,
+            );
+        }
+        0
+    }
+}
+
+/// Moves the element at `index` into `out` and the later elements down by
+/// one, or fails outside the array.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_array_remove(
+    err: *mut *mut SayonError,
+    a: *mut SayonArray,
+    index: i64,
+    element_size: i64,
+    out: *mut u8,
+    location: *const c_char,
+) -> i32 {
+    // SAFETY: valid array, output of `element_size` bytes, and error slot.
+    unsafe {
+        let array = &mut *a;
+        if index < 0 || index >= array.len {
+            return sayon_check_index(err, index, array.len, location);
+        }
+        let size = element_size.max(0) as usize;
+        let start = array.ptr.add(index as usize * size);
+        std::ptr::copy_nonoverlapping(start, out, size);
+        let later = (array.len - index - 1) as usize * size;
+        std::ptr::copy(start.add(size), start, later);
+        array.len -= 1;
+        0
+    }
+}
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sayon_check_index(
     err: *mut *mut SayonError,
@@ -763,6 +821,38 @@ pub unsafe extern "C" fn sayon_dict_set(
         };
         let target = dict.value(position);
         std::ptr::copy_nonoverlapping(value, target, dict.value_size);
+    }
+}
+
+/// Removes a key's entry, moving its value into `out`; the other entries
+/// keep their order. Returns whether the key was there.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_dict_remove(
+    d: *mut SayonDict,
+    key: *const u8,
+    out: *mut u8,
+) -> bool {
+    // SAFETY: valid dictionary, key, and output of `value_size` bytes.
+    unsafe {
+        let dict = &mut *d;
+        let Some(position) = dict.find(key) else {
+            return false;
+        };
+        std::ptr::copy_nonoverlapping(dict.value(position), out, dict.value_size);
+        if let Some(drop_key) = (*dict.ops).drop {
+            drop_key(dict.key(position) as *mut u8);
+        }
+        let (key_stride, stride) = (dict.key_stride, dict.stride);
+        dict.keys
+            .drain(position * key_stride..(position + 1) * key_stride);
+        dict.values
+            .drain(position * stride..(position + 1) * stride);
+        dict.hashes.remove(position);
+        dict.table.iter_mut().for_each(|slot| *slot = 0);
+        for later in 0..dict.len() {
+            dict.place(later);
+        }
+        true
     }
 }
 

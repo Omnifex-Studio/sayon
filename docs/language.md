@@ -518,6 +518,9 @@ Error codes raised by the language and its built-in functions:
 | `range(start, end, step)` | A range of integers; see above |
 | `push(update array, own value)` | Adds a value to the end of an array |
 | `pop(update array)` | Removes and returns the last element, or `nothing` when empty |
+| `remove(update array, position)` | Removes and returns the element at a position, moving the later ones down; `BoundsError` outside the array |
+| `remove(update dict, key)` | Removes a key's entry and returns its value, or `nothing` when the key is absent; the other entries keep their order |
+| `swap(update array, first, second)` | Exchanges two elements |
 | `haskey(dict, key)` | Whether a dictionary has a key |
 | `clone(value)` | An independent copy |
 | `move(name)` | Transfers a variable's value explicitly |
@@ -537,6 +540,7 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 | `standard/filesystem.sayon` | `exists`, `is_file`, `is_directory`, `list` (sorted names), `size`, `create_directory`, `remove`, `rename`, `copy`, `join`, `name`, `parent`, `extension` |
 | `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters`, `code` (a character's Unicode code), `character` (the character with a code) |
 | `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer` |
+| `standard/collections.sayon` | `sort` and `sort_by` (stable), `reverse`; `Set<T>` with `new_set`, `set_add`, `set_contains`, `set_remove`, `set_size`, `set_values`; `Queue<T>` with `new_queue`, `queue_add`, `queue_take`, `queue_size` |
 | `standard/math.sayon` | `PI`, `E`, `TAU`, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `log`, `log10`, `log2`, `pow`, `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`, `clamp`, `random` |
 
 ```sayon

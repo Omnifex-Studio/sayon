@@ -1,0 +1,35 @@
+collections = import("standard/collections.sayon")
+
+numbers = [5, 3, 9, 1, 5, 7, 2]
+collections.sort(numbers)
+print(numbers)
+names = ["Grace", "Ada", "Linus", "Barbara", "Ada"]
+collections.sort(names)
+print(names)
+collections.reverse(names)
+print(names)
+
+type Person = [name: string, age: integer]
+
+people = [Person(name = "Ada", age = 36), Person(name = "Lin", age = 7), Person(name = "Bo", age = 36), Person(name = "Cy", age = 12)]
+collections.sort_by(people, function(a, b) return a.age < b.age)
+for person in people
+    print(person.name, person.age)
+
+seen = collections.new_set()
+for word in ["b", "a", "b", "c", "a"]
+    collections.set_add(seen, clone(word))
+print(collections.set_size(seen), collections.set_contains(seen, "c"), collections.set_values(seen))
+collections.set_remove(seen, "b")
+print(collections.set_values(seen))
+
+queue = collections.new_queue()
+collections.queue_add(queue, "first")
+collections.queue_add(queue, "second")
+print(collections.queue_take(queue))
+collections.queue_add(queue, "third")
+print(collections.queue_take(queue), collections.queue_take(queue), collections.queue_take(queue), collections.queue_size(queue))
+
+empty: Array<integer> = []
+collections.sort(empty)
+print(empty)

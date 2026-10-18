@@ -124,6 +124,19 @@ impl Dict {
         self.index.get(&Key(key.clone())).copied()
     }
 
+    /// Removes a key's entry, keeping the others in order.
+    pub fn remove(&mut self, key: &Value) -> Option<Value> {
+        let position = self.index.remove(&Key(key.clone()))?;
+        self.keys.remove(position);
+        let value = self.values.remove(position);
+        for later in self.index.values_mut() {
+            if *later > position {
+                *later -= 1;
+            }
+        }
+        Some(value)
+    }
+
     /// Replaces the value of an existing key in place, or appends a new entry.
     pub fn set(&mut self, key: Value, value: Value) {
         let key = Key(key);

@@ -329,6 +329,14 @@ pub enum Rvalue {
     },
     /// Integer addition that cannot overflow (loop counters below a length).
     Increment(Operand),
+    /// Removes a dictionary's entry for a key, producing its value, or
+    /// `nothing` when there is none; wrapped as `Pop` wraps an element.
+    RemoveKey {
+        dict: Place,
+        key: Operand,
+        value_tag: Option<u32>,
+        nothing_tag: Option<u32>,
+    },
     /// The character starting at byte `offset` of a string, as a new
     /// string; advances `offset` past it.
     NextChar {
@@ -401,6 +409,18 @@ pub enum Op {
     /// Fails unless `index` is a valid position in `array`; stores it in dest.
     CheckIndex {
         array: Operand,
+        index: Operand,
+    },
+    /// Exchanges two elements of an array; fails outside the array.
+    Swap {
+        array: Place,
+        first: Operand,
+        second: Operand,
+    },
+    /// Removes and produces the element at a position of an array, moving
+    /// the later elements down; fails outside the array.
+    RemoveAt {
+        array: Place,
         index: Operand,
     },
     /// The character at a position of a string, as a new string; fails

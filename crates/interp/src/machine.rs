@@ -706,6 +706,27 @@ impl<'m> Machine<'m> {
                 Value::Int(start as i128 + index * step as i128)
             }
             Rvalue::Increment(value) => Value::Int(self.int(value) + 1),
+            Rvalue::RemoveKey {
+                dict,
+                key,
+                value_tag,
+                nothing_tag,
+            } => {
+                let key = self.take(key);
+                let reference = self.resolve(dict);
+                let removed = self.with_mut(&reference, |target| match target {
+                    Value::Dict(dict) => dict.remove(&key),
+                    other => panic!("remove from {other:?}"),
+                });
+                let (value, tag) = match removed {
+                    Some(value) => (value, *value_tag),
+                    None => (Value::Nothing, *nothing_tag),
+                };
+                match tag {
+                    Some(tag) => Value::Union(tag, Box::new(value)),
+                    None => value,
+                }
+            }
             Rvalue::NextChar { text, offset } => {
                 let text = self.string(text);
                 let reference = self.resolve(offset);
@@ -839,6 +860,55 @@ impl<'m> Machine<'m> {
                     return Err(self.error("BoundsError", message, span));
                 }
                 Ok(Value::Int(index))
+            }
+            Op::Swap {
+                array,
+                first,
+                second,
+            } => {
+                let (first, second) = (self.int(first), self.int(second));
+                let reference = self.resolve(array);
+                let length = self.read(&reference, |v| match v {
+                    Value::Array(items) => items.len(),
+                    other => panic!("swap in {other:?}"),
+                });
+                for index in [first, second] {
+                    if index < 0 || index >= length as i128 {
+                        let message = if length == 0 {
+                            format!("index {index} is out of bounds: the array is empty")
+                        } else {
+                            format!(
+                                "index {index} is out of bounds for an array of length {length}"
+                            )
+                        };
+                        return Err(self.error("BoundsError", message, span));
+                    }
+                }
+                self.with_mut(&reference, |target| match target {
+                    Value::Array(items) => items.swap(first as usize, second as usize),
+                    other => panic!("swap in {other:?}"),
+                });
+                Ok(Value::Nothing)
+            }
+            Op::RemoveAt { array, index } => {
+                let index = self.int(index);
+                let reference = self.resolve(array);
+                let length = self.read(&reference, |v| match v {
+                    Value::Array(items) => items.len(),
+                    other => panic!("remove from {other:?}"),
+                });
+                if index < 0 || index >= length as i128 {
+                    let message = if length == 0 {
+                        format!("index {index} is out of bounds: the array is empty")
+                    } else {
+                        format!("index {index} is out of bounds for an array of length {length}")
+                    };
+                    return Err(self.error("BoundsError", message, span));
+                }
+                Ok(self.with_mut(&reference, |target| match target {
+                    Value::Array(items) => items.remove(index as usize),
+                    other => panic!("remove from {other:?}"),
+                }))
             }
             Op::CharAt { text, index } => {
                 let text = self.string(text);

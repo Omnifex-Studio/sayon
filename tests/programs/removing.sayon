@@ -1,0 +1,41 @@
+names = ["Ada", "Grace", "Linus", "Barbara"]
+taken = remove(names, 1)
+print(taken, names)
+last = remove(names, length(names) - 1)
+print(last, names)
+
+ages = ["Ada" = 36, "Grace" = 85, "Linus" = 54]
+print(remove(ages, "Grace"), ages)
+print(remove(ages, "Nobody"), ages)
+ages["Grace"] = 86
+print(ages, haskey(ages, "Linus"), ages["Linus"])
+
+nested: Dict<integer, Array<string>> = [1 = ["a"], 2 = ["b", "c"]]
+removed = remove(nested, 2)
+if removed != nothing
+    print(length(removed), removed)
+print(nested)
+
+function drop_first(items)
+    return remove(items, 0)
+
+numbers = [10, 20, 30]
+print(drop_first(numbers), numbers)
+
+outcome = try remove(numbers, 5)
+if outcome is error
+    print(outcome.message)
+
+many: Dict<integer, integer> = []
+for i in range(100)
+    many[i] = i * i
+for i in range(0, 100, 2)
+    remove(many, i)
+total = 0
+for key, value in many
+    total += value
+print(length(many), total, many[99])
+
+letters = ["a", "b", "c"]
+swap(letters, 0, 2)
+print(letters)
