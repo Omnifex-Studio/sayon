@@ -4,6 +4,10 @@ Every diagnostic has a stable code. `sayon explain CODE` prints the entry for a 
 
 ## Source text and layout
 
+### E_INVALID_UTF8
+
+A source file is not valid UTF-8 text; the message gives the offset of the first invalid byte. Save the file with UTF-8 encoding.
+
 ### E_UNEXPECTED_CHARACTER
 
 The file contains a character that cannot start any part of a program, such as `$` or `@` outside a string. Remove it, or put it inside a string or a comment.

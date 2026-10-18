@@ -109,7 +109,7 @@ mod tests {
                     for (start, _) in text.match_indices('"') {
                         let rest = &text[start + 1..];
                         let length = rest
-                            .find(|c: char| !(c.is_ascii_alphabetic() || c == '_'))
+                            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
                             .unwrap_or(rest.len());
                         if !rest[length..].starts_with('"') {
                             continue;
@@ -117,7 +117,9 @@ mod tests {
                         let word = &rest[..length];
                         let diagnostic = (word.starts_with("E_") || word.starts_with("W_"))
                             && word.len() > 2
-                            && word.chars().all(|c| c.is_ascii_uppercase() || c == '_');
+                            && word
+                                .chars()
+                                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
                         let runtime = word.ends_with("Error")
                             && word.len() > 5
                             && word.starts_with(|c: char| c.is_ascii_uppercase())
