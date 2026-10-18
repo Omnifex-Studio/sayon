@@ -536,7 +536,21 @@ print(numbers)                         # [10, 6, 8, 1, 9]
 ```
 
 - `length`, `v[i]`, `for` loops, `print`, and `tostring` work on views as on arrays; `v[i] = value` works on a mutable view. Bounds outside the array raise `BoundsError`.
-- While a view is still used later in its block, the array it borrows cannot be changed, moved, or replaced, and while a mutable view is, the array cannot be used at all except through the view. After the view's last use, the array is free again.
+- While a view is still used later in its block, the array it borrows cannot be changed, moved, or replaced, and while a mutable view is, the array cannot be used at all except through the view. After the view's last use, the array is free again. A view made of another view borrows that view in the same way.
+- `split_view(update rest, count)` splits the first `count` elements off a view: it returns them as a view of their own and leaves the others in `rest`. The two parts never overlap, so both can be used, and changed, at the same time, while both still borrow the array. Asking for more elements than the view has raises `BoundsError` and leaves the view as it was.
+
+```sayon
+function add_into(update target: MutableView<integer>, source: MutableView<integer>)
+    for index in range(length(target))
+        target[index] += source[index]
+
+pairs = [1, 2, 3, 10, 20, 30]
+rest = mutable_view(pairs)
+front = split_view(rest, 3)      # front shows 1, 2, 3; rest shows 10, 20, 30
+add_into(rest, front)
+print(pairs)                     # [1, 2, 3, 11, 22, 33]
+```
+
 - `strings.byte_view(text, start, end)` is a `View<byte>` of a string's UTF-8 bytes, without copying them; it borrows the string as a view borrows an array, so the variable holding the string cannot be replaced while the view is used.
 - A view lives in variables and parameters. It cannot be stored in a collection, structure, enum, or union, captured by a closure, or held by a constant (`E_VIEW_ESCAPE`), and it must borrow a variable, not a temporary array (`E_VIEW_TEMPORARY`).
 - A function can return a view of one of its parameters; the caller's argument then stays borrowed for as long as the result is used. Returning a view of the function's own variable is an error (`E_VIEW_RETURN`).
@@ -610,6 +624,8 @@ Error codes raised by the language and its built-in functions:
 | `remove(update array, position)` | Removes and returns the element at a position, moving the later ones down; `BoundsError` outside the array |
 | `remove(update dict, key)` | Removes a key's entry and returns its value, or `nothing` when the key is absent; the other entries keep their order |
 | `swap(update array, first, second)` | Exchanges two elements |
+| `view(items, start, end)`, `mutable_view(update items, start, end)` | A view of elements; see [Views](#views) |
+| `split_view(update view, count)` | Splits the first `count` elements off a view into a view of their own |
 | `haskey(dict, key)` | Whether a dictionary has a key |
 | `clone(value)` | An independent copy |
 | `move(name)` | Transfers a variable's value explicitly |

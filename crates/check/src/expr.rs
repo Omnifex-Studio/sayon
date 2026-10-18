@@ -1400,7 +1400,11 @@ impl<'a> Checker<'a> {
             Builtin::Range => (1, 3),
             Builtin::Swap => (3, 3),
             Builtin::View | Builtin::MutableView => (1, 3),
-            Builtin::Push | Builtin::HasKey | Builtin::WriteFile | Builtin::Remove => (2, 2),
+            Builtin::Push
+            | Builtin::HasKey
+            | Builtin::WriteFile
+            | Builtin::Remove
+            | Builtin::SplitView => (2, 2),
             Builtin::Host(host) => (host.params().len(), host.params().len()),
             _ => (1, 1),
         };
@@ -1571,6 +1575,35 @@ impl<'a> Checker<'a> {
                     )));
                 }
                 (checked, Type::view(element, mutable))
+            }
+            Builtin::SplitView => {
+                let rest = self.check_expr(cx, &args[0], None);
+                let ty = match self.unifier.resolve(&rest.ty) {
+                    Type::View(element, mutable) => Type::view(*element, mutable),
+                    Type::Unknown => Type::Unknown,
+                    other => {
+                        self.error(
+                            Diagnostic::error(
+                                "E_TYPE_MISMATCH",
+                                format!("`split_view` takes a view, not {other}"),
+                            )
+                            .primary(args[0].span, "")
+                            .help("make one first, for example `rest = mutable_view(items)`"),
+                        );
+                        Type::Unknown
+                    }
+                };
+                let count = self.check_expr_as(
+                    cx,
+                    &args[1],
+                    &Type::INTEGER,
+                    "the number of elements to split off",
+                );
+                let rest = Arg {
+                    expr: rest,
+                    mode: ParamMode::Update,
+                };
+                (vec![rest, read(count)], ty)
             }
             Builtin::Swap => {
                 let element = self.fresh_var(span);

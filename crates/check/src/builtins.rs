@@ -33,6 +33,7 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
         "swap" => Builtin::Swap,
         "view" => Builtin::View,
         "mutable_view" => Builtin::MutableView,
+        "split_view" => Builtin::SplitView,
         "haskey" => Builtin::HasKey,
         "readfile" => Builtin::ReadFile,
         "writefile" => Builtin::WriteFile,

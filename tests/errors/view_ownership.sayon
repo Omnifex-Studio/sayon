@@ -44,3 +44,17 @@ variable text = "abc"
 bytes = strings.byte_view(text)
 text = "other"
 print(bytes)
+
+# A view made of a view borrows that view as well.
+values = [1, 2, 3]
+outer = mutable_view(values)
+inner = mutable_view(outer, 0, 1)
+outer[0] = 5
+inner[0] = 7
+
+# The parts of a split still borrow the array.
+parts = [1, 2, 3]
+tail = mutable_view(parts)
+first = split_view(tail, 1)
+push(parts, 4)
+first[0] = 5

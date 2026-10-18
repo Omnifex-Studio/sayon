@@ -1685,6 +1685,49 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 }
                 Some(status)
             }
+            Op::SplitView { view, count } => {
+                let (pointer, ty) = self.place_ptr(view);
+                let Type::View(element, _) = ty else {
+                    panic!("split of {ty}")
+                };
+                let data = self.body.tmp();
+                self.body.line(format!("{data} = load ptr, ptr {pointer}"));
+                let length_field = self.offset_pointer(&pointer, 8);
+                let length = self.body.tmp();
+                self.body
+                    .line(format!("{length} = load i64, ptr {length_field}"));
+                let (_, count, _) = self.value(count);
+                let location = self.cg.location(span);
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_check_split(ptr {err}, i64 {count}, i64 {length}, ptr {location})"
+                ));
+                // On failure the view is left as it was.
+                let ok = self.body.tmp();
+                self.body.line(format!("{ok} = icmp eq i32 {status}, 0"));
+                let taken = self.body.tmp();
+                self.body
+                    .line(format!("{taken} = select i1 {ok}, i64 {count}, i64 0"));
+                let element_llvm = self.cg.llvm(&element);
+                let rest = self.body.tmp();
+                self.body.line(format!(
+                    "{rest} = getelementptr {element_llvm}, ptr {data}, i64 {taken}"
+                ));
+                let remaining = self.body.tmp();
+                self.body
+                    .line(format!("{remaining} = sub i64 {length}, {taken}"));
+                if let Some(place) = dest {
+                    let (target, _) = self.place_ptr(place);
+                    self.body.line(format!("store ptr {data}, ptr {target}"));
+                    let target_length = self.offset_pointer(&target, 8);
+                    self.body
+                        .line(format!("store i64 {taken}, ptr {target_length}"));
+                }
+                self.body.line(format!("store ptr {rest}, ptr {pointer}"));
+                self.body
+                    .line(format!("store i64 {remaining}, ptr {length_field}"));
+                Some(status)
+            }
             Op::Swap {
                 array,
                 first,
@@ -2307,6 +2350,7 @@ declare i32 @sayon_error_overflow(ptr, ptr, i64, i64, i32, ptr)
 declare i32 @sayon_error_negate(ptr, i64, i32, ptr)
 declare void @sayon_error_drop(ptr)
 declare void @sayon_stream_drop(ptr)
+declare i32 @sayon_check_split(ptr, i64, i64, ptr)
 declare void @sayon_stream_clone(ptr, ptr)
 declare void @sayon_error_clone(ptr, ptr)
 declare void @sayon_error_message(ptr, ptr)

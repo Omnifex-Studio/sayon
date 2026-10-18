@@ -322,6 +322,9 @@ pub enum Builtin {
     View,
     /// `mutable_view(update array or mutable view, start, end)`.
     MutableView,
+    /// `split_view(update view, count)`: the first `count` elements as a view
+    /// of their own; the view keeps the rest.
+    SplitView,
     HasKey,
     ReadFile,
     WriteFile,
@@ -349,6 +352,7 @@ impl Builtin {
             Builtin::Pop => "pop",
             Builtin::Remove => "remove",
             Builtin::Swap => "swap",
+            Builtin::SplitView => "split_view",
             Builtin::View => "view",
             Builtin::MutableView => "mutable_view",
             Builtin::HasKey => "haskey",

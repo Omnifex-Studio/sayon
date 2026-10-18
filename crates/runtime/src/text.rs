@@ -110,6 +110,11 @@ pub fn parse_number(text: &str) -> Result<Number, (&'static str, String)> {
 
 /// Number of values `range(start, end, step)` yields, computed without overflow.
 /// The message for view bounds outside an array or view of `length` elements.
+/// The message of a `split_view` that asks for more elements than the view has.
+pub fn split_bounds_message(count: i128, length: usize) -> String {
+    format!("cannot split {count} elements off a view of {length}")
+}
+
 pub fn view_bounds_message(start: i128, end: i128, length: usize) -> String {
     if start > end {
         format!("a view cannot start at {start} and end before it, at {end}")

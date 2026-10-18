@@ -1613,7 +1613,7 @@ impl<'l, 'p> FnLower<'l, 'p> {
         match place {
             hir::Place::Local(local) => self.f.slots[self.local_slots[local].0 as usize].ty.clone(),
             hir::Place::Index { target_ty, .. } => match self.ty(target_ty) {
-                Type::Array(element) => *element,
+                Type::Array(element) | Type::View(element, _) => *element,
                 Type::Dict(_, value) => *value,
                 other => other,
             },
@@ -2536,6 +2536,11 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 let start = args.get(1).map(|arg| self.operand(&arg.expr, Want::Owned));
                 let end = args.get(2).map(|arg| self.operand(&arg.expr, Want::Owned));
                 self.op(Op::MakeView { base, start, end }, Some(dest), span);
+            }
+            Builtin::SplitView => {
+                let view = self.place_of(&args[0].expr, Want::Mut);
+                let count = self.operand(&args[1].expr, Want::Owned);
+                self.op(Op::SplitView { view, count }, Some(dest), span);
             }
             Builtin::Swap => {
                 let array = self.place_of(&args[0].expr, Want::Mut);

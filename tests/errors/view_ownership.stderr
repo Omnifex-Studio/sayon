@@ -89,5 +89,25 @@ error[E_BORROW_CONFLICT]: cannot change `text` while the view `bytes` of it is s
     |
     = help: finish using `bytes` first, or give it a copy: `clone(bytes)` is an array of its elements
 
-10 errors found; nothing was run
+error[E_BORROW_CONFLICT]: cannot change `outer` while the mutable view `inner` of it is still in use
+   --> view_ownership.sayon:52:1
+    |
+ 52 | outer[0] = 5
+    | ^^^^^^^^^^^^
+ 53 | inner[0] = 7
+    | ------------ `inner` is used until here
+    |
+    = help: finish using `inner` first, or give it a copy: `clone(inner)` is an array of its elements
+
+error[E_BORROW_CONFLICT]: cannot change `parts` while the mutable view `first` of it is still in use
+   --> view_ownership.sayon:59:6
+    |
+ 59 | push(parts, 4)
+    |      ^^^^^
+ 60 | first[0] = 5
+    | ------------ `first` is used until here
+    |
+    = help: finish using `first` first, or give it a copy: `clone(first)` is an array of its elements
+
+12 errors found; nothing was run
 run `sayon explain E_BORROW_CONFLICT` to learn more about an error

@@ -550,6 +550,22 @@ pub unsafe extern "C" fn sayon_check_view(
     unsafe { set_error(err, "BoundsError", message, location) }
 }
 
+/// Fails unless a view of `length` elements has `count` to split off.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_check_split(
+    err: *mut *mut SayonError,
+    count: i64,
+    length: i64,
+    location: *const c_char,
+) -> i32 {
+    if 0 <= count && count <= length {
+        return 0;
+    }
+    let message = text::split_bounds_message(count as i128, length as usize);
+    // SAFETY: valid error slot.
+    unsafe { set_error(err, "BoundsError", message, location) }
+}
+
 /// Exchanges two elements, or fails when either position is outside the
 /// array.
 #[unsafe(no_mangle)]

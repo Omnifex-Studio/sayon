@@ -421,6 +421,13 @@ pub enum Op {
         start: Option<Operand>,
         end: Option<Operand>,
     },
+    /// Splits the first `count` elements off the view at `view` into a view
+    /// of their own, leaving the rest at `view`; fails, changing nothing,
+    /// when the view has fewer elements.
+    SplitView {
+        view: Place,
+        count: Operand,
+    },
     /// Exchanges two elements of an array; fails outside the array.
     Swap {
         array: Place,

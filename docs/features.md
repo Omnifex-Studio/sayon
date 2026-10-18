@@ -43,7 +43,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Dictionary keys of any integer, boolean, string, or `nothing` type, and structures, enums, and unions of those | experimental | M2 |
 | Borrowed views (`View<T>`, `MutableView<T>`): `view`, `mutable_view`, indexing, loops, returned views of parameters, borrows until last use | experimental | M2 |
 | Byte views of strings (`strings.byte_view`) | experimental | M2 |
-| Splitting a mutable view into non-overlapping parts | planned | M2 |
+| Splitting a view into non-overlapping parts (`split_view`) | experimental | M2 |
 | String indexing and character iteration (`text[i]`, `for character in text`); slicing with `strings.slice` | experimental | M2 |
 | Grapheme clusters (Unicode 17.0), UTF-8 bytes of strings and strings from bytes | experimental | M2 |
 | `Shared`, `Weak`, `Cell`, `Mutex` | planned | M3 |

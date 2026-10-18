@@ -39,3 +39,38 @@ print(clone(some))
 outcome = try total(view(numbers, 2, 10))
 if outcome is error
     print(outcome.message)
+
+# Splitting a view gives parts that can be used, and changed, together.
+function add_into(update target: MutableView<integer>, source: MutableView<integer>)
+    for index in range(length(target))
+        target[index] += source[index]
+
+pairs = [1, 2, 3, 10, 20, 30]
+rest = mutable_view(pairs)
+front = split_view(rest, 3)
+add_into(rest, front)
+front[0] = 100
+print(length(front), length(rest))
+print(pairs)
+
+function negate_chunks(update values: MutableView<integer>, size: integer)
+    while length(values) > 0
+        count = size
+        if length(values) < size
+            count = length(values)
+        chunk = split_view(values, count)
+        chunk[0] = -chunk[0]
+
+seven = [1, 2, 3, 4, 5, 6, 7]
+negate_chunks(mutable_view(seven), 3)
+print(seven)
+
+letters = ["a", "b", "c"]
+reading = view(letters)
+head = split_view(reading, 1)
+print(head, reading)
+try
+    split_view(reading, 5)
+catch problem
+    print(problem.code, problem.message)
+print(reading)

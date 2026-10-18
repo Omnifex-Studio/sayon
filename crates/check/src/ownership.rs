@@ -266,6 +266,12 @@ impl<'p> Analyzer<'p> {
                 builtin: Builtin::View | Builtin::MutableView,
                 args,
             } => self.view_base(&args[0].expr),
+            // The part split off borrows what the view borrows, but not the
+            // view, which keeps only the rest.
+            ExprKind::Builtin {
+                builtin: Builtin::SplitView,
+                args,
+            } => self.view_source(&args[0].expr),
             ExprKind::Local { local, .. } => match self.view_owners.get(local) {
                 Some(owners) => owners.clone(),
                 // A view parameter borrows from the caller.
@@ -289,13 +295,20 @@ impl<'p> Analyzer<'p> {
         }
     }
 
-    /// What a view made from `base` borrows: the base's own variables when
-    /// it is a view, or the variable that holds it.
+    /// What a view made from `base` borrows: the variable that holds it,
+    /// and when it is a view, what that view borrows too.
     fn view_base(&self, base: &Expr) -> Vec<LocalId> {
-        if matches!(base.ty, Type::View(..)) {
-            return self.view_source(base);
+        let mut owners = if matches!(base.ty, Type::View(..)) {
+            self.view_source(base)
+        } else {
+            Vec::new()
+        };
+        if let Some(local) = Self::root(base)
+            && !owners.contains(&local)
+        {
+            owners.push(local);
         }
-        Self::root(base).into_iter().collect()
+        owners
     }
 
     fn view_active(&self, view: &ActiveView) -> bool {
@@ -373,7 +386,13 @@ impl<'p> Analyzer<'p> {
 
     /// Records what a returned view borrows: it must be one parameter.
     fn returned_view(&mut self, value: &Expr) {
-        let owners = self.view_source(value);
+        let mut owners = self.view_source(value);
+        // A view variable of the function owns no elements; what it borrows
+        // is what matters.
+        owners.retain(|owner| {
+            self.param_positions.contains_key(owner)
+                || !matches!(self.local(*owner).ty, Type::View(..))
+        });
         let span = value.span;
         if let Some(local) = owners
             .iter()

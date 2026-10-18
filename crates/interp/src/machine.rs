@@ -9,7 +9,7 @@ use sayon_check::types::{FloatType, IntType, Type};
 use sayon_ir::*;
 use sayon_runtime::host::{EXIT_CODE, Host, HostArg, HostType, HostValue, exit_status, invoke};
 use sayon_runtime::text::{
-    Number, parse_number, position_error, range_length, view_bounds_message,
+    Number, parse_number, position_error, range_length, split_bounds_message, view_bounds_message,
 };
 use sayon_syntax::{SourceMap, Span};
 use std::io::Write;
@@ -932,6 +932,35 @@ impl<'m> Machine<'m> {
                     start: offset + start as usize,
                     length: (end - start) as usize,
                 })))
+            }
+            Op::SplitView { view, count } => {
+                let count = self.int(count);
+                let reference = self.resolve(view);
+                let length = self.read(&reference, |value| match value {
+                    Value::View(view) => view.length,
+                    other => panic!("split of {other:?}"),
+                });
+                if count < 0 || count > length as i128 {
+                    return Err(self.error(
+                        "BoundsError",
+                        split_bounds_message(count, length),
+                        span,
+                    ));
+                }
+                let count = count as usize;
+                self.with_mut(&reference, |value| match value {
+                    Value::View(rest) => {
+                        let part = ViewValue {
+                            array: rest.array.clone(),
+                            start: rest.start,
+                            length: count,
+                        };
+                        rest.start += count;
+                        rest.length -= count;
+                        Ok(Value::View(Box::new(part)))
+                    }
+                    other => panic!("split of {other:?}"),
+                })
             }
             Op::Swap {
                 array,
