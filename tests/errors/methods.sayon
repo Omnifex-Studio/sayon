@@ -22,6 +22,15 @@ function endless_next(update endless: Endless) -> integer
 for value in Endless(count = 0)
     print(value)
 
+# A file has one owner.
+file = io.open("methods.sayon")
+copy = clone(file)
+
+function duplicate<T>(value: T) -> T
+    return clone(value)
+
+again = duplicate(file)
+
 # The stream inside a file is the library's own.
 function keep(stream: HostStream)
     print("kept")

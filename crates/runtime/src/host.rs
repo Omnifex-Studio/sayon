@@ -117,6 +117,7 @@ hosts! {
     StreamPosition = "stream_position"(Stream) -> Integer;
     StreamSeek = "stream_seek"(Stream, Integer) -> Nothing;
     StreamClose = "stream_close"(Stream) -> Nothing;
+    StreamShare = "stream_share"(Stream) -> Stream;
     StreamCopy = "stream_copy"(Stream, Stream) -> Integer;
     ReadFileBytes = "read_file_bytes"(String) -> Bytes;
     WriteFileBytes = "write_file_bytes"(String, Bytes) -> Nothing;
@@ -391,6 +392,11 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
             crate::streams::seek(stream(args, 0), integer(args, 1)).map(|()| V::Nothing)
         }
         Host::StreamClose => crate::streams::close(stream(args, 0)).map(|()| V::Nothing),
+        Host::StreamShare => {
+            let id = stream(args, 0);
+            crate::streams::share(id);
+            Ok(V::Stream(id))
+        }
         Host::StreamCopy => crate::streams::copy(stream(args, 0), stream(args, 1)).map(V::Integer),
         Host::ReadFileBytes => {
             let path = string(args, 0);

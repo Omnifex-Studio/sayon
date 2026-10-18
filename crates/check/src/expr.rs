@@ -1677,6 +1677,12 @@ impl<'a> Checker<'a> {
             }
             Builtin::Clone => {
                 let value = self.check_expr(cx, &args[0], None);
+                self.require_traits(
+                    &value.ty,
+                    Traits::CLONE,
+                    args[0].span,
+                    "an open file has one owner; pass it with `update` instead",
+                );
                 // Cloning a view copies the elements it shows into an array.
                 let ty = match self.unifier.resolve(&value.ty) {
                     Type::View(element, _) => Type::array(*element),

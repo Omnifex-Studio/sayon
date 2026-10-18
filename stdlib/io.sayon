@@ -59,7 +59,7 @@ constant LINE_LIMIT = 1_048_576
 # An open file, from `open`. Reading and writing go through a buffer.
 # `file.close()` finishes with it and reports any error in writing what is
 # still buffered; a file that is not closed is closed when it is no longer
-# used, without a report. A clone of a file refers to the same open file.
+# used, without a report. A file has one owner, so it cannot be cloned.
 type File = [stream: HostStream, path: string, line_limit: integer]
 
 # Opens a file: with "r" to read it, "w" to write it from the start (creating
@@ -76,7 +76,7 @@ function file_read_line(update file: File) -> string or nothing
 # The lines that remain, for a `for` loop. The loop borrows the file until
 # it finishes.
 function file_lines(update file: File) -> Lines
-    return Lines(stream = clone(file.stream), limit = file.line_limit)
+    return Lines(stream = host_stream_share(file.stream), limit = file.line_limit)
 
 # The rest of the file as text. Fails with EncodingError when it is not UTF-8.
 function file_read(update file: File) -> string
@@ -114,7 +114,8 @@ function file_seek(update file: File, position: integer)
 function file_close(own file: File)
     host_stream_close(file.stream)
 
-# The lines of a file, from `file.lines()`.
+# The lines of a file, from `file.lines()`. They are read from the file
+# itself, so they end when it is closed.
 type Lines = [stream: HostStream, limit: integer]
 
 function lines_next(lines: Lines) -> string or nothing

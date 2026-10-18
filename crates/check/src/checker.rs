@@ -435,6 +435,17 @@ impl<'a> Checker<'a> {
         match self.unifier.unify(expected, found) {
             Ok(()) => true,
             Err(error) => {
+                // A type that lacks an operation is left unbound by the
+                // failed unification; it is unknown from here on, so that
+                // it is not also reported as impossible to infer.
+                if matches!(error, UnifyError::Unsupported { .. }) {
+                    let mut free = Vec::new();
+                    self.unifier.free_vars(expected, &mut free);
+                    self.unifier.free_vars(found, &mut free);
+                    for var in free {
+                        self.unifier.force_bind(var, Type::Unknown);
+                    }
+                }
                 self.report_unify(error, span, context);
                 false
             }

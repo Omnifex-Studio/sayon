@@ -7,6 +7,7 @@
 //! signature are generalized together with their bounds.
 
 use crate::types::{FloatType, IntType, NamedType, TyVar, Type};
+use std::collections::HashSet;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LiteralKind {
@@ -72,6 +73,8 @@ impl Traits {
     pub const NEGATE: Traits = Traits(32);
     /// Numeric conversion targets and sources.
     pub const NUMERIC: Traits = Traits(64);
+    /// `clone`: every type but open resources and what holds them.
+    pub const CLONE: Traits = Traits(128);
 
     pub fn contains(self, other: Traits) -> bool {
         self.0 & other.0 == other.0
@@ -86,7 +89,7 @@ impl Traits {
     }
 
     fn each(self) -> impl Iterator<Item = Traits> {
-        (0..7)
+        (0..8)
             .map(|bit| Traits(1 << bit))
             .filter(move |t| self.contains(*t))
     }
@@ -100,6 +103,7 @@ impl Traits {
             Traits::LENGTH => "`length`",
             Traits::NEGATE => "negation",
             Traits::NUMERIC => "numeric conversion",
+            Traits::CLONE => "cloning",
             _ => "these operations",
         }
     }
@@ -185,6 +189,9 @@ pub struct Unifier {
     /// Named types whose equality support is being decided, so that a type
     /// reaching itself through a collection does not recurse forever.
     in_progress: Vec<Type>,
+    /// The explicit type parameters of the function being checked that its
+    /// body clones values of; callers must then give clonable types.
+    pub cloned_params: HashSet<u32>,
 }
 
 impl Unifier {
@@ -339,34 +346,33 @@ impl Unifier {
                     }
                     return Ok(());
                 }
-                Type::Named(named) => {
-                    // Comparable when every field is; a type reached again
-                    // through its own fields is assumed comparable.
-                    let whole = Type::Named(named.clone());
-                    if self.in_progress.contains(&whole) {
-                        return Ok(());
-                    }
-                    let fields: Vec<Type> = self
-                        .field_types
-                        .get(named.id.0 as usize)
-                        .map(|fields| fields.iter().map(|f| f.substitute(&named.args)).collect())
-                        .unwrap_or_default();
-                    self.in_progress.push(whole);
-                    let result = fields
-                        .iter()
-                        .try_for_each(|field| self.require_trait(field, Traits::EQUALITY));
-                    self.in_progress.pop();
-                    return result.map_err(|_| UnifyError::Unsupported {
-                        ty: ty.clone(),
-                        traits: one,
-                    });
-                }
+                Type::Named(named) => return self.fields_support(named, &ty, one),
                 // Function values have no meaningful equality.
                 Type::Range
                 | Type::Param(_)
                 | Type::Function(_)
                 | Type::View(..)
                 | Type::Stream => false,
+                _ => true,
+            },
+            Traits::CLONE => match &ty {
+                Type::Array(element) | Type::View(element, _) => {
+                    return self.require_trait(element, Traits::CLONE);
+                }
+                Type::Dict(_, value) => return self.require_trait(value, Traits::CLONE),
+                Type::Union(members) => {
+                    for member in members.clone() {
+                        self.require_trait(&member, Traits::CLONE)?;
+                    }
+                    return Ok(());
+                }
+                Type::Named(named) => return self.fields_support(named, &ty, one),
+                // An open file is closed once, so it has one owner.
+                Type::Stream => false,
+                Type::Param(index) => {
+                    self.cloned_params.insert(*index);
+                    true
+                }
                 _ => true,
             },
             _ => true,
@@ -376,6 +382,34 @@ impl Unifier {
         } else {
             Err(UnifyError::Unsupported { ty, traits: one })
         }
+    }
+
+    /// A structure or enum supports equality or cloning when every field
+    /// does; a type reached again through its own fields is assumed to.
+    fn fields_support(
+        &mut self,
+        named: &NamedType,
+        ty: &Type,
+        one: Traits,
+    ) -> Result<(), UnifyError> {
+        let whole = Type::Named(Box::new(named.clone()));
+        if self.in_progress.contains(&whole) {
+            return Ok(());
+        }
+        let fields: Vec<Type> = self
+            .field_types
+            .get(named.id.0 as usize)
+            .map(|fields| fields.iter().map(|f| f.substitute(&named.args)).collect())
+            .unwrap_or_default();
+        self.in_progress.push(whole);
+        let result = fields
+            .iter()
+            .try_for_each(|field| self.require_trait(field, one));
+        self.in_progress.pop();
+        result.map_err(|_| UnifyError::Unsupported {
+            ty: ty.clone(),
+            traits: one,
+        })
     }
 
     fn occurs(&self, var: TyVar, ty: &Type) -> bool {

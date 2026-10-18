@@ -52,12 +52,14 @@ attempt = try reader.write("x")
 if attempt is error
     print(attempt.message)
 
-# A clone refers to the same open file, so closing one closes both.
-shared = clone(reader)
+# Lines kept after their file is closed end with an error.
+remaining = reader.lines()
 reader.close()
-again = try shared.read_line()
-if again is error
-    print(again.message)
+try
+    for line in remaining
+        print(line)
+catch problem
+    print(problem.message)
 
 # A file that is not closed is closed when it is no longer used.
 function first_line(path: string) -> string or nothing

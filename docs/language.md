@@ -653,7 +653,7 @@ file.close()
 - `read` gives the rest of the file as text; `read_bytes(count)` and `write_bytes(bytes)` work with `Array<byte>`, keeping any bytes as they are. `position()` and `seek(position)` count bytes from the start.
 - `close()` writes what is still buffered and closes the file, raising `IOError` if writing fails; the file cannot be used afterwards. A file that is not closed is closed when it is no longer used, but without a report, and before the program ends every open file's buffer is written. `flush()` passes buffered output to the system; it does not wait for the disk.
 - While a loop over `file.lines()` runs, the file is borrowed: closing it, or reading or writing it another way, is `E_BORROW_CONFLICT`.
-- `clone(file)` refers to the same open file, so closing either closes both; using a closed file raises `IOError`.
+- A file has one owner, so `clone(file)` is an error, as is cloning anything holding a file; a generic function that clones values of its type parameter cannot be given one. Lines kept from `file.lines()` after the file is closed raise `IOError`.
 - `io.copy(source, target)` copies the rest of one file to another 64 KiB at a time and returns the number of bytes.
 
 ### JSON

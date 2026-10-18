@@ -30,22 +30,34 @@ error[E_NOT_ITERABLE]: the `next` of `Endless` must return a value or `nothing`
     |
     = help: declare its result as `T or nothing`, with `nothing` at the end
 
-error[E_UNKNOWN_TYPE]: unknown type `HostStream`
-   --> methods.sayon:26:23
+error[E_UNSUPPORTED_OPERATION]: File does not support cloning
+   --> methods.sayon:27:14
     |
- 26 | function keep(stream: HostStream)
+ 27 | copy = clone(file)
+    |              ^^^^ an open file has one owner; pass it with `update` instead
+
+error[E_UNSUPPORTED_OPERATION]: File does not support cloning
+   --> methods.sayon:32:19
+    |
+ 32 | again = duplicate(file)
+    |                   ^^^^ argument for `value`
+
+error[E_UNKNOWN_TYPE]: unknown type `HostStream`
+   --> methods.sayon:35:23
+    |
+ 35 | function keep(stream: HostStream)
     |                       ^^^^^^^^^^ not a known type
     |
     = help: built-in types include integer, float, boolean, string, nothing, Array<T> and Dict<K, V>; declare your own with `type` or `enum`
 
 error[E_UNKNOWN_METHOD]: `Point` has no method `scaled`
-   --> methods.sayon:33:13
+   --> methods.sayon:42:13
     |
- 33 | print(point.scaled(2.0))
+ 42 | print(point.scaled(2.0))
     |             ^^^^^^
     |
     = note: `.scaled(...)` calls a function `point_scaled` or `scaled` declared beside `Point`, whose first parameter is a `Point`
     = help: `scaled` is not a method of `Point` until its first parameter is declared as one, such as `value: Point`
 
-6 errors found; nothing was run
+8 errors found; nothing was run
 run `sayon explain E_UNKNOWN_METHOD` to learn more about an error
