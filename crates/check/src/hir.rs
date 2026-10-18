@@ -398,6 +398,10 @@ pub enum Builtin {
     ChannelNew,
     /// `channel_send(channel, own message)`, waiting while it is full.
     ChannelSend,
+    /// `channel_send_result(channel, own message)`: a `SendResult<T>` of
+    /// `standard/threads`, which holds the message when the channel was
+    /// closed.
+    ChannelSendResult,
     /// `channel_receive(channel)`, waiting while it is empty.
     ChannelReceive,
     /// `channel_close(channel)`.
@@ -455,6 +459,7 @@ impl Builtin {
             Builtin::TaskSleep => "task_sleep",
             Builtin::ChannelNew => "channel_new",
             Builtin::ChannelSend => "channel_send",
+            Builtin::ChannelSendResult => "channel_send_result",
             Builtin::ChannelReceive => "channel_receive",
             Builtin::ChannelClose => "channel_close",
             Builtin::ChannelSelect => "channel_select",

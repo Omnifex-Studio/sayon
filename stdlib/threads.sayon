@@ -26,6 +26,15 @@ enum ReceiveResult<T>
     message(value: T)
     closed
 
+# What `recoverable_send` gives: the message was sent, or it comes back with
+# the error that kept it from being sent.
+enum SendResult<T>
+    sent
+    unsent(message: T, problem: Error)
+
+# A channel can hold this many messages without a limit being reached.
+private constant UNBOUNDED = 9223372036854775807
+
 # Starts a task running `body`, and gives its handle.
 function spawn<T>(own body: function() -> T) -> Task<T>
     return task_spawn(body)
@@ -50,10 +59,21 @@ function pause()
 function new_channel<T>(capacity = 64) -> Channel<T>
     return channel_new(capacity)
 
+# A channel without a limit, so that `send` never waits for room. The
+# messages that wait in it take memory without bound, so prefer a limit
+# when senders can outpace receivers.
+function new_unbounded_channel<T>() -> Channel<T>
+    return channel_new(UNBOUNDED)
+
 # Sends a message, waiting while the channel is full. Fails with
 # ChannelClosedError when the channel is closed; the message is then destroyed.
 function send<T>(channel: Channel<T>, own message: T)
     channel_send(channel, message)
+
+# Sends a message like `send`, but when the channel is closed, gives the
+# message back as `unsent(message, problem)` instead of destroying it.
+function recoverable_send<T>(channel: Channel<T>, own message: T) -> SendResult<T>
+    return channel_send_result(channel, message)
 
 # The next message, waiting while the channel is empty. Fails with
 # ChannelClosedError when the channel is closed and has none left.

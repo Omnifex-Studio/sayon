@@ -715,6 +715,7 @@ pub unsafe extern "C" fn sayon_channel_send(
     err: *mut *mut SayonError,
     slot: *const *mut ChannelBlock,
     message: *mut u8,
+    keep: bool,
     location: *const c_char,
 ) -> i32 {
     // SAFETY: the slot holds a live channel; the message has its size.
@@ -722,10 +723,13 @@ pub unsafe extern "C" fn sayon_channel_send(
         let channel = *slot;
         loop {
             if (*channel).closed {
-                if let Some(drop) = (*channel).drop {
-                    drop(message);
+                // The message is destroyed, unless the sender keeps it.
+                if !keep {
+                    if let Some(drop) = (*channel).drop {
+                        drop(message);
+                    }
+                    std::ptr::write_bytes(message, 0, (*channel).element_size);
                 }
-                std::ptr::write_bytes(message, 0, (*channel).element_size);
                 return set_error(
                     err,
                     "ChannelClosedError",

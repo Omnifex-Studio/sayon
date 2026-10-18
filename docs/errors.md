@@ -205,7 +205,7 @@ An `Outcome` from `try` may hold the value or the error, so its contents cannot 
 
 ### W_UNUSED_OUTCOME
 
-The result of a `try` expression is never inspected, so an error would go unnoticed. Keep the result and test it with `is error`, or leave out `try` so the error propagates.
+The result of a `try` expression is never inspected, so an error would go unnoticed. Keep the result and test it with `is error`, or leave out `try` so the error propagates. The same goes for the `SendResult` of `threads.recoverable_send`, which holds a message the channel did not take: match it for `unsent`, or use `threads.send` when such a message may be destroyed.
 
 ### W_UNUSED_TASK
 

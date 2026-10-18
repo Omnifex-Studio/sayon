@@ -2338,6 +2338,104 @@ impl<'l, 'p> FnLower<'l, 'p> {
         self.switch_to(join);
     }
 
+    /// `channel_send_result`: `sent` (variant 0) once the channel takes the
+    /// message, or `unsent(message, problem)` (variant 1) when it is closed,
+    /// which leaves the message with the sender. Any other error, such as
+    /// a cancellation while it waits, goes on as for `send`.
+    fn send_result(&mut self, args: &'p [hir::Arg], ty: &Type, dest: Place, span: Span) {
+        let channel = self.operand(&args[0].expr, Want::Read);
+        let message_ty = self.ty(&args[1].expr.ty);
+        let message = match self.value_temp(&args[1].expr) {
+            Operand::Copy(place) | Operand::Move(place) => place,
+            other => panic!("message operand {other:?}"),
+        };
+        let on_error = self.new_block();
+        let join = self.new_block();
+        // The message lives in the scope around the handler, so the error
+        // edge keeps it.
+        self.handlers.push(HandlerCtx {
+            target: on_error,
+            scope_depth: self.scopes.len(),
+        });
+        self.op(
+            Op::Send {
+                channel,
+                message: message.clone(),
+                keep: true,
+            },
+            None,
+            span,
+        );
+        self.handlers.pop();
+        self.assign(
+            dest.clone(),
+            Rvalue::MakeVariant {
+                ty: ty.clone(),
+                variant: 0,
+                fields: Vec::new(),
+            },
+        );
+        self.goto(join);
+
+        self.switch_to(on_error);
+        let propagate = self.new_block();
+        self.unless_code("ChannelClosedError", propagate);
+        let message = if message_ty.is_copy() {
+            Operand::Copy(message)
+        } else {
+            Operand::Move(message)
+        };
+        let problem = Operand::Move(Place::slot(self.f.error_slot));
+        self.assign(
+            dest,
+            Rvalue::MakeVariant {
+                ty: ty.clone(),
+                variant: 1,
+                fields: vec![message, problem],
+            },
+        );
+        self.goto(join);
+        self.switch_to(propagate);
+        let target = self.error_target();
+        self.goto(target);
+        self.switch_to(join);
+    }
+
+    /// Goes on when the error in the error slot has the code `code`, and
+    /// branches to `otherwise` when it has another.
+    fn unless_code(&mut self, code: &str, otherwise: BlockId) {
+        self.push_scope();
+        let found = self.temp(Type::String);
+        self.assign(
+            Place::slot(found),
+            Rvalue::ErrorCode(Operand::Borrow {
+                place: Place::slot(self.f.error_slot),
+                mutable: false,
+            }),
+        );
+        let flag = self.new_slot(Type::Boolean, SlotKind::Value, None);
+        self.assign(
+            Place::slot(flag),
+            Rvalue::Compare {
+                op: CompareOp::Equal,
+                ty: Type::String,
+                lhs: Operand::Borrow {
+                    place: Place::slot(found),
+                    mutable: false,
+                },
+                rhs: Operand::Const(Constant::Str(code.to_string())),
+            },
+        );
+        self.pop_scope();
+        let next = self.new_block();
+        self.terminate(Terminator::Branch {
+            condition: Operand::Copy(Place::slot(flag)),
+            then_block: next,
+            else_block: otherwise,
+        });
+        self.switch_to(next);
+    }
+
     /// `union == member`: true when the union holds that member with an equal value.
     fn member_equality(
         &mut self,
@@ -2773,9 +2871,18 @@ impl<'l, 'p> FnLower<'l, 'p> {
                     Operand::Copy(place) | Operand::Move(place) => place,
                     other => panic!("message operand {other:?}"),
                 };
-                self.op(Op::Send { channel, message }, None, span);
+                self.op(
+                    Op::Send {
+                        channel,
+                        message,
+                        keep: false,
+                    },
+                    None,
+                    span,
+                );
                 self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing)));
             }
+            Builtin::ChannelSendResult => self.send_result(args, ty, dest, span),
             Builtin::ChannelReceive => {
                 let channel = self.operand(&args[0].expr, Want::Read);
                 self.op(Op::Receive { channel }, Some(dest), span);

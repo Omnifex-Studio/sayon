@@ -25,4 +25,7 @@ ChannelClosedError
 select: ChannelClosedError
 999000
 DeadlockError every task is waiting, so none can go on
+sent 2
+unsent ["c", "d"] ChannelClosedError
+124750
 cleanup runs on cancel

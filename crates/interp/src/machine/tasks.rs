@@ -224,7 +224,11 @@ impl<'m> Machine<'m> {
                     received: 0,
                 }))))
             }
-            Op::Send { channel, message } => {
+            Op::Send {
+                channel,
+                message,
+                keep,
+            } => {
                 let source = self.source(channel);
                 let channel = self.with_source(&source, channel_of);
                 if let Some(Resume::Rendezvous(number)) = resume {
@@ -239,8 +243,11 @@ impl<'m> Machine<'m> {
                     (state.closed, state.has_room(), state.capacity)
                 };
                 if closed {
-                    // The message is destroyed with the failure.
-                    drop(self.take_place(message));
+                    // The message is destroyed with the failure, unless the
+                    // sender keeps it.
+                    if !keep {
+                        drop(self.take_place(message));
+                    }
                     return Progress::Failed(self.task_error(
                         "ChannelClosedError",
                         "cannot send on a closed channel".to_string(),

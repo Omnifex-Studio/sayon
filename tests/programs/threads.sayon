@@ -136,3 +136,26 @@ empty: Channel<integer> = threads.new_channel()
 value = try threads.receive(empty)
 if value is error
     print(value.code, value.message)
+
+# A recoverable send gives the message back when the channel is closed.
+letters: Channel<Array<string>> = threads.new_channel()
+match threads.recoverable_send(letters, ["a", "b"])
+    case sent
+        print("sent", length(threads.receive(letters)))
+    case unsent(message, problem)
+        print("unsent", message, problem.code)
+threads.close(letters)
+match threads.recoverable_send(letters, ["c", "d"])
+    case sent
+        print("sent")
+    case unsent(message, problem)
+        print("unsent", message, problem.code)
+
+# An unbounded channel never makes a sender wait.
+queue: Channel<integer> = threads.new_unbounded_channel()
+for n in range(500)
+    threads.send(queue, n)
+sum = 0
+for n in range(500)
+    sum += threads.receive(queue)
+print(sum)

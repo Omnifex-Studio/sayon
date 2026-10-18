@@ -1704,7 +1704,8 @@ impl<'a> Checker<'a> {
             | Builtin::WriteFile
             | Builtin::Remove
             | Builtin::SplitView
-            | Builtin::ChannelSend => (2, 2),
+            | Builtin::ChannelSend
+            | Builtin::ChannelSendResult => (2, 2),
             Builtin::TaskYield => (0, 0),
             Builtin::RawRead => (2, 2),
             Builtin::RawWrite => (3, 3),
@@ -1940,6 +1941,21 @@ impl<'a> Checker<'a> {
                 (vec![owned], ty)
             }
             Builtin::TaskYield => (Vec::new(), Type::Nothing),
+            Builtin::ChannelSendResult => {
+                let Some(Item::Type(result)) = self.item(cx.module, "SendResult") else {
+                    panic!("recoverable sends outside standard/threads");
+                };
+                let message = self.fresh_var(span);
+                let channel_ty = Type::wrapper(Wrapper::Channel, message.clone());
+                let channel = self.check_expr_as(cx, &args[0], &channel_ty, "a channel");
+                let value = self.check_expr_as(cx, &args[1], &message, "the message");
+                let owned = Arg {
+                    expr: value,
+                    mode: ParamMode::Own,
+                };
+                let ty = self.named_type(result, vec![message]);
+                (vec![read(channel), owned], ty)
+            }
             Builtin::RawRead | Builtin::RawWrite => {
                 let address = self.check_expr_as(cx, &args[0], &Type::Pointer, "an address");
                 let offset = self.check_expr_as(cx, &args[1], &Type::INTEGER, "an offset in bytes");

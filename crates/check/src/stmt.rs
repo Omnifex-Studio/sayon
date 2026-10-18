@@ -134,9 +134,21 @@ impl<'a> Checker<'a> {
                     );
                 }
                 let checked = self.check_expr(cx, value, None);
-                if let Type::Wrapper(crate::types::Wrapper::Task, _) =
-                    self.unifier.resolve(&checked.ty)
+                let resolved = self.unifier.resolve(&checked.ty);
+                if let Type::Named(named) = &resolved
+                    && named.name == "SendResult"
+                    && self.modules[self.types[named.id.0 as usize].module.0 as usize].standard
                 {
+                    self.error(
+                        Diagnostic::warning(
+                            "W_UNUSED_OUTCOME",
+                            "the result of this send is never inspected",
+                        )
+                        .primary(value.span, "a message the channel did not take would be destroyed")
+                        .help("match the result for `unsent`, or use `threads.send` when the message may be destroyed"),
+                    );
+                }
+                if let Type::Wrapper(crate::types::Wrapper::Task, _) = resolved {
                     self.error(
                         Diagnostic::warning(
                             "W_UNUSED_TASK",

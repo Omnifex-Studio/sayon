@@ -479,9 +479,12 @@ pub enum Op {
         element: Type,
     },
     /// Moves the message at `message` into the channel, once it has room.
+    /// When the channel is closed, the message is destroyed, or with `keep`
+    /// left where it is.
     Send {
         channel: Operand,
         message: Place,
+        keep: bool,
     },
     /// The next message of the channel, once it has one; fails when it is
     /// closed and empty.

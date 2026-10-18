@@ -1661,13 +1661,17 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 ));
                 Some(status)
             }
-            Op::Send { channel, message } => {
+            Op::Send {
+                channel,
+                message,
+                keep,
+            } => {
                 let (channel, _) = self.pointer(channel);
                 let (message, _) = self.place_ptr(message);
                 let location = self.cg.location(span);
                 let status = self.body.tmp();
                 self.body.line(format!(
-                    "{status} = call i32 @sayon_channel_send(ptr {err}, ptr {channel}, ptr {message}, ptr {location})"
+                    "{status} = call i32 @sayon_channel_send(ptr {err}, ptr {channel}, ptr {message}, i1 {keep}, ptr {location})"
                 ));
                 Some(status)
             }
@@ -2716,7 +2720,7 @@ declare i32 @sayon_tasks_finish(i1)
 declare i32 @sayon_channel_new(ptr, i64, i64, ptr, ptr, ptr)
 declare void @sayon_channel_clone(ptr, ptr)
 declare void @sayon_channel_release(ptr)
-declare i32 @sayon_channel_send(ptr, ptr, ptr, ptr)
+declare i32 @sayon_channel_send(ptr, ptr, ptr, i1, ptr)
 declare i32 @sayon_channel_receive(ptr, ptr, ptr, ptr)
 declare void @sayon_channel_close(ptr)
 declare i32 @sayon_channel_select(ptr, ptr, ptr, ptr)

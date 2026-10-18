@@ -29,6 +29,9 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
             "task_sleep" => return Some(PreludeItem::Builtin(Builtin::TaskSleep)),
             "channel_new" => return Some(PreludeItem::Builtin(Builtin::ChannelNew)),
             "channel_send" => return Some(PreludeItem::Builtin(Builtin::ChannelSend)),
+            "channel_send_result" => {
+                return Some(PreludeItem::Builtin(Builtin::ChannelSendResult));
+            }
             "channel_receive" => return Some(PreludeItem::Builtin(Builtin::ChannelReceive)),
             "channel_close" => return Some(PreludeItem::Builtin(Builtin::ChannelClose)),
             "channel_select" => return Some(PreludeItem::Builtin(Builtin::ChannelSelect)),
