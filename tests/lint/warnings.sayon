@@ -1,0 +1,34 @@
+strings = import("standard/strings.sayon")
+io = import("standard/io.sayon")
+
+type point_type = [xValue: integer, y: integer]
+
+enum Color
+    Red
+    green
+
+constant maxSize = 10
+
+private function helper()
+    return 1
+
+function sumValues(items: Array<integer>, unusedFactor: integer) -> integer
+    total = 0
+    for item in items
+        totl = total + item
+        total = total + item
+    return total
+
+function shadow(count: integer)
+    for count in range(3)
+        print(count)
+
+values = [1, 2, 3]
+result = sumValues(values, 2)
+leftover = 5
+print(strings.upper("ok"))
+shadow(1)
+ignored = 3  # allow(unused_variable)
+# allow(naming, not_a_lint)
+badName = 4
+print(badName)

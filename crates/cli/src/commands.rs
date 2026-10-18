@@ -42,6 +42,33 @@ pub fn check(target: &Target, options: &Options) -> u8 {
     }
 }
 
+/// `sayon lint`: the compiler's checks and the lint warnings. With
+/// `deny_warnings`, any warning fails the command.
+pub fn lint(target: &Target, options: &Options, deny_warnings: bool) -> u8 {
+    match crate::compile::lint(&target.entry, target.root.as_deref(), options) {
+        Err(code) => code,
+        Ok((errors, _)) if errors > 0 => status::COMPILE_FAILED,
+        Ok((_, 0)) => {
+            if !options.quiet {
+                eprintln!("{}: no problems found", target.entry.display());
+            }
+            status::SUCCESS
+        }
+        Ok((_, warnings)) => {
+            let noun = if warnings == 1 { "warning" } else { "warnings" };
+            if deny_warnings {
+                eprintln!("{warnings} {noun} found; `--deny warnings` treats them as errors");
+                status::COMPILE_FAILED
+            } else {
+                if !options.quiet {
+                    eprintln!("{warnings} {noun} found");
+                }
+                status::SUCCESS
+            }
+        }
+    }
+}
+
 pub fn run(target: &Target, options: &Options, program_args: &[String]) -> u8 {
     let compiled = match compile(&target.entry, target.root.as_deref(), options, false) {
         Ok(compiled) => compiled,

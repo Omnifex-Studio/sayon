@@ -32,6 +32,7 @@ Usage:
     sayon run --native [file]        Compile to a native executable and run it
     sayon build [file]               Compile a native executable
     sayon check [file]               Report problems without running anything
+    sayon lint [file]                Also report likely mistakes and naming problems
     sayon test [files...]            Run test blocks
     sayon fmt [paths...] [--check]   Format source files
     sayon init <name>                Create a project
@@ -51,6 +52,7 @@ Options:
     --release                        Optimize native code (build, run --native)
     --emit-llvm                      Write LLVM IR instead of an executable (build)
     --check                          Report unformatted files without changing them (fmt)
+    --deny warnings                  Fail when there are warnings (lint)
 
 Native builds use clang from LLVM. Set SAYON_CLANG to choose a clang
 executable, SAYON_RUNTIME_LIB the runtime library, and SAYON_STDLIB the
@@ -160,6 +162,7 @@ fn dispatch(args: &[String]) -> u8 {
         }
         "run" => (&["--quiet", "--native", "--release"], &["--color"], true),
         "check" => (&["--quiet"], &["--color"], false),
+        "lint" => (&["--quiet"], &["--color", "--deny"], false),
         "build" => (
             &["--quiet", "--release", "--emit-llvm"],
             &["--color", "--output"],
@@ -194,7 +197,7 @@ fn dispatch(args: &[String]) -> u8 {
         quiet: parsed.flag("--quiet"),
     };
     match command.as_str() {
-        "run" | "check" | "build" => {
+        "run" | "check" | "build" | "lint" => {
             if parsed.positional.len() > 1 {
                 return usage_error(&format!("`sayon {command}` takes one source file"));
             }
@@ -209,6 +212,18 @@ fn dispatch(args: &[String]) -> u8 {
                 }
                 "run" => commands::run(&target, &options, &parsed.rest),
                 "check" => commands::check(&target, &options),
+                "lint" => {
+                    let deny = match parsed.values.get("--deny").map(String::as_str) {
+                        None => false,
+                        Some("warnings") => true,
+                        Some(other) => {
+                            return usage_error(&format!(
+                                "`--deny {other}` is not supported; use `--deny warnings`"
+                            ));
+                        }
+                    };
+                    commands::lint(&target, &options, deny)
+                }
                 _ => commands::build(
                     &target,
                     &options,

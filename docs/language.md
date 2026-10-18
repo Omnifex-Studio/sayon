@@ -612,6 +612,18 @@ test "adds integers"
 
 `sayon fmt --check` lists the files that are not formatted and exits with status 1 if there are any. With no paths, both forms cover every `.sayon` file under the current directory.
 
+## Linting
+
+`sayon lint` checks a program like `sayon check` and also warns about code that is valid but probably not meant: unused variables, parameters, imports, and private items; names that do not follow the conventions; variables that hide others; and an assignment that makes a new variable whose name is one letter away from an existing one. The standard library is not linted. [errors.md](errors.md#lint-warnings) describes each warning.
+
+```sayon
+total = 0
+for price in prices
+    totl = total + price    # warning[W_SUSPICIOUS_DECLARATION]
+```
+
+A comment on the warning's line, or the line above, suppresses it by name: `# allow(unused_variable)`. Names that start with `_` are never reported as unused. `sayon lint --deny warnings` fails with status 2 when there are warnings, for use in automated checks.
+
 ## Programs
 
 A file with top-level statements is a script: they run in order. A file with only definitions runs its `main` function, which takes no parameters and returns `nothing` or an `integer`. The integer becomes the exit status. Portable statuses are 0 to 255; other values exit with 255 after a warning.

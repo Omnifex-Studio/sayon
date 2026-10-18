@@ -22,6 +22,8 @@ pub struct Options {
     /// The directory imports resolve from: a project's root. Defaults to
     /// the entry file's directory.
     pub root: Option<PathBuf>,
+    /// Add the lint warnings, and stop after checking.
+    pub lint: bool,
 }
 
 pub struct Output {
@@ -101,7 +103,20 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
     let span = Span::new(modules[0].file, 0, 0);
     let checked = sayon_check::check_program(&inputs, 0, span);
     diagnostics.extend(checked.diagnostics);
+    if options.lint
+        && let Some(program) = &checked.program
+    {
+        diagnostics.extend(sayon_check::lint::lint(program, &inputs));
+    }
+    let user_files: Vec<FileId> = modules
+        .iter()
+        .filter(|m| !m.standard)
+        .map(|m| m.file)
+        .collect();
+    let mut diagnostics =
+        sayon_check::lint::suppress(diagnostics, &sources, &user_files, options.lint);
     let module = match checked.program {
+        Some(_) if options.lint => None,
         Some(program) if !diagnostics.has_errors() => {
             let lowered = if options.tests {
                 sayon_ir::lower_with_tests(&program)

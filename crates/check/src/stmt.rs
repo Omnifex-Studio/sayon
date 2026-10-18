@@ -438,6 +438,7 @@ impl<'a> Checker<'a> {
         let value = self.check_expr(cx, value, None);
         let ty = value.ty.clone();
         let local = cx.declare(&name.name, ty, name.span, LocalKind::Variable);
+        cx.locals[local.0 as usize].implicit = true;
         Some(stmt(StmtKind::Let { local, value }, span))
     }
 

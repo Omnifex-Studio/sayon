@@ -225,6 +225,7 @@ impl FnCtx {
             span,
             kind,
             borrowed: false,
+            implicit: false,
         });
         let scope = self.scopes.last_mut().expect("scope");
         scope.names.insert(name.to_string(), id);
@@ -248,6 +249,7 @@ impl FnCtx {
             span,
             kind,
             borrowed: false,
+            implicit: false,
         });
         let scope = self.scopes.first_mut().expect("scope");
         scope.names.insert(name.to_string(), id);

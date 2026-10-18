@@ -8,6 +8,7 @@ mod driver;
 mod expr;
 pub mod hir;
 pub mod infer;
+pub mod lint;
 mod narrow;
 mod ownership;
 mod patterns;

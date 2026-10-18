@@ -396,6 +396,50 @@ A module constant depends on itself, directly or through other constants or func
 
 `sayon.toml` is invalid: a key is unknown or misspelled, a value has the wrong type, or a package name or version is malformed. The message points at the problem.
 
+## Lint warnings
+
+`sayon lint` reports these in addition to the compiler's own diagnostics. A comment naming a warning on its line, or on the line above, suppresses it: `# allow(unused_variable)`. The name is the code without `W_`, in lowercase; several names are separated by commas.
+
+### W_UNUSED_VARIABLE
+
+A variable, loop variable, `case` binding, or caught error is never read. Remove it, or start its name with `_` when it is deliberately unused, such as `for _ in range(3)`.
+
+### W_UNUSED_PARAMETER
+
+A parameter is never used in the function's body. Remove it, or start its name with `_` when the function must take it, for example to fit a callback's function type.
+
+### W_UNUSED_IMPORT
+
+A module is imported but none of its members is used. Remove the import.
+
+### W_UNUSED_PRIVATE
+
+A `private` function, type, or constant is never used in its module, and no other module can use it.
+
+### W_NAMING
+
+A name does not follow the conventions: variables, functions, parameters, fields, and enum variants are written in `snake_case`; types and enums in `PascalCase`; module constants in `UPPER_SNAKE_CASE`. The help suggests the conventional spelling.
+
+### W_SHADOWED_VARIABLE
+
+A new variable, parameter, loop variable, or binding has the name of a variable that is still visible, so the outer one cannot be used where the new one is. Choose another name.
+
+### W_SUSPICIOUS_DECLARATION
+
+An assignment inside a block makes a new variable whose name is one letter away from a variable of an enclosing block. This is usually a typo for that variable, which then keeps its old value:
+
+```sayon
+total = 0
+for price in prices
+    totl = total + price    # makes `totl`; `total` stays 0
+```
+
+Spell the name exactly to change the variable; write `variable name = ...` when a new variable is intended.
+
+### W_UNKNOWN_LINT
+
+An `# allow(...)` comment names a warning that does not exist, so it suppresses nothing.
+
 ## Runtime errors
 
 These are the codes of errors raised while a program runs. `try` and `catch` can handle them; `problem.code` gives the code.

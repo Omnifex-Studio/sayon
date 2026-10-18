@@ -1,0 +1,134 @@
+warning[W_UNUSED_IMPORT]: the module `io` is imported but never used
+  --> warnings.sayon:2:1
+   |
+ 2 | io = import("standard/io.sayon")
+   | ^^
+   |
+   = help: remove the import
+
+warning[W_NAMING]: the type `point_type` should be written in PascalCase
+  --> warnings.sayon:4:6
+   |
+ 4 | type point_type = [xValue: integer, y: integer]
+   |      ^^^^^^^^^^
+   |
+   = help: rename it `PointType`
+
+warning[W_NAMING]: the field `xValue` should be written in snake_case
+  --> warnings.sayon:4:20
+   |
+ 4 | type point_type = [xValue: integer, y: integer]
+   |                    ^^^^^^
+   |
+   = help: rename it `x_value`
+
+warning[W_NAMING]: the variant `Red` should be written in snake_case
+  --> warnings.sayon:7:5
+   |
+ 7 |     Red
+   |     ^^^
+   |
+   = help: rename it `red`
+
+warning[W_NAMING]: the constant `maxSize` should be written in UPPER_SNAKE_CASE
+   --> warnings.sayon:10:10
+    |
+ 10 | constant maxSize = 10
+    |          ^^^^^^^
+    |
+    = help: rename it `MAX_SIZE`
+
+warning[W_UNUSED_PRIVATE]: the private function `helper` is never used
+   --> warnings.sayon:12:18
+    |
+ 12 | private function helper()
+    |                  ^^^^^^
+    |
+    = help: remove it, or make it public if other modules should use it
+
+warning[W_NAMING]: the function `sumValues` should be written in snake_case
+   --> warnings.sayon:15:10
+    |
+ 15 | function sumValues(items: Array<integer>, unusedFactor: integer) -> integer
+    |          ^^^^^^^^^
+    |
+    = help: rename it `sum_values`
+
+warning[W_NAMING]: the parameter `unusedFactor` should be written in snake_case
+   --> warnings.sayon:15:43
+    |
+ 15 | function sumValues(items: Array<integer>, unusedFactor: integer) -> integer
+    |                                           ^^^^^^^^^^^^
+    |
+    = help: rename it `unused_factor`
+
+warning[W_UNUSED_PARAMETER]: the parameter `unusedFactor` is never used
+   --> warnings.sayon:15:43
+    |
+ 15 | function sumValues(items: Array<integer>, unusedFactor: integer) -> integer
+    |                                           ^^^^^^^^^^^^
+    |
+    = help: remove it, or name it `_unusedFactor` if it is meant to be unused
+
+warning[W_UNUSED_VARIABLE]: `totl` is given a value that is never read
+   --> warnings.sayon:18:9
+    |
+ 18 |         totl = total + item
+    |         ^^^^
+    |
+    = help: remove it, or name it `_totl` if it is meant to be unused
+
+warning[W_SUSPICIOUS_DECLARATION]: this makes a new variable `totl`, almost the same as `total`
+   --> warnings.sayon:18:9
+    |
+ 16 |     total = 0
+    |     ----- `total` is declared here
+...
+ 18 |         totl = total + item
+    |         ^^^^
+    |
+    = help: to change `total`, spell its name exactly; to make a new variable, write `variable totl = ...`
+
+warning[W_UNUSED_PARAMETER]: the parameter `count` is never used
+   --> warnings.sayon:22:17
+    |
+ 22 | function shadow(count: integer)
+    |                 ^^^^^
+    |
+    = help: remove it, or name it `_count` if it is meant to be unused
+
+warning[W_SHADOWED_VARIABLE]: `count` hides a variable of the same name
+   --> warnings.sayon:23:9
+    |
+ 22 | function shadow(count: integer)
+    |                 ----- the hidden variable
+ 23 |     for count in range(3)
+    |         ^^^^^
+    |
+    = help: choose another name, so that each name means one thing
+
+warning[W_UNUSED_VARIABLE]: `result` is given a value that is never read
+   --> warnings.sayon:27:1
+    |
+ 27 | result = sumValues(values, 2)
+    | ^^^^^^
+    |
+    = help: remove it, or name it `_result` if it is meant to be unused
+
+warning[W_UNUSED_VARIABLE]: `leftover` is given a value that is never read
+   --> warnings.sayon:28:1
+    |
+ 28 | leftover = 5
+    | ^^^^^^^^
+    |
+    = help: remove it, or name it `_leftover` if it is meant to be unused
+
+warning[W_UNKNOWN_LINT]: no warning is called `not_a_lint`
+   --> warnings.sayon:32:17
+    |
+ 32 | # allow(naming, not_a_lint)
+    |                 ^^^^^^^^^^
+    |
+    = help: `sayon explain` lists the warnings; an allowed name is the code without `W_`, in lowercase
+
+16 warnings found

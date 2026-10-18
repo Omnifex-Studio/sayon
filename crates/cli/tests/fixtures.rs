@@ -273,12 +273,55 @@ fn repository_sources_are_formatted() {
             "fmt",
             "--check",
             "tests/programs",
+            "tests/lint",
             "tests/test_runner",
             "stdlib",
             "examples",
         ],
     );
     assert_eq!(outcome.status, 0, "{}{}", outcome.stdout, outcome.stderr);
+}
+
+#[test]
+fn lint_reports_its_recorded_warnings() {
+    let dir = tests_dir().join("lint");
+    let mut failures = Vec::new();
+    for source in sources(&dir) {
+        let name = source.file_name().unwrap().to_string_lossy().to_string();
+        let outcome = sayon(&dir, &["lint", "--color", "never", &name]);
+        if outcome.status != 0 {
+            failures.push(format!("{name}: expected status 0, got {}", outcome.status));
+        }
+        let denied = sayon(
+            &dir,
+            &["lint", "--color", "never", "--deny", "warnings", &name],
+        );
+        if denied.status != 2 {
+            failures.push(format!(
+                "{name}: expected status 2 with --deny warnings, got {}",
+                denied.status
+            ));
+        }
+        compare(
+            &mut failures,
+            &name,
+            &source.with_extension("stderr"),
+            &outcome.stderr,
+            true,
+        );
+    }
+    assert!(
+        failures.is_empty(),
+        "{} fixture problem(s):
+
+{}",
+        failures.len(),
+        failures.join(
+            "
+
+"
+        )
+    );
 }
 
 #[test]

@@ -72,6 +72,8 @@ pub struct Local {
     /// Loop variables over collections, and case bindings of a matched value
     /// the match does not own, borrow what they name instead of owning it.
     pub borrowed: bool,
+    /// Introduced by assigning to a new name, without `variable`.
+    pub implicit: bool,
 }
 
 #[derive(Debug)]
@@ -468,6 +470,55 @@ pub struct Capture {
 pub struct Arg {
     pub expr: Expr,
     pub mode: ParamMode,
+}
+
+impl Expr {
+    /// The expressions this one is made of, in evaluation order.
+    pub fn children(&self) -> Vec<&Expr> {
+        match &self.kind {
+            ExprKind::Call { args, .. } | ExprKind::Builtin { args, .. } => {
+                args.iter().map(|arg| &arg.expr).collect()
+            }
+            ExprKind::CallValue { callee, args } => std::iter::once(&**callee)
+                .chain(args.iter().map(|arg| &arg.expr))
+                .collect(),
+            ExprKind::Closure { captures, .. } => {
+                captures.iter().map(|capture| &capture.value).collect()
+            }
+            ExprKind::Binary { lhs, rhs, .. } => vec![lhs, rhs],
+            ExprKind::Array(items) | ExprKind::Variant { args: items, .. } => {
+                items.iter().collect()
+            }
+            ExprKind::Record(fields) => fields.iter().map(|(_, value)| value).collect(),
+            ExprKind::Dict(entries) => entries.iter().flat_map(|(k, v)| [k, v]).collect(),
+            ExprKind::Index { target, index } => vec![target, index],
+            ExprKind::Interpolate(segments) => segments
+                .iter()
+                .filter_map(|segment| match segment {
+                    Segment::Value(value) => Some(value),
+                    Segment::Text(_) => None,
+                })
+                .collect(),
+            ExprKind::Unary { operand: inner, .. }
+            | ExprKind::Field { value: inner, .. }
+            | ExprKind::Inject(inner)
+            | ExprKind::Narrow(inner)
+            | ExprKind::UnionTypeName(inner)
+            | ExprKind::IsMember { value: inner, .. }
+            | ExprKind::ErrorField { value: inner, .. }
+            | ExprKind::TryExpr(inner)
+            | ExprKind::IsVariant { value: inner, .. }
+            | ExprKind::VariantPayload { value: inner, .. } => vec![inner],
+            ExprKind::Integer(_)
+            | ExprKind::Float(_)
+            | ExprKind::Boolean(_)
+            | ExprKind::String(_)
+            | ExprKind::Nothing
+            | ExprKind::Local { .. }
+            | ExprKind::Constant(_)
+            | ExprKind::FunctionRef { .. } => Vec::new(),
+        }
+    }
 }
 
 /// Calls `f` on every expression in the block, parents before children.

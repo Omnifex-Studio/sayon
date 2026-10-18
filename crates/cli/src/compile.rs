@@ -146,6 +146,7 @@ pub fn compile(
         stdlib: stdlib_dir(),
         tests,
         root: root.map(Path::to_path_buf),
+        lint: false,
     };
     let output = match sayon_driver::compile(entry, &driver_options) {
         Ok(output) => output,
@@ -167,6 +168,33 @@ pub fn compile(
         }),
         _ => Err(status::COMPILE_FAILED),
     }
+}
+
+/// Checks a program with the lint warnings, printing the diagnostics.
+/// Returns the error and warning counts, or the status for a missing entry.
+pub fn lint(entry: &Path, root: Option<&Path>, options: &Options) -> Result<(usize, usize), u8> {
+    let driver_options = sayon_driver::Options {
+        stdlib: stdlib_dir(),
+        tests: false,
+        root: root.map(Path::to_path_buf),
+        lint: true,
+    };
+    let output = match sayon_driver::compile(entry, &driver_options) {
+        Ok(output) => output,
+        Err(sayon_driver::EntryError(message)) => {
+            eprintln!("error: {message}");
+            return Err(status::INPUT);
+        }
+    };
+    print_diagnostics(
+        &output.diagnostics,
+        &output.sources,
+        options,
+        "nothing was linted",
+    );
+    let errors = output.diagnostics.error_count();
+    let warnings = output.diagnostics.iter().filter(|d| !d.is_error()).count();
+    Ok((errors, warnings))
 }
 
 /// Where native build intermediates go: a fresh directory under the system
