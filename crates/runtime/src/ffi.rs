@@ -116,6 +116,31 @@ fn owned(text: String) -> SayonStr {
     SayonStr { ptr, len, cap: len }
 }
 
+/// One-byte strings for every ASCII character, so that most characters
+/// taken from a string need no allocation.
+static ASCII: [u8; 128] = {
+    let mut table = [0u8; 128];
+    let mut index = 0;
+    while index < 128 {
+        table[index] = index as u8;
+        index += 1;
+    }
+    table
+};
+
+/// A string holding one character.
+fn character(ch: char) -> SayonStr {
+    if ch.is_ascii() {
+        SayonStr {
+            ptr: &ASCII[ch as usize],
+            len: 1,
+            cap: 0,
+        }
+    } else {
+        owned(ch.to_string())
+    }
+}
+
 unsafe fn set_error(
     slot: *mut *mut SayonError,
     code: &str,
@@ -223,6 +248,54 @@ pub unsafe extern "C" fn sayon_str_eq(a: *const SayonStr, b: *const SayonStr) ->
 pub unsafe extern "C" fn sayon_str_cmp(a: *const SayonStr, b: *const SayonStr) -> i32 {
     // SAFETY: valid strings.
     unsafe { as_str(a).cmp(as_str(b)) as i32 }
+}
+
+/// The character at a position, counted in characters, into `out`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_str_char_at(
+    err: *mut *mut SayonError,
+    s: *const SayonStr,
+    position: i64,
+    out: *mut SayonStr,
+    location: *const c_char,
+) -> i32 {
+    // SAFETY: valid string, output place, and error slot.
+    unsafe {
+        let text = as_str(s);
+        let found = usize::try_from(position)
+            .ok()
+            .and_then(|position| text.chars().nth(position));
+        match found {
+            Some(ch) => {
+                *out = character(ch);
+                0
+            }
+            None => {
+                let message = text::position_error(position as i128, text.chars().count());
+                set_error(err, "BoundsError", message, location)
+            }
+        }
+    }
+}
+
+/// The character starting at byte `*offset` into `out`, advancing the offset.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_str_next_char(
+    s: *const SayonStr,
+    offset: *mut i64,
+    out: *mut SayonStr,
+) {
+    // SAFETY: valid string and places; the offset is a character boundary
+    // before the end of the string.
+    unsafe {
+        let text = as_str(s);
+        let ch = text[*offset as usize..]
+            .chars()
+            .next()
+            .expect("a character");
+        *offset += ch.len_utf8() as i64;
+        *out = character(ch);
+    }
 }
 
 #[unsafe(no_mangle)]

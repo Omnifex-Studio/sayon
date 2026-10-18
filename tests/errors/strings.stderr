@@ -1,0 +1,19 @@
+error[E_IMMUTABLE_STRING]: the characters of a string cannot be changed
+  --> strings.sayon:2:1
+   |
+ 2 | word[0] = "x"
+   | ^^^^^^^^^^^^^
+   |
+   = help: build a new string instead, for example with `strings.slice` and `+`
+
+error[E_BORROW_CONFLICT]: cannot replace `word` while the loop is reading it
+  --> strings.sayon:5:5
+   |
+ 4 | for character in word
+   |                  ---- the loop reads `word` here until it finishes
+ 5 |     word = "other"
+   |     ^^^^^^^^^^^^^^
+   |
+   = help: collect the changes in another collection and apply them after the loop
+
+2 errors found; nothing was run

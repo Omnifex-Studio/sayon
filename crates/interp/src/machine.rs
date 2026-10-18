@@ -8,7 +8,7 @@ use crate::value::*;
 use sayon_check::types::{FloatType, IntType, Type};
 use sayon_ir::*;
 use sayon_runtime::host::{Host, HostArg, HostType, HostValue, invoke};
-use sayon_runtime::text::{Number, parse_number, range_length};
+use sayon_runtime::text::{Number, parse_number, position_error, range_length};
 use sayon_syntax::{SourceMap, Span};
 use std::io::Write;
 use std::rc::Rc;
@@ -709,6 +709,16 @@ impl<'m> Machine<'m> {
                 Value::Int(start as i128 + index * step as i128)
             }
             Rvalue::Increment(value) => Value::Int(self.int(value) + 1),
+            Rvalue::NextChar { text, offset } => {
+                let text = self.string(text);
+                let reference = self.resolve(offset);
+                let start = self.read(&reference, |v| v.as_int()) as usize;
+                let ch = text[start..].chars().next().expect("a character");
+                self.with_mut(&reference, |v| {
+                    *v = Value::Int((start + ch.len_utf8()) as i128);
+                });
+                Value::str(ch.encode_utf8(&mut [0; 4]))
+            }
             Rvalue::MakeClosure {
                 function,
                 env,
@@ -832,6 +842,20 @@ impl<'m> Machine<'m> {
                     return Err(self.error("BoundsError", message, span));
                 }
                 Ok(Value::Int(index))
+            }
+            Op::CharAt { text, index } => {
+                let text = self.string(text);
+                let position = self.int(index);
+                let found = usize::try_from(position)
+                    .ok()
+                    .and_then(|position| text.chars().nth(position));
+                match found {
+                    Some(ch) => Ok(Value::str(ch.encode_utf8(&mut [0; 4]))),
+                    None => {
+                        let message = position_error(position, text.chars().count());
+                        Err(self.error("BoundsError", message, span))
+                    }
+                }
             }
             Op::DictFind { dict, key } => {
                 let key = self.string(key);

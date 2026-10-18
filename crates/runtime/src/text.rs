@@ -109,6 +109,16 @@ pub fn parse_number(text: &str) -> Result<Number, (&'static str, String)> {
 }
 
 /// Number of values `range(start, end, step)` yields, computed without overflow.
+/// The message for a string position outside a string of `length`
+/// characters.
+pub fn position_error(position: i128, length: usize) -> String {
+    if length == 0 {
+        format!("position {position} is out of bounds: the string is empty")
+    } else {
+        format!("position {position} is out of bounds for a string of length {length}")
+    }
+}
+
 pub fn range_length(start: i64, end: i64, step: i64) -> i64 {
     let (start, end, step) = (start as i128, end as i128, step as i128);
     let count = if step > 0 {

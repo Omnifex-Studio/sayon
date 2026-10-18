@@ -14,3 +14,17 @@ print("abc" < "abd", "b" > "a", "same" == "same")
 joined = "first" + " " + "second"
 print(joined)
 print(tostring(42) + "!")
+
+# Positions and loops count characters, not bytes.
+print(greeting[0], greeting[1], greeting[length(greeting) - 1])
+letters = []
+for character in greeting
+    if character == " "
+        break
+    push(letters, character)
+print(letters)
+for character in "日本"
+    print(character, bytelength(character))
+outcome = try greeting[20]
+if outcome is error
+    print(outcome.code, outcome.message)

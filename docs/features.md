@@ -40,7 +40,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `try` expressions, `is error` narrowing, `Outcome<T>`, unused-outcome warning | experimental | M2 |
 | Dictionary keys other than strings | planned | M2 |
 | Borrowed views (`View<T>`, `MutableView<T>`) | planned | M2 |
-| String indexing, slicing, character iteration | planned | M2 |
+| String indexing and character iteration (`text[i]`, `for character in text`); slicing with `strings.slice` | experimental | M2 |
+| Byte views and grapheme operations on strings | planned | M2 |
 | `Shared`, `Weak`, `Cell`, `Mutex` | planned | M3 |
 | `foreign` declarations, `unsafe`, pointers, C interoperability | planned | M3 |
 | Fibers, channels, `select` | planned | M3 |

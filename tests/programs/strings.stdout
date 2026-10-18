@@ -9,3 +9,8 @@ Unicode: 😀 é
 true true true
 first second
 42!
+h é d
+["h", "é", "l", "l", "o"]
+日 3
+本 3
+BoundsError position 20 is out of bounds for a string of length 11

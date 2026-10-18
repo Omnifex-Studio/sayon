@@ -244,6 +244,17 @@ fn unavailable_features_name_their_milestone() {
     fails("unsafe\n    x = 1\n", "E_UNAVAILABLE");
 }
 
+#[test]
+fn strings_have_character_positions() {
+    ok("word = \"abc\"\nfirst: string = word[0]\nfor character in word\n    print(character)\n");
+    fails("word = \"abc\"\nword[0] = \"x\"\n", "E_IMMUTABLE_STRING");
+    fails("word = \"abc\"\nprint(word[\"a\"])\n", "E_TYPE_MISMATCH");
+    fails(
+        "word = \"abc\"\nfor character in word\n    word = \"d\"\n",
+        "E_BORROW_CONFLICT",
+    );
+}
+
 // ----- function values and closures -------------------------------------------
 
 #[test]

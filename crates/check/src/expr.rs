@@ -555,6 +555,8 @@ impl<'a> Checker<'a> {
         match self.unifier.shallow(target) {
             Type::Array(element) => *element,
             Type::Dict(_, value) => *value,
+            // A string's character at a position, as a string.
+            Type::String => Type::String,
             Type::Unknown => Type::Unknown,
             Type::Var(_) => {
                 let result = self.fresh_var(span);
@@ -576,6 +578,7 @@ impl<'a> Checker<'a> {
     pub fn coerce_index(&mut self, index: hir::Expr, target: &Type) -> hir::Expr {
         match self.unifier.shallow(target) {
             Type::Array(_) => self.coerce(index, &Type::INTEGER, "array indexes are integers"),
+            Type::String => self.coerce(index, &Type::INTEGER, "string positions are integers"),
             Type::Dict(key, _) => self.coerce(index, &key, "dictionary key"),
             _ => index,
         }

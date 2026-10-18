@@ -1049,15 +1049,20 @@ impl<'l, 'p> FnLower<'l, 'p> {
         self.goto(head);
 
         self.switch_to(head);
-        if iterable_ty != Type::Range {
+        let borrowed = Operand::Borrow {
+            place: collection.clone(),
+            mutable: false,
+        };
+        if iterable_ty == Type::String {
+            // A string loop steps through the UTF-8 bytes; `index` is the
+            // byte offset of the next character.
+            self.assign(Place::slot(count), Rvalue::ByteLength(borrowed));
+        } else if iterable_ty != Type::Range {
             // Re-read each time; the loop's borrow keeps the length fixed.
             self.assign(
                 Place::slot(count),
                 Rvalue::Length {
-                    value: Operand::Borrow {
-                        place: collection.clone(),
-                        mutable: false,
-                    },
+                    value: borrowed,
                     ty: iterable_ty.clone(),
                 },
             );
@@ -1078,6 +1083,12 @@ impl<'l, 'p> FnLower<'l, 'p> {
         });
 
         self.switch_to(body_entry);
+        if iterable_ty == Type::String {
+            self.string_loop_body(bindings, collection, index, body, [head, exit, step]);
+            self.switch_to(exit);
+            self.pop_scope();
+            return;
+        }
         let element_places: Vec<Place> = match &iterable_ty {
             Type::Array(_) => vec![collection.project(Projection::Index(index))],
             Type::Dict(..) => {
@@ -1138,6 +1149,49 @@ impl<'l, 'p> FnLower<'l, 'p> {
 
         self.switch_to(exit);
         self.pop_scope();
+    }
+
+    /// One iteration of a loop over a string: the loop variable owns the
+    /// next character and is destroyed when the iteration ends, however it
+    /// ends.
+    fn string_loop_body(
+        &mut self,
+        bindings: &[LocalId],
+        text: Place,
+        offset: SlotId,
+        body: &'p hir::Block,
+        [head, exit, step]: [BlockId; 3],
+    ) {
+        let scope_depth = self.scopes.len();
+        self.push_scope();
+        let local = bindings[0];
+        let info = &self.locals[local.0 as usize];
+        let name = Some(info.name.clone());
+        let slot = self.new_slot(Type::String, SlotKind::Value, name);
+        self.scopes.last_mut().expect("scope").slots.push(slot);
+        self.local_slots.insert(local, slot);
+        self.assign(
+            Place::slot(slot),
+            Rvalue::NextChar {
+                text: Operand::Borrow {
+                    place: text,
+                    mutable: false,
+                },
+                offset: Place::slot(offset),
+            },
+        );
+        self.loops.push(LoopCtx {
+            break_to: exit,
+            continue_to: step,
+            scope_depth,
+            finally_depth: self.finallies.len(),
+        });
+        self.lower_block(body);
+        self.loops.pop();
+        self.pop_scope();
+        self.goto(step);
+        self.switch_to(step);
+        self.goto(head);
     }
 
     fn try_stmt(
@@ -1466,7 +1520,7 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 }
                 self.temp_place(expr, want)
             }
-            hir::ExprKind::Index { target, index } => {
+            hir::ExprKind::Index { target, index } if self.ty(&target.ty) != Type::String => {
                 let target_ty = self.ty(&target.ty);
                 let base = self.place_of(target, Want::Read);
                 self.element_place(base, &target_ty, index, expr.span)
@@ -1534,8 +1588,9 @@ impl<'l, 'p> FnLower<'l, 'p> {
         let placeable = match &expr.kind {
             hir::ExprKind::Local { .. }
             | hir::ExprKind::Constant(_)
-            | hir::ExprKind::Index { .. }
             | hir::ExprKind::Field { .. } => true,
+            // A character of a string is computed, not stored.
+            hir::ExprKind::Index { target, .. } => self.ty(&target.ty) != Type::String,
             hir::ExprKind::Narrow(inner) | hir::ExprKind::VariantPayload { value: inner, .. } => {
                 matches!(inner.kind, hir::ExprKind::Local { .. })
             }
@@ -1630,6 +1685,11 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 Rvalue::Use(Operand::Const(Constant::Str(text.clone()))),
             ),
             H::Nothing => self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing))),
+            H::Index { target, index } if self.ty(&target.ty) == Type::String => {
+                let text = self.operand(target, Want::Read);
+                let index = self.operand(index, Want::Owned);
+                self.op(Op::CharAt { text, index }, Some(dest), span);
+            }
             H::Local { .. }
             | H::Constant(_)
             | H::Index { .. }

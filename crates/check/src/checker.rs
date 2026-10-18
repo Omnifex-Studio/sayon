@@ -1584,6 +1584,16 @@ impl<'a> Checker<'a> {
                     self.unify_at(result, &value, *span, "");
                     true
                 }
+                Type::String => {
+                    self.unify_at(
+                        &Type::INTEGER,
+                        index,
+                        *span,
+                        "string positions are integers",
+                    );
+                    self.unify_at(result, &Type::String, *span, "");
+                    true
+                }
                 Type::Var(_) => false,
                 Type::Unknown => true,
                 other => {
@@ -1623,15 +1633,11 @@ impl<'a> Checker<'a> {
     }
 
     pub fn not_indexable(&mut self, ty: &Type, span: Span) {
-        if *ty == Type::String {
-            self.unavailable(span, "string indexing and slicing", "M2");
-        } else {
-            self.error(
-                Diagnostic::error("E_NOT_INDEXABLE", format!("{ty} cannot be indexed"))
-                    .primary(span, "")
-                    .help("only arrays and dictionaries support `[...]`"),
-            );
-        }
+        self.error(
+            Diagnostic::error("E_NOT_INDEXABLE", format!("{ty} cannot be indexed"))
+                .primary(span, "")
+                .help("arrays, dictionaries, and strings support `[...]`"),
+        );
     }
 
     /// Unifies loop variable types with the element types of `iterable`.
@@ -1647,15 +1653,12 @@ impl<'a> Checker<'a> {
                 }
             }
             Type::Unknown => return,
-            Type::String => {
-                self.unavailable(span, "iteration over the characters of a string", "M2");
-                return;
-            }
+            Type::String => vec![Type::String],
             other => {
                 self.error(
                     Diagnostic::error("E_NOT_ITERABLE", format!("cannot iterate over {other}"))
                         .primary(span, "")
-                        .help("`for` loops iterate over arrays, dictionaries and ranges"),
+                        .help("`for` loops iterate over arrays, dictionaries, strings, and ranges"),
                 );
                 return;
             }

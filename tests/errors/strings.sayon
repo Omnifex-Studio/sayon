@@ -1,0 +1,5 @@
+word = "abc"
+word[0] = "x"
+
+for character in word
+    word = "other"

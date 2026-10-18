@@ -326,6 +326,12 @@ pub enum Rvalue {
     },
     /// Integer addition that cannot overflow (loop counters below a length).
     Increment(Operand),
+    /// The character starting at byte `offset` of a string, as a new
+    /// string; advances `offset` past it.
+    NextChar {
+        text: Operand,
+        offset: Place,
+    },
     /// A function value calling `function`. A closure also gets a new
     /// environment: a structure of type `env` holding the captured values.
     MakeClosure {
@@ -392,6 +398,12 @@ pub enum Op {
     /// Fails unless `index` is a valid position in `array`; stores it in dest.
     CheckIndex {
         array: Operand,
+        index: Operand,
+    },
+    /// The character at a position of a string, as a new string; fails
+    /// outside the string.
+    CharAt {
+        text: Operand,
         index: Operand,
     },
     /// Finds `key`; stores the entry position in dest or fails.

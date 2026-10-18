@@ -112,6 +112,9 @@ The analysis tracks, along every control-flow path, whether each local holds a v
 | `E_BORROWED_UNION` | A borrowed owned value used where a union is expected, which would need a copy. |
 | `E_MOVE_CAPTURED` | Moving a captured value out of the closure that captured it, or a closure inside a closure changing a capture of the outer one. |
 | `E_PARAMETER_MODE` | A named function used as a value whose inferred `own` or `update` parameter is not declared, so its function type would not show it. |
+| `E_IMMUTABLE_STRING` | Assigning to a position of a string. |
+
+A string position (`text[i]`) produces a new string, so it borrows the text and can be moved freely. A `for` loop over a string reads it in place like a collection, so the string cannot be replaced while the loop runs; each loop variable owns its character.
 
 Calling a function value needs exclusive access to it, because a closure may change what it captured. Calling through a `constant` local or module constant is allowed when its initializer is known to hold only named functions and closures that change none of their captures; such calls only read the constant.
 
@@ -148,7 +151,7 @@ A moved-from place is empty, and destroying an empty place does nothing, so clea
 | `float`, `float32` | `double`, `float` | 8, 4 |
 | `boolean` | `i1` | 1 |
 | `nothing` | `i8` | 1 |
-| `string` | `{ ptr data, i64 length, i64 capacity }`, capacity 0 for static text | 24 |
+| `string` | `{ ptr data, i64 length, i64 capacity }`, capacity 0 for static text; a one-character ASCII string taken from another string points into a static table | 24 |
 | `Array<T>` | `{ ptr data, i64 length, i64 capacity }`, elements contiguous | 24 |
 | `Range` | `{ i64 start, i64 end, i64 step }` | 24 |
 | `Dict<string, T>`, `Error` | pointer to a runtime object | 8 |

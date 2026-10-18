@@ -1089,6 +1089,13 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 self.body.line(format!("{result} = add i64 {v}, 1"));
                 self.body.line(format!("store i64 {result}, ptr {dest}"));
             }
+            Rvalue::NextChar { text, offset } => {
+                let (text, _) = self.pointer(text);
+                let (offset, _) = self.place_ptr(offset);
+                self.body.line(format!(
+                    "call void @sayon_str_next_char(ptr {text}, ptr {offset}, ptr {dest})"
+                ));
+            }
             Rvalue::MakeClosure {
                 function,
                 env,
@@ -1535,6 +1542,20 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     self.body
                         .line(format!("store i64 {position}, ptr {target}"));
                 }
+                Some(status)
+            }
+            Op::CharAt { text, index } => {
+                let (text, _) = self.pointer(text);
+                let (_, position, _) = self.value(index);
+                let target = match dest {
+                    Some(place) => self.place_ptr(place).0,
+                    None => self.body.alloca("%sayon.str"),
+                };
+                let location = self.cg.location(span);
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_str_char_at(ptr {err}, ptr {text}, i64 {position}, ptr {target}, ptr {location})"
+                ));
                 Some(status)
             }
             Op::DictFind { dict, key } => {
@@ -2068,6 +2089,8 @@ declare void @sayon_str_concat(ptr, ptr, ptr)
 declare zeroext i1 @sayon_str_eq(ptr, ptr)
 declare i32 @sayon_str_cmp(ptr, ptr)
 declare i64 @sayon_str_chars(ptr)
+declare i32 @sayon_str_char_at(ptr, ptr, i64, ptr, ptr)
+declare void @sayon_str_next_char(ptr, ptr, ptr)
 declare ptr @sayon_builder_new()
 declare void @sayon_builder_bytes(ptr, ptr, i64)
 declare void @sayon_builder_str(ptr, ptr, i1 zeroext)

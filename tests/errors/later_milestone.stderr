@@ -1,15 +1,15 @@
-error[E_UNAVAILABLE]: string indexing and slicing is not available yet
-  --> later_milestone.sayon:1:9
+error[E_UNAVAILABLE]: async and await is not available yet
+  --> later_milestone.sayon:1:1
    |
- 1 | first = "word"[0]
-   |         ^^^^^^^^^ planned for milestone M2
+ 1 | async function work()
+   | ^^^^^^^^^^^^^^^^^^^^^ planned for milestone M8
    |
-   = note: this release does not implement string indexing and slicing; it is scheduled for M2
+   = note: this release does not implement async and await; it is scheduled for M8
 
 error[E_UNAVAILABLE]: unsafe blocks are not available yet
-  --> later_milestone.sayon:3:1
+  --> later_milestone.sayon:4:1
    |
- 3 | unsafe
+ 4 | unsafe
    | ^^^^^^ planned for milestone M3
    |
    = note: this release does not implement unsafe blocks; it is scheduled for M3

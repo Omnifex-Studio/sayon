@@ -64,6 +64,17 @@ print("Sum: {100 + 20}")         # Sum: 120
 print("Braces: {{{name}}}")      # Braces: {Sayon}
 ```
 
+Positions in a string count Unicode characters (scalar values), as `length` does; `bytelength` counts UTF-8 bytes. `text[i]` is the character at position `i` as a one-character string, and `for character in text` visits each character in order. A position outside the string raises `BoundsError`. Strings cannot be changed in place (`E_IMMUTABLE_STRING`); build a new one with `+`, interpolation, or the `standard/strings.sayon` functions such as `slice`.
+
+```sayon
+word = "héllo"
+print(word[1], length(word), bytelength(word))   # é 5 6
+for character in word
+    print(character)
+```
+
+Indexing a string walks it from the start, so `text[i]` takes time proportional to `i`; a `for` loop visits every character in one pass.
+
 ### Arrays and dictionaries
 
 An array literal whose elements have different types gets the union of those types:
@@ -263,6 +274,8 @@ for name in ["ada", "grace"]
     print(name)
 for key, value in ["a" = 1]
     print("{key}: {value}")
+for character in "abc"
+    print(character)
 ```
 
 `range(end)`, `range(start, end)`, and `range(start, end, step)` count from `start` (default 0) up to, but not including, `end`. A zero step is an error. A loop over a dictionary visits keys in insertion order, either keys alone (`for key in dict`) or keys with values (`for key, value in dict`). `break` and `continue` apply to the innermost loop.

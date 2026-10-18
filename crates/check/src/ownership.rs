@@ -745,6 +745,11 @@ impl<'p> Analyzer<'p> {
                     self.expr(value, inner_ctx, state);
                 }
             }
+            // A character of a string is a new string.
+            ExprKind::Index { target, index } if target.ty == Type::String => {
+                self.expr(index, Ctx::Read, state);
+                self.expr(target, Ctx::Read, state);
+            }
             ExprKind::Index { target, index } => {
                 self.expr(index, Ctx::Read, state);
                 if ctx == Ctx::Consume && !self.copy(&ty) {
@@ -880,7 +885,15 @@ impl<'p> Analyzer<'p> {
                     map.insert(local, Status::Init);
                 }
             }
-            Place::Index { target, index, .. } => {
+            Place::Index {
+                target,
+                target_ty,
+                index,
+            } => {
+                if *target_ty == Type::String {
+                    self.immutable_string(span);
+                    return;
+                }
                 self.expr(index, Ctx::Read, state);
                 self.update_place(target, state, span);
             }
@@ -888,6 +901,17 @@ impl<'p> Analyzer<'p> {
                 self.update_place(target, state, span)
             }
         }
+    }
+
+    fn immutable_string(&mut self, span: Span) {
+        self.emit("E_IMMUTABLE_STRING", span, || {
+            Diagnostic::error(
+                "E_IMMUTABLE_STRING",
+                "the characters of a string cannot be changed",
+            )
+            .primary(span, "")
+            .help("build a new string instead, for example with `strings.slice` and `+`")
+        });
     }
 
     /// The place is changed in place (an element or field assignment, or a
@@ -907,7 +931,15 @@ impl<'p> Analyzer<'p> {
                     self.check_update(local, span);
                 }
             }
-            Place::Index { target, index, .. } => {
+            Place::Index {
+                target,
+                target_ty,
+                index,
+            } => {
+                if *target_ty == Type::String {
+                    self.immutable_string(span);
+                    return;
+                }
                 self.expr(index, Ctx::Read, state);
                 self.update_place(target, state, span);
             }
@@ -1060,7 +1092,9 @@ impl<'p> Analyzer<'p> {
                         self.locals[binding.0 as usize].borrowed = borrowed;
                     }
                 }
-                let borrow = if collection {
+                // A loop over a string reads it in place too; each character
+                // is a new string the loop variable owns.
+                let borrow = if collection || iterable_ty == Type::String {
                     Self::root(iterable)
                 } else {
                     None
