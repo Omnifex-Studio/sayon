@@ -7,7 +7,7 @@
 //! and an error successor; on failure the error is stored in the function's
 //! error slot.
 
-use sayon_check::types::{FloatType, IntType, Type, TypeDef};
+use sayon_check::types::{FloatType, IntType, Type, TypeDef, Wrapper};
 use sayon_syntax::Span;
 use sayon_syntax::ast::ParamMode;
 
@@ -80,6 +80,7 @@ impl Module {
             (Projection::VariantField { variant, field }, Type::Named(named)) => {
                 variant_fields(&self.types, named, *variant)[*field as usize].clone()
             }
+            (Projection::Deref, Type::Wrapper(Wrapper::Shared, inner)) => (**inner).clone(),
             (projection, ty) => panic!("invalid projection {projection:?} on {ty}"),
         }
     }
@@ -157,6 +158,8 @@ pub enum Projection {
     Field(u32),
     /// A field of an enum value known to be the given variant.
     VariantField { variant: u32, field: u32 },
+    /// The value a `Shared` handle refers to.
+    Deref,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -344,6 +347,21 @@ pub enum Rvalue {
     NextChar {
         text: Operand,
         offset: Place,
+    },
+    /// A new shared value holding `value`, of type `ty`, with one handle.
+    MakeShared {
+        value: Operand,
+        ty: Type,
+    },
+    /// A `Weak` handle of the shared value a `Shared` handle refers to.
+    Downgrade(Operand),
+    /// A new `Shared` handle from a `Weak` one, as the union member with
+    /// `shared_tag`, or `nothing` (with `nothing_tag`) when no `Shared`
+    /// handle is left.
+    Upgrade {
+        weak: Operand,
+        shared_tag: u32,
+        nothing_tag: u32,
     },
     /// A function value calling `function`. A closure also gets a new
     /// environment: a structure of type `env` holding the captured values.

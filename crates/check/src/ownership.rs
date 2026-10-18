@@ -8,7 +8,7 @@
 //! move or change data they only borrow.
 
 use crate::hir::*;
-use crate::types::{Type, TypeDef, holds_function};
+use crate::types::{Type, TypeDef, Wrapper, holds_function};
 use sayon_syntax::ast::ParamMode;
 use sayon_syntax::{Diagnostic, Span};
 use std::collections::{HashMap, HashSet};
@@ -460,11 +460,23 @@ impl<'p> Analyzer<'p> {
         });
     }
     /// Whether values of the type are copied rather than moved.
+    /// Whether values of the type are bitwise copies, so that a parameter
+    /// receives its own copy.
     fn copy(&self, ty: &Type) -> bool {
         if self.stand_ins.is_empty() {
             ty.is_copy()
         } else {
             ty.substitute(&self.stand_ins).is_copy()
+        }
+    }
+
+    /// Whether a value stays usable after it is assigned or passed on: a
+    /// Copy value, or a counted handle (`Shared`, `Weak`), which is retained.
+    fn dup(&self, ty: &Type) -> bool {
+        if self.stand_ins.is_empty() {
+            ty.is_duplicable()
+        } else {
+            ty.substitute(&self.stand_ins).is_duplicable()
         }
     }
 
@@ -551,7 +563,7 @@ impl<'p> Analyzer<'p> {
             MoveReason::Closure => " into a closure".to_string(),
             MoveReason::Explicit => String::new(),
         };
-        let taken_over = site.reason == MoveReason::Closure && self.copy(&self.local(local).ty);
+        let taken_over = site.reason == MoveReason::Closure && self.dup(&self.local(local).ty);
         let message = if taken_over {
             format!("`{name}` now belongs to a closure that changes it")
         } else if site.earlier_iteration {
@@ -568,7 +580,7 @@ impl<'p> Analyzer<'p> {
             MoveReason::Call(callee) => format!(
                 "`{callee}` takes ownership; pass clone({name}) if you still need `{name}` afterwards"
             ),
-            MoveReason::Closure if self.copy(&self.local(local).ty) => format!(
+            MoveReason::Closure if self.dup(&self.local(local).ty) => format!(
                 "the closure changes `{name}`, so it keeps the variable; have the closure return what you need"
             ),
             MoveReason::Closure => format!(
@@ -666,6 +678,8 @@ impl<'p> Analyzer<'p> {
         state: &mut State,
     ) {
         let explicit_move = *usage == Usage::Move;
+        // `move` hands a counted handle over without retaining it.
+        let copy = copy && !(explicit_move && self.local(local).ty.is_retained());
         let decided = if copy && ctx != Ctx::Update {
             Usage::Copy
         } else if explicit_move || ctx == Ctx::Consume {
@@ -765,7 +779,7 @@ impl<'p> Analyzer<'p> {
     fn captures(&mut self, captures: &mut [Capture], span: Span, state: &mut State) {
         let saved = std::mem::replace(&mut self.reason, MoveReason::Closure);
         for capture in captures {
-            let copy = self.copy(&capture.value.ty);
+            let copy = self.dup(&capture.value.ty);
             if copy && !capture.mutated {
                 self.expr(&mut capture.value, Ctx::Read, state);
                 continue;
@@ -936,7 +950,7 @@ impl<'p> Analyzer<'p> {
         match &mut expr.kind {
             ExprKind::Local { local, usage } => {
                 let local = *local;
-                let copy = self.copy(&self.local(local).ty);
+                let copy = self.dup(&self.local(local).ty);
                 self.use_local(local, usage, copy, ctx, span, state);
             }
             // Using a narrowed value uses the local that holds it; taking
@@ -945,7 +959,7 @@ impl<'p> Analyzer<'p> {
                 match &mut inner.kind {
                     ExprKind::Local { local, usage } => {
                         let local = *local;
-                        let copy = self.copy(&ty);
+                        let copy = self.dup(&ty);
                         self.use_local(local, usage, copy, ctx, span, state);
                     }
                     _ => self.expr(inner, ctx, state),
@@ -1047,7 +1061,31 @@ impl<'p> Analyzer<'p> {
                 self.reason = saved;
             }
             ExprKind::Field { value, name } => {
-                if ctx == Ctx::Consume && !self.copy(&ty) && Self::is_place(value) {
+                // A shared value cannot change, nor have its parts taken.
+                if matches!(value.ty, Type::Wrapper(Wrapper::Shared, _))
+                    && (ctx == Ctx::Update || ctx == Ctx::Consume && !self.dup(&ty))
+                {
+                    let changing = ctx == Ctx::Update;
+                    self.emit("E_SHARED_IMMUTABLE", span, || {
+                        let diagnostic = Diagnostic::error(
+                            "E_SHARED_IMMUTABLE",
+                            if changing {
+                                "a shared value cannot change"
+                            } else {
+                                "cannot transfer a shared value out of its handle"
+                            },
+                        )
+                        .primary(span, "");
+                        if changing {
+                            diagnostic.help("keep the parts that change in a Cell, as `Shared<Cell<T>>`, and change them with `shared.value.set(...)`")
+                        } else {
+                            diagnostic.help("other handles may still use it; take a copy with clone(...)")
+                        }
+                    });
+                    self.expr(value, Ctx::Read, state);
+                    return;
+                }
+                if ctx == Ctx::Consume && !self.dup(&ty) && Self::is_place(value) {
                     // Taking one field would leave the structure incomplete.
                     let field_value = Analyzer::describe_value(&ty);
                     let owner = Self::root(value)
@@ -1082,7 +1120,7 @@ impl<'p> Analyzer<'p> {
             }
             ExprKind::Index { target, index } => {
                 self.expr(index, Ctx::Read, state);
-                if ctx == Ctx::Consume && !self.copy(&ty) {
+                if ctx == Ctx::Consume && !self.dup(&ty) {
                     let element = Analyzer::describe_value(&ty);
                     self.emit("E_MOVE_OUT_OF_ELEMENT", span, || {
                         Diagnostic::error(
@@ -1112,7 +1150,7 @@ impl<'p> Analyzer<'p> {
             ExprKind::Inject(inner) => {
                 let place =
                     Self::root(inner).is_some() || matches!(inner.kind, ExprKind::Constant(_));
-                if ctx != Ctx::Consume && place && !self.copy(&inner.ty) {
+                if ctx != Ctx::Consume && place && !self.dup(&inner.ty) {
                     let inner_ty = inner.ty.clone();
                     self.emit("E_BORROWED_UNION", span, || {
                         Diagnostic::error(

@@ -6,7 +6,7 @@
 //! Remaining literal kinds are defaulted; remaining variables in a function
 //! signature are generalized together with their bounds.
 
-use crate::types::{FloatType, IntType, NamedType, TyVar, Type};
+use crate::types::{FloatType, IntType, NamedType, TyVar, Type, Wrapper};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,6 +263,7 @@ impl Unifier {
             }),
             Type::Function(function) => Type::function(function.map(|t| self.resolve(t))),
             Type::View(element, mutable) => Type::view(self.resolve(&element), mutable),
+            Type::Wrapper(kind, inner) => Type::wrapper(kind, self.resolve(&inner)),
             other => other,
         }
     }
@@ -295,6 +296,7 @@ impl Unifier {
                 Type::function(function.map(|t| self.resolve_for_display(t)))
             }
             Type::View(element, mutable) => Type::view(self.resolve_for_display(&element), mutable),
+            Type::Wrapper(kind, inner) => Type::wrapper(kind, self.resolve_for_display(&inner)),
             other => other,
         }
     }
@@ -371,6 +373,7 @@ impl Unifier {
                 | Type::Param(_)
                 | Type::Function(_)
                 | Type::View(..)
+                | Type::Wrapper(..)
                 | Type::Stream => false,
                 _ => true,
             },
@@ -388,6 +391,11 @@ impl Unifier {
                 Type::Named(named) => return self.fields_support(named, &ty, one),
                 // An open file is closed once, so it has one owner.
                 Type::Stream => false,
+                // A cell is cloned with its value; a shared handle is
+                // retained.
+                Type::Wrapper(Wrapper::Cell, inner) => {
+                    return self.require_trait(inner, Traits::CLONE);
+                }
                 Type::Param(index) => {
                     self.record_param_trait(*index, one);
                     true
@@ -498,7 +506,7 @@ impl Unifier {
             Type::Union(members) => members.iter().any(|m| self.occurs(var, m)),
             Type::Named(named) => named.args.iter().any(|a| self.occurs(var, a)),
             Type::Function(function) => function.types().any(|t| self.occurs(var, t)),
-            Type::View(element, _) => self.occurs(var, &element),
+            Type::View(element, _) | Type::Wrapper(_, element) => self.occurs(var, &element),
             _ => false,
         }
     }
@@ -555,6 +563,9 @@ impl Unifier {
                 }
                 self.unify(&x.ret, &y.ret)
                     .map_err(|_| self.mismatch(&a, &b))
+            }
+            (Type::Wrapper(k, x), Type::Wrapper(j, y)) if k == j => {
+                self.unify(x, y).map_err(|_| self.mismatch(&a, &b))
             }
             (Type::View(x, m), Type::View(y, n)) if m == n => {
                 self.unify(x, y).map_err(|_| self.mismatch(&a, &b))
@@ -618,7 +629,7 @@ impl Unifier {
                     self.free_vars(ty, out);
                 }
             }
-            Type::View(element, _) => self.free_vars(&element, out),
+            Type::View(element, _) | Type::Wrapper(_, element) => self.free_vars(&element, out),
             _ => {}
         }
     }

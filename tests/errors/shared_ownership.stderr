@@ -1,0 +1,36 @@
+error[E_SHARED_IMMUTABLE]: a shared value cannot change
+  --> shared_ownership.sayon:5:6
+   |
+ 5 | push(settings.value.sizes, 4)
+   |      ^^^^^^^^^^^^^^
+   |
+   = help: keep the parts that change in a Cell, as `Shared<Cell<T>>`, and change them with `shared.value.set(...)`
+
+error[E_MOVE_OUT_OF_FIELD]: cannot transfer the array out of the field `sizes` of `settings`
+  --> shared_ownership.sayon:6:9
+   |
+ 6 | taken = settings.value.sizes
+   |         ^^^^^^^^^^^^^^^^^^^^ the field stays owned by its structure
+   |
+   = help: use clone(...) for a copy, or transfer the whole structure
+
+error[E_SHARED_IMMUTABLE]: cannot transfer a shared value out of its handle
+  --> shared_ownership.sayon:7:9
+   |
+ 7 | whole = settings.value
+   |         ^^^^^^^^^^^^^^
+   |
+   = help: other handles may still use it; take a copy with clone(...)
+
+error[E_MOVED_VALUE]: `settings` was transferred to `moved`
+  --> shared_ownership.sayon:9:7
+   |
+ 8 | moved = move(settings)
+   |         -------------- ownership transferred here
+ 9 | print(settings)
+   |       ^^^^^^^^ `settings` no longer owns the value
+   |
+   = help: use `moved` here, or write `moved = clone(settings)` when you need two independent copies
+
+4 errors found; nothing was run
+run `sayon explain E_SHARED_IMMUTABLE` to learn more about an error

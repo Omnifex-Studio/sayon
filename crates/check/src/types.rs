@@ -138,6 +138,8 @@ pub enum Type {
     /// An open file, `HostStream` in the standard library's code: a counted
     /// reference to the runtime's stream, closed when the last is dropped.
     Stream,
+    /// `Shared<T>`, `Weak<T>`, or `Cell<T>`.
+    Wrapper(Wrapper, Box<Type>),
     /// A type parameter of a generic function.
     Param(u32),
     Var(TyVar),
@@ -147,8 +149,54 @@ pub enum Type {
     Nothing,
 }
 
+/// The types that hold one value in a particular way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Wrapper {
+    /// A counted handle to a value many owners share; it cannot change.
+    Shared,
+    /// A handle to a shared value that does not keep it alive.
+    Weak,
+    /// A value that can be replaced through a read-only path, such as
+    /// inside a shared value. Nothing inside it can be borrowed.
+    Cell,
+}
+
+impl Wrapper {
+    pub fn name(self) -> &'static str {
+        match self {
+            Wrapper::Shared => "Shared",
+            Wrapper::Weak => "Weak",
+            Wrapper::Cell => "Cell",
+        }
+    }
+}
+
 impl Type {
     pub const INTEGER: Type = Type::Int(IntType::I64);
+
+    pub fn wrapper(kind: Wrapper, inner: Type) -> Type {
+        Type::Wrapper(kind, Box::new(inner))
+    }
+
+    /// Whether a copy of a value of this type is a counted handle that a
+    /// copy retains, so that using the value again keeps it alive:
+    /// `Shared`, `Weak`, and unions of them with Copy types.
+    pub fn is_retained(&self) -> bool {
+        match self {
+            Type::Wrapper(Wrapper::Shared | Wrapper::Weak, _) => true,
+            Type::Union(members) => {
+                members.iter().any(Type::is_retained)
+                    && members.iter().all(|m| m.is_copy() || m.is_retained())
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a value can still be used after it is assigned or passed on:
+    /// a Copy value, which is copied, or a counted handle, which is retained.
+    pub fn is_duplicable(&self) -> bool {
+        self.is_copy() || self.is_retained()
+    }
     pub const FLOAT: Type = Type::Float(FloatType::F64);
 
     pub fn array(element: Type) -> Type {
@@ -193,7 +241,7 @@ impl Type {
             Type::Union(members) => members.iter().any(Type::has_vars),
             Type::Named(named) => named.args.iter().any(Type::has_vars),
             Type::Function(function) => function.types().any(Type::has_vars),
-            Type::View(element, _) => element.has_vars(),
+            Type::View(element, _) | Type::Wrapper(_, element) => element.has_vars(),
             _ => false,
         }
     }
@@ -206,7 +254,7 @@ impl Type {
             Type::Union(members) => members.iter().any(Type::has_params),
             Type::Named(named) => named.args.iter().any(Type::has_params),
             Type::Function(function) => function.types().any(Type::has_params),
-            Type::View(element, _) => element.has_params(),
+            Type::View(element, _) | Type::Wrapper(_, element) => element.has_params(),
             _ => false,
         }
     }
@@ -239,6 +287,7 @@ impl Type {
             }),
             Type::Function(function) => Type::function(function.map(|t| t.substitute(args))),
             Type::View(element, mutable) => Type::view(element.substitute(args), *mutable),
+            Type::Wrapper(kind, inner) => Type::wrapper(*kind, inner.substitute(args)),
             other => other.clone(),
         }
     }
@@ -257,6 +306,7 @@ impl Type {
                 Type::Dict(key, value) => inside(key) || inside(value),
                 Type::Union(members) => members.iter().any(inside),
                 Type::Named(named) => named.args.iter().any(inside),
+                Type::Wrapper(_, inner) => inside(inner),
                 Type::Function(function) => {
                     inside(&function.ret) || function.params.iter().any(|(_, p)| p.holds_view())
                 }
@@ -335,6 +385,7 @@ impl fmt::Display for Type {
             }
             Type::View(element, false) => write!(f, "View<{element}>"),
             Type::View(element, true) => write!(f, "MutableView<{element}>"),
+            Type::Wrapper(kind, inner) => write!(f, "{}<{inner}>", kind.name()),
             Type::Function(function) => {
                 f.write_str("function(")?;
                 for (index, (mode, param)) in function.params.iter().enumerate() {
@@ -491,6 +542,7 @@ pub fn non_key_part(types: &[TypeDef], ty: &Type) -> Option<Type> {
             | Type::Dict(..)
             | Type::Function(_)
             | Type::View(..)
+            | Type::Wrapper(..)
             | Type::Error
             | Type::Stream
             | Type::Range => Some(ty.clone()),
@@ -505,9 +557,10 @@ pub fn holds_function(types: &[TypeDef], ty: &Type) -> bool {
         match ty {
             Type::Function(_) => true,
             Type::Union(members) => members.iter().any(|m| search(types, m, seen)),
-            Type::Array(element) | Type::Dict(_, element) | Type::View(element, _) => {
-                search(types, element, seen)
-            }
+            Type::Array(element)
+            | Type::Dict(_, element)
+            | Type::View(element, _)
+            | Type::Wrapper(_, element) => search(types, element, seen),
             Type::Named(named) => {
                 if seen.contains(&named.id) {
                     return false;

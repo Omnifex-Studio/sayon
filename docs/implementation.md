@@ -172,6 +172,8 @@ A moved-from place is empty, and destroying an empty place does nothing, so clea
 | structure | `{ fields... }` in declaration order, each at its natural alignment | sum of fields with padding |
 | enum | `{ i32 tag, [N x i64] payload }`; tag is the variant's position plus one; a variant's fields are laid out like a structure starting at offset 8 | 8 + 8N |
 | function value | `{ ptr code, ptr environment }` | 16 |
+| `Shared<T>`, `Weak<T>` | pointer to a block: the `Shared` count, the `Weak` count plus one for all the `Shared` handles, the block's size, then the value at offset 24 | 8 |
+| `Cell<T>` | the value itself | as `T` |
 
 Union tags are assigned per member type across the whole program (the module's union member table), so a value of a larger union is a valid value of every smaller union holding the same member. Narrowing and widening therefore never copy or re-tag. Tag zero means empty.
 
@@ -194,6 +196,14 @@ The loader resolves `dependencies/<alias>/<path>` against the package of the imp
 A method call `value.name(...)` is checked as an ordinary call with the value as the first argument, after the checker knows the value's type: it looks in the module declaring the type for a function `type_name`, then `name`, whose first parameter is annotated with that type. Functions are checked in dependency order, and since a method call names no module, a function calling `.name(...)` depends on every method named `name` of any type; a `for` loop depends on every `next`. These edges can only join components in a cycle that already exists through the methods' bodies.
 
 A loop over an iterator keeps the iterator in a hidden local: a reference to the variable it iterates, or the owner of an iterator made for the loop, destroyed when the loop ends. Each iteration calls `next` into a slot of type `T or nothing`, leaves when it holds `nothing`, and otherwise moves the payload into the loop variable, whose scope ends with the iteration. The loop borrows the iterated variable, and for a made iterator, the variables passed to the call that made it in `update` mode.
+
+## Shared values
+
+`Shared` and `Weak` are counted handles. The ownership checker treats them, and unions of them with Copy types, as reusable: using one again is a copy, not a move. Lowering turns every owned use of a reusable handle that is not an explicit `move` into a clone, and cloning a handle adds to its count; destroying one subtracts. A parameter of a handle type is still passed by reference for reading, so the rules that treat a Copy parameter as the function's own copy keep applying only to true Copy types.
+
+The value is destroyed when the `Shared` count reaches zero, and the block freed when the `Weak` count does; since the `Shared` handles together hold one `Weak` count, the block is freed exactly once however the counts reach zero. In the interpreter a handle is an `Rc<RefCell<Value>>`; a place through `shared.value` steps into it, and reads and writes walk such steps recursively, borrowing the cell only while they run.
+
+A `Cell<T>` has its value's layout. `get` clones the value, `set` destroys it and stores the new one, and `replace` moves it out first; all three work through a read-only place, which is sound because no place inside a cell can be borrowed, and none of them runs other code while it changes the cell. A cell is stored inline, so a type that holds itself through a cell is `E_RECURSIVE_TYPE`.
 
 ## Typed JSON
 

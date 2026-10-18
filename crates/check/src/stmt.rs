@@ -692,6 +692,12 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 let (place, base_ty) = self.check_place_in(cx, base, true)?;
+                if let Type::Wrapper(crate::types::Wrapper::Shared, _) =
+                    self.unifier.resolve(&base_ty)
+                {
+                    self.shared_immutable(target.span);
+                    return None;
+                }
                 let field_ty = self.field_type(&base_ty, name, target.span, cx.module);
                 if field_ty == Type::Unknown {
                     return None;

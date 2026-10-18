@@ -4,7 +4,7 @@ use crate::builtins::{self, PreludeItem};
 use crate::checker::{self, Checker, Deferred, FAILURE, FnCtx, Item, Narrowing, OUTCOME};
 use crate::hir::{self, Arg, Builtin, ErrorField, ExprKind, Segment, Usage};
 use crate::infer::{Bounds, LiteralKind, Traits};
-use crate::types::Type;
+use crate::types::{Type, Wrapper};
 use sayon_syntax::ast::{self, BinaryOp, ParamMode, UnaryOp};
 use sayon_syntax::{Diagnostic, Span};
 
@@ -33,6 +33,14 @@ impl<'a> Checker<'a> {
             }
         }
         self.coerce(value, expected, context)
+    }
+
+    pub fn shared_immutable(&mut self, span: Span) {
+        self.error(
+            Diagnostic::error("E_SHARED_IMMUTABLE", "a shared value cannot change")
+                .primary(span, "")
+                .help("keep the parts that change in a Cell, as `Shared<Cell<T>>`, and change them with `shared.value.set(...)`"),
+        );
     }
 
     pub fn coerce(&mut self, value: hir::Expr, expected: &Type, context: &str) -> hir::Expr {
@@ -74,15 +82,15 @@ impl<'a> Checker<'a> {
                 {
                     return self.inject(value, target.clone());
                 }
-                // A collection literal with unresolved elements matches the one
-                // union member of the same shape.
+                // A value with unresolved parts, such as a collection literal,
+                // matches the one union member of the same shape.
                 let same_shape: Vec<&Type> = members
                     .iter()
-                    .filter(|member| {
-                        matches!(
-                            (member, &found),
-                            (Type::Array(_), Type::Array(_)) | (Type::Dict(..), Type::Dict(..))
-                        )
+                    .filter(|member| match (member, &found) {
+                        (Type::Array(_), Type::Array(_)) | (Type::Dict(..), Type::Dict(..)) => true,
+                        (Type::Wrapper(a, _), Type::Wrapper(b, _)) => a == b,
+                        (Type::Named(a), Type::Named(b)) => a.id == b.id,
+                        _ => false,
                     })
                     .collect();
                 if let [member] = same_shape.as_slice() {
@@ -981,6 +989,9 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Member { target, name } => {
                 let value = self.check_expr(cx, target, None);
                 let resolved = self.unifier.resolve(&value.ty);
+                if let Type::Wrapper(kind, inner) = &resolved {
+                    return self.wrapper_method(cx, *kind, inner, value, name, args, span);
+                }
                 if let Type::Named(named) = &resolved {
                     // A structure field holding a function value can be called.
                     let def = self.type_def(named.id);
@@ -1323,6 +1334,90 @@ impl<'a> Checker<'a> {
         )
     }
 
+    /// The methods of `Shared`, `Weak`, and `Cell`.
+    #[allow(clippy::too_many_arguments)]
+    fn wrapper_method(
+        &mut self,
+        cx: &mut FnCtx,
+        kind: Wrapper,
+        inner: &Type,
+        receiver: hir::Expr,
+        name: &ast::Ident,
+        args: &[ast::Expr],
+        span: Span,
+    ) -> hir::Expr {
+        let inner = inner.clone();
+        let read = |expr: hir::Expr| Arg {
+            expr,
+            mode: ParamMode::Read,
+        };
+        let (builtin, count, ty) = match (kind, name.name.as_str()) {
+            (Wrapper::Shared, "weak") => (
+                Builtin::Downgrade,
+                0,
+                Type::wrapper(Wrapper::Weak, inner.clone()),
+            ),
+            (Wrapper::Weak, "upgrade") => (
+                Builtin::Upgrade,
+                0,
+                Type::union([Type::wrapper(Wrapper::Shared, inner.clone()), Type::Nothing]),
+            ),
+            (Wrapper::Cell, "get") => (Builtin::CellGet, 0, inner.clone()),
+            (Wrapper::Cell, "set") => (Builtin::CellSet, 1, Type::Nothing),
+            (Wrapper::Cell, "replace") => (Builtin::CellReplace, 1, inner.clone()),
+            _ => {
+                let methods = match kind {
+                    Wrapper::Shared => "`weak()`, and the field `value`",
+                    Wrapper::Weak => "`upgrade()`",
+                    Wrapper::Cell => "`get()`, `set(value)`, and `replace(value)`",
+                };
+                let receiver_ty = self.unifier.resolve(&receiver.ty);
+                self.error(
+                    Diagnostic::error(
+                        "E_UNKNOWN_METHOD",
+                        format!("{receiver_ty} has no method `{}`", name.name),
+                    )
+                    .primary(name.span, "")
+                    .note(format!("its methods are {methods}")),
+                );
+                for arg in args {
+                    self.check_expr(cx, arg, None);
+                }
+                return expr(ExprKind::Nothing, Type::Unknown, span);
+            }
+        };
+        if !self.arity(name, args, count, count, span) {
+            for arg in args {
+                self.check_expr(cx, arg, None);
+            }
+            return expr(ExprKind::Nothing, ty, span);
+        }
+        if builtin == Builtin::CellGet {
+            self.require_traits(
+                &inner,
+                Traits::CLONE,
+                receiver.span,
+                "`get` copies the cell's value",
+            );
+        }
+        let mut checked = vec![read(receiver)];
+        if count == 1 {
+            let value = self.check_expr_as(cx, &args[0], &inner, "the cell's new value");
+            checked.push(Arg {
+                expr: value,
+                mode: ParamMode::Own,
+            });
+        }
+        expr(
+            ExprKind::Builtin {
+                builtin,
+                args: checked,
+            },
+            ty,
+            span,
+        )
+    }
+
     fn unknown_method(&mut self, receiver: &Type, name: &ast::Ident) {
         let method = &name.name;
         let diagnostic = match receiver {
@@ -1589,6 +1684,33 @@ impl<'a> Checker<'a> {
                 }
                 (checked, Type::view(element, mutable))
             }
+            Builtin::Share | Builtin::MakeCell => {
+                let kind = if builtin == Builtin::Share {
+                    Wrapper::Shared
+                } else {
+                    Wrapper::Cell
+                };
+                // An expected `Cell<integer or nothing>` types `cell(nothing)`.
+                let inner = expected.and_then(|ty| match self.unifier.resolve(ty) {
+                    Type::Wrapper(found, inner) if found == kind => Some(*inner),
+                    _ => None,
+                });
+                let value = match &inner {
+                    Some(inner) => self.check_expr_as(cx, &args[0], inner, "the value"),
+                    None => self.check_expr(cx, &args[0], None),
+                };
+                let ty = Type::wrapper(kind, value.ty.clone());
+                let value = Arg {
+                    expr: value,
+                    mode: ParamMode::Own,
+                };
+                (vec![value], ty)
+            }
+            Builtin::Downgrade
+            | Builtin::Upgrade
+            | Builtin::CellGet
+            | Builtin::CellSet
+            | Builtin::CellReplace => unreachable!("methods are checked as methods"),
             Builtin::TypedDecode | Builtin::TypedEncode => {
                 let Some(Item::Type(json_id)) = self.item(cx.module, "Json") else {
                     panic!("typed JSON conversion outside standard/json");

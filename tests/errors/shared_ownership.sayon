@@ -1,0 +1,9 @@
+# Shared values cannot change or be taken apart
+type Settings = [name: string, sizes: Array<integer>]
+
+settings = share(Settings(name = "main", sizes = [1]))
+push(settings.value.sizes, 4)
+taken = settings.value.sizes
+whole = settings.value
+moved = move(settings)
+print(settings)

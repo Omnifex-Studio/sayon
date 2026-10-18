@@ -8,7 +8,9 @@
 
 use crate::ir::*;
 use sayon_check::hir::{self, Builtin, ErrorField, LocalId, Usage};
-use sayon_check::types::{FieldDef, IntType, NamedType, Type, TypeDef, TypeDefKind, TypeId};
+use sayon_check::types::{
+    FieldDef, IntType, NamedType, Type, TypeDef, TypeDefKind, TypeId, Wrapper,
+};
 use sayon_runtime::host::EXIT_CODE;
 use sayon_syntax::ast::{BinaryOp, ParamMode, UnaryOp};
 use sayon_syntax::{Diagnostic, Span};
@@ -1631,6 +1633,15 @@ impl<'l, 'p> FnLower<'l, 'p> {
         }
     }
 
+    /// The projection reading `name` of a value: a structure's field, or
+    /// the value of a `Shared` handle.
+    fn field_projection(&self, ty: &Type, name: &str) -> Projection {
+        match ty {
+            Type::Wrapper(Wrapper::Shared, _) => Projection::Deref,
+            _ => Projection::Field(self.field_of(ty, name).0),
+        }
+    }
+
     /// The position and type of a structure's field.
     fn field_of(&self, ty: &Type, name: &str) -> (u32, Type) {
         let Type::Named(named) = ty else {
@@ -1660,8 +1671,7 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 name,
             } => {
                 let base = self.hir_place_read(target);
-                let (index, _) = self.field_of(&self.ty(target_ty), name);
-                base.project(Projection::Field(index))
+                base.project(self.field_projection(&self.ty(target_ty), name))
             }
             hir::Place::Narrow {
                 target,
@@ -1749,8 +1759,7 @@ impl<'l, 'p> FnLower<'l, 'p> {
             hir::ExprKind::Field { value, name } => {
                 let value_ty = self.ty(&value.ty);
                 let base = self.place_of(value, Want::Read);
-                let (index, _) = self.field_of(&value_ty, name);
-                base.project(Projection::Field(index))
+                base.project(self.field_projection(&value_ty, name))
             }
             hir::ExprKind::VariantPayload { value, variant } => {
                 let base = self.place_of(value, Want::Read);
@@ -1837,6 +1846,21 @@ impl<'l, 'p> FnLower<'l, 'p> {
         let place = self.place_of(expr, want);
         if ty.is_copy() && want != Want::Mut {
             return Operand::Copy(place);
+        }
+        // Using a counted handle again retains it: the owner gets a clone.
+        if want == Want::Owned && ty.is_retained() && usage != Some(Usage::Move) {
+            let slot = self.temp(ty.clone());
+            self.assign(
+                Place::slot(slot),
+                Rvalue::Clone {
+                    value: Operand::Borrow {
+                        place,
+                        mutable: false,
+                    },
+                    ty,
+                },
+            );
+            return Operand::Move(Place::slot(slot));
         }
         match (usage, want) {
             (Some(Usage::Move), _) => Operand::Move(place),
@@ -2573,6 +2597,69 @@ impl<'l, 'p> FnLower<'l, 'p> {
                     mutable: false,
                 }];
                 self.op(Op::Call { function, args }, Some(dest), span);
+            }
+            Builtin::Share => {
+                let inner = self.ty(&args[0].expr.ty);
+                let value = self.operand(&args[0].expr, Want::Owned);
+                self.assign(dest, Rvalue::MakeShared { value, ty: inner });
+            }
+            // A cell is laid out like its value.
+            Builtin::MakeCell => {
+                let value = self.operand(&args[0].expr, Want::Owned);
+                self.assign(dest, Rvalue::Use(value));
+            }
+            Builtin::Downgrade => {
+                let shared = self.operand(&args[0].expr, Want::Read);
+                self.assign(dest, Rvalue::Downgrade(shared));
+            }
+            Builtin::Upgrade => {
+                let weak = self.operand(&args[0].expr, Want::Read);
+                let Type::Wrapper(_, inner) = self.ty(&args[0].expr.ty) else {
+                    panic!("upgrade of a non-weak value");
+                };
+                let shared_tag = self.l.tag(&Type::wrapper(Wrapper::Shared, *inner));
+                let nothing_tag = self.l.tag(&Type::Nothing);
+                self.assign(
+                    dest,
+                    Rvalue::Upgrade {
+                        weak,
+                        shared_tag,
+                        nothing_tag,
+                    },
+                );
+            }
+            Builtin::CellGet => {
+                let cell = self.place_of(&args[0].expr, Want::Read);
+                let value = if ty.is_copy() {
+                    Rvalue::Use(Operand::Copy(cell))
+                } else {
+                    Rvalue::Clone {
+                        value: Operand::Borrow {
+                            place: cell,
+                            mutable: false,
+                        },
+                        ty: ty.clone(),
+                    }
+                };
+                self.assign(dest, value);
+            }
+            Builtin::CellSet | Builtin::CellReplace => {
+                // The new value first, in case it reads the cell.
+                let value = self.value_temp(&args[1].expr);
+                let cell = self.place_of(&args[0].expr, Want::Read);
+                let inner = self.ty(&args[1].expr.ty);
+                if builtin == Builtin::CellReplace {
+                    let old = if inner.is_copy() {
+                        Operand::Copy(cell.clone())
+                    } else {
+                        Operand::Move(cell.clone())
+                    };
+                    self.assign(dest, Rvalue::Use(old));
+                } else {
+                    self.push(Inst::Drop(cell.clone()));
+                    self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing)));
+                }
+                self.assign(cell, Rvalue::Use(value));
             }
             Builtin::SplitView => {
                 let view = self.place_of(&args[0].expr, Want::Mut);

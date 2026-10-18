@@ -2,6 +2,7 @@
 
 use sayon_check::types::{TypeDef, TypeId};
 use sayon_ir::FunctionId;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::hash::{Hash, Hasher};
@@ -39,6 +40,9 @@ pub enum Value {
     /// `start`.
     View(Box<ViewValue>),
     Stream(StreamRef),
+    /// A `Shared` handle; cloning the value retains it.
+    Shared(Rc<RefCell<Value>>),
+    Weak(std::rc::Weak<RefCell<Value>>),
 }
 
 /// A reference to an open stream of the runtime. A clone refers to the
@@ -88,6 +92,8 @@ pub enum Step {
     Field(usize),
     /// The environment of a function value.
     Env,
+    /// The value a `Shared` handle refers to.
+    Deref,
 }
 
 /// A stored value, or a part of one.
@@ -320,6 +326,9 @@ pub fn display(value: &Value, out: &mut String, nested: bool, types: &[TypeDef])
         }
         Value::Function(..) => out.push_str("function"),
         Value::Stream(_) => out.push_str("stream"),
+        // A shared value and a cell show their value.
+        Value::Shared(shared) => display(&shared.borrow(), out, nested),
+        Value::Weak(_) => out.push_str("weak"),
         // The machine shows a view's elements before displaying it.
         Value::View(view) => {
             let _ = write!(out, "view of {} elements", view.length);

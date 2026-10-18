@@ -1340,6 +1340,131 @@ pub unsafe extern "C" fn sayon_write_file(
 
 // ----- program lifecycle ----------------------------------------------------------------------------
 
+// ----- shared values --------------------------------------------------------------------------------
+//
+// A shared value is one block: the count of `Shared` handles, the count of
+// `Weak` handles plus one for all the `Shared` handles together, the
+// block's size, and the value at `SHARED_HEADER` bytes. The value is
+// destroyed when the last `Shared` handle goes, and the block is freed when
+// the last handle of either kind goes, so it is freed exactly once.
+
+/// The bytes before a shared value; the code generator uses the same.
+pub const SHARED_HEADER: i64 = 24;
+
+#[repr(C)]
+struct SharedBlock {
+    strong: i64,
+    weak: i64,
+    size: i64,
+}
+
+/// A block for a shared value of `size` bytes, with one `Shared` handle;
+/// the caller stores the value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_shared_new(size: i64) -> *mut u8 {
+    let total = SHARED_HEADER + size;
+    // SAFETY: a fresh block of at least the header's size.
+    unsafe {
+        let block = sayon_alloc(total);
+        std::ptr::write(
+            block as *mut SharedBlock,
+            SharedBlock {
+                strong: 1,
+                weak: 1,
+                size: total,
+            },
+        );
+        block
+    }
+}
+
+/// Removes a weak count; the last frees the block.
+unsafe fn release_weak(block: *mut u8) {
+    // SAFETY: a live block from `sayon_shared_new`.
+    unsafe {
+        let header = &mut *(block as *mut SharedBlock);
+        header.weak -= 1;
+        if header.weak == 0 {
+            let size = header.size;
+            sayon_free(block, size);
+        }
+    }
+}
+
+/// Drops a `Shared` handle; null is a moved-from handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_shared_release(slot: *mut *mut u8, drop: DropFn) {
+    // SAFETY: the slot holds null or a live block.
+    unsafe {
+        let block = *slot;
+        if block.is_null() {
+            return;
+        }
+        *slot = std::ptr::null_mut();
+        let header = &mut *(block as *mut SharedBlock);
+        header.strong -= 1;
+        if header.strong == 0 {
+            if let Some(drop) = drop {
+                drop(block.add(SHARED_HEADER as usize));
+            }
+            release_weak(block);
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_shared_clone(src: *const *mut u8, dst: *mut *mut u8) {
+    // SAFETY: the source holds a live block.
+    unsafe {
+        let block = *src;
+        (*(block as *mut SharedBlock)).strong += 1;
+        *dst = block;
+    }
+}
+
+/// A new `Shared` handle from a `Weak` one, when a `Shared` handle is left.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_shared_upgrade(block: *mut u8) -> bool {
+    // SAFETY: a weak handle keeps its block allocated.
+    unsafe {
+        let header = &mut *(block as *mut SharedBlock);
+        if header.strong == 0 {
+            return false;
+        }
+        header.strong += 1;
+        true
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_weak_retain(block: *mut u8) {
+    // SAFETY: a live block.
+    unsafe { (*(block as *mut SharedBlock)).weak += 1 }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_weak_clone(src: *const *mut u8, dst: *mut *mut u8) {
+    // SAFETY: the source holds a live block.
+    unsafe {
+        sayon_weak_retain(*src);
+        *dst = *src;
+    }
+}
+
+/// Drops a `Weak` handle; null is a moved-from handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_weak_release(slot: *mut *mut u8) {
+    // SAFETY: the slot holds null or a live block.
+    unsafe {
+        let block = *slot;
+        if block.is_null() {
+            return;
+        }
+        *slot = std::ptr::null_mut();
+        release_weak(block);
+    }
+}
+
 // ----- streams --------------------------------------------------------------------------------------
 
 /// Drops a stream reference; 0 is a moved-from stream.

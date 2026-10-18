@@ -48,7 +48,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Splitting a view into non-overlapping parts (`split_view`) | experimental | M2 |
 | String indexing and character iteration (`text[i]`, `for character in text`); slicing with `strings.slice` | experimental | M2 |
 | Grapheme clusters (Unicode 17.0), UTF-8 bytes of strings and strings from bytes | experimental | M2 |
-| `Shared`, `Weak`, `Cell`, `Mutex` | planned | M3 |
+| `Shared<T>`, `Weak<T>`, `Cell<T>`: `share`, `cell`, `.value`, `.weak()`, `.upgrade()`, `.get()`, `.set()`, `.replace()` | experimental | M3 |
+| `Mutex<T>` and sharing between threads | planned | M3, with threads |
 | `foreign` declarations, `unsafe`, pointers, C interoperability | planned | M3 |
 | Fibers, channels, `select` | planned | M3 |
 | Compile-time `platform` branches | planned | M4 |

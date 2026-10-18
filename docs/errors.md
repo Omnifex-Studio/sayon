@@ -376,6 +376,14 @@ function first_two(items: Array<integer>) -> View<integer>
 
 A view is made of an array or string that is not stored anywhere, such as `view([1, 2, 3])`, which is destroyed at the end of the statement. The same holds for a function that returns a view of its argument, such as `first_half(["a", "b"])` or `strings.byte_view("text")`. Store the value in a variable and make the view of that.
 
+### E_SHARED_IMMUTABLE
+
+A shared value is changed, borrowed for changes, or taken out of its handle. Every handle refers to the same value, so none may change it or take it. Keep the parts that change in a `Cell`, as `Shared<Cell<T>>`, and change them with `shared.value.set(...)`; copy the value out with `clone(shared.value)`.
+
+### E_SHARED_CONSTANT
+
+A constant would hold a `Shared`, `Weak`, or `Cell` value. A constant is one value for the whole program and never changes; make the shared value in `main` or a function and pass it where it is needed.
+
 ## Modules and projects
 
 ### E_IMPORT_NOT_FOUND

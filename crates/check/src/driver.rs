@@ -120,6 +120,17 @@ impl<'a> Checker<'a> {
         if matches!(ty, Type::View(..)) {
             self.view_escape(decl.name.span, "a constant cannot hold a view".to_string());
         }
+        if holds_wrapper(&self.type_defs, &ty) {
+            self.error(
+                Diagnostic::error(
+                    "E_SHARED_CONSTANT",
+                    format!("a constant cannot hold {ty}"),
+                )
+                .primary(decl.name.span, "")
+                .note("a constant never changes, and is the same for the whole program; Shared, Weak, and Cell values are for state that is owned and changed")
+                .help("create the value in `main` or a function, and pass it where it is needed"),
+            );
+        }
         let entry = &mut self.constants[id.0 as usize];
         entry.ty = Some(ty);
         entry.hir = Some(value);
@@ -453,6 +464,33 @@ impl<'a> Checker<'a> {
             );
         }
     }
+}
+
+/// Whether a value of the type can hold a `Shared`, `Weak`, or `Cell`.
+fn holds_wrapper(types: &[crate::types::TypeDef], ty: &Type) -> bool {
+    fn search(types: &[crate::types::TypeDef], ty: &Type, seen: &mut Vec<u32>) -> bool {
+        match ty {
+            Type::Wrapper(..) => true,
+            Type::Union(members) => members.iter().any(|m| search(types, m, seen)),
+            Type::Array(element) | Type::Dict(_, element) | Type::View(element, _) => {
+                search(types, element, seen)
+            }
+            Type::Named(named) => {
+                if seen.contains(&named.id.0) {
+                    return false;
+                }
+                seen.push(named.id.0);
+                let def = &types[named.id.0 as usize];
+                let variant_fields = def.variants().iter().flat_map(|v| &v.fields);
+                def.fields()
+                    .iter()
+                    .chain(variant_fields)
+                    .any(|field| search(types, &field.ty.substitute(&named.args), seen))
+            }
+            _ => false,
+        }
+    }
+    search(types, ty, &mut Vec::new())
 }
 
 fn numeric_generics(signature: &Signature) -> Vec<bool> {

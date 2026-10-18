@@ -573,6 +573,36 @@ print(pairs)                     # [1, 2, 3, 11, 22, 33]
 - A function can return a view of one of its parameters; the caller's argument then stays borrowed for as long as the result is used. Returning a view of the function's own variable is an error (`E_VIEW_RETURN`).
 - `View<T>` values are copied like numbers; a `MutableView<T>` is moved, so only one exists at a time. `clone(view)` makes an array of copies of the elements.
 
+### Shared values
+
+Most values have one owner. When several parts of a program need the same value, `share(value)` makes a `Shared<T>`: a handle to one value that every copy of the handle refers to. `shared.value` reads it in place.
+
+```sayon
+type Settings = [name: string, sizes: Array<integer>]
+
+settings = share(Settings(name = "main", sizes = [1, 2, 3]))
+other = settings                     # a second handle; both stay usable
+print(other.value.name, length(settings.value.sizes))    # main 3
+```
+
+- Assigning a handle, passing it, storing it, or capturing it in a closure makes another handle to the same value, so the original stays usable; `move(handle)` hands it over instead. The value is destroyed when its last handle is, so the cost is counting the handles.
+- A shared value cannot change (`E_SHARED_IMMUTABLE`), and nothing can be taken out of it; `clone(shared.value)` copies it. A structure holding a handle is still moved like any structure.
+- What changes goes in a `Cell<T>`: `cell(value)` makes one, `c.get()` copies its value out, `c.set(value)` replaces it, and `c.replace(value)` replaces it and returns what it held. A cell changes even through a read-only path, so `Shared<Cell<T>>` is state that every handle sees change. Nothing inside a cell can be borrowed, which is what makes this safe; work on a cell's array with `replace` and `set`.
+- `shared.weak()` makes a `Weak<T>`, a handle that does not keep the value alive; `weak.upgrade()` gives a `Shared<T>`, or `nothing` once the last `Shared` handle is gone.
+- Handles that refer to each other in a circle keep each other alive forever. Point back up a tree, or to anything that owns you, with a `Weak` handle:
+
+```sayon
+type Node = [label: string, parent: Cell<Weak<Node> or nothing>, children: Cell<Array<Shared<Node>>>]
+
+function attach(parent: Shared<Node>, child: Shared<Node>)
+    child.value.parent.set(parent.weak())
+    children = parent.value.children.replace([])
+    push(children, child)
+    parent.value.children.set(children)
+```
+
+- Handles cannot be compared, and a constant cannot hold one or a cell (`E_SHARED_CONSTANT`). They are for one thread; sharing between threads arrives with `Mutex` in this milestone.
+
 ## Errors
 
 `error(message)` raises an error; `raise(problem)` raises an existing `Error` value. An error travels up through calls until a `try` catches it. Every local value is destroyed on the way.
@@ -641,6 +671,7 @@ Error codes raised by the language and its built-in functions:
 | `remove(update array, position)` | Removes and returns the element at a position, moving the later ones down; `BoundsError` outside the array |
 | `remove(update dict, key)` | Removes a key's entry and returns its value, or `nothing` when the key is absent; the other entries keep their order |
 | `swap(update array, first, second)` | Exchanges two elements |
+| `share(own value)`, `cell(own value)` | A `Shared<T>` or a `Cell<T>`; see [Shared values](#shared-values) |
 | `view(items, start, end)`, `mutable_view(update items, start, end)` | A view of elements; see [Views](#views) |
 | `split_view(update view, count)` | Splits the first `count` elements off a view into a view of their own |
 | `haskey(dict, key)` | Whether a dictionary has a key |

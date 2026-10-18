@@ -350,6 +350,20 @@ pub enum Builtin {
     TypedDecode,
     /// `typed_encode(value)` in `standard/json`: a value as `Json`.
     TypedEncode,
+    /// `share(own value)`: a new `Shared<T>`.
+    Share,
+    /// `cell(own value)`: a new `Cell<T>`.
+    MakeCell,
+    /// `shared.weak()`: a `Weak<T>` of a shared value.
+    Downgrade,
+    /// `weak.upgrade()`: `Shared<T> or nothing`.
+    Upgrade,
+    /// `cell.get()`: a copy of the cell's value.
+    CellGet,
+    /// `cell.set(own value)`.
+    CellSet,
+    /// `cell.replace(own value)`: the value it held.
+    CellReplace,
     HasKey,
     ReadFile,
     WriteFile,
@@ -380,6 +394,13 @@ impl Builtin {
             Builtin::SplitView => "split_view",
             Builtin::TypedDecode => "typed_decode",
             Builtin::TypedEncode => "typed_encode",
+            Builtin::Share => "share",
+            Builtin::MakeCell => "cell",
+            Builtin::Downgrade => "weak",
+            Builtin::Upgrade => "upgrade",
+            Builtin::CellGet => "get",
+            Builtin::CellSet => "set",
+            Builtin::CellReplace => "replace",
             Builtin::View => "view",
             Builtin::MutableView => "mutable_view",
             Builtin::HasKey => "haskey",

@@ -1,0 +1,16 @@
+main [1, 2, 3] 3
+main: 3 main: 3
+main 2
+1 main
+[1, 2, 3]
+main
+main
+main
+2 2
+["a"] ["b", "c"] ["b", "c"]
+6 7
+alive main
+true weak
+leaf is under root
+2
+main

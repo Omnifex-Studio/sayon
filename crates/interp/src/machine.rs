@@ -12,6 +12,7 @@ use sayon_runtime::text::{
     Number, parse_number, position_error, range_length, split_bounds_message, view_bounds_message,
 };
 use sayon_syntax::{SourceMap, Span};
+use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
 
@@ -57,6 +58,54 @@ pub struct Machine<'m> {
 }
 
 /// The part of a value that one step leads to.
+/// The first step of `steps` through a view: its position, the viewed
+/// array, and the element of the array it reaches.
+fn view_step(current: &Value, steps: &[Step], index: usize) -> Option<(usize, Ref, usize)> {
+    let (step, rest) = steps.split_first()?;
+    match (step, current) {
+        (Step::Index(i), Value::View(view)) => Some((index, view.array.clone(), view.start + i)),
+        // A byte of a string, through a byte view, is the last step.
+        (_, Value::Str(_)) => None,
+        (Step::Deref, Value::Shared(shared)) => view_step(&shared.borrow(), rest, index + 1),
+        _ => view_step(step_into(*step, current), rest, index + 1),
+    }
+}
+
+/// Calls `f` on what `steps` reach from `current`. A step through a shared
+/// value reads inside it while `f` runs.
+fn read_steps<R>(current: &Value, steps: &[Step], f: impl FnOnce(&Value) -> R) -> R {
+    let Some((step, rest)) = steps.split_first() else {
+        return f(current);
+    };
+    match (step, current) {
+        (Step::Index(i), Value::Str(text)) => f(&Value::Int(text.as_bytes()[*i] as i128)),
+        (Step::Deref, Value::Shared(shared)) => read_steps(&shared.borrow(), rest, f),
+        _ => read_steps(step_into(*step, current), rest, f),
+    }
+}
+
+/// Calls `f` on what `steps` reach from `current`, for a change. Only a
+/// cell changes inside a shared value.
+fn write_steps<R>(current: &mut Value, steps: &[Step], f: impl FnOnce(&mut Value) -> R) -> R {
+    let Some((step, rest)) = steps.split_first() else {
+        return f(current);
+    };
+    let next = match (step, current) {
+        (Step::Deref, Value::Shared(shared)) => {
+            return write_steps(&mut shared.borrow_mut(), rest, f);
+        }
+        (Step::Index(i), Value::Array(items)) => &mut items[*i],
+        (Step::DictValue(i), Value::Dict(dict)) => &mut dict.values[*i],
+        (Step::Payload, Value::Union(_, payload)) => payload,
+        (Step::Field(i), Value::Record(_, fields) | Value::Variant(_, _, fields)) => {
+            &mut fields[*i]
+        }
+        (Step::Env, Value::Function(_, env)) => env,
+        (step, value) => panic!("invalid mutable path step {step:?} into {value:?}"),
+    };
+    write_steps(next, rest, f)
+}
+
 fn step_into(step: Step, value: &Value) -> &Value {
     match (step, value) {
         (Step::Index(i), Value::Array(items)) => &items[i],
@@ -327,6 +376,7 @@ impl<'m> Machine<'m> {
                 Projection::Field(field) | Projection::VariantField { field, .. } => {
                     Step::Field(*field as usize)
                 }
+                Projection::Deref => Step::Deref,
             });
         }
         Ref { root, path }
@@ -345,36 +395,23 @@ impl<'m> Machine<'m> {
     /// The reference with every step through a view replaced by the step
     /// into the viewed array's element.
     fn flatten(&self, reference: &Ref) -> Ref {
-        let mut current = self.root_value(reference.root);
-        for (index, step) in reference.path.iter().enumerate() {
-            if let (Step::Index(i), Value::View(view)) = (step, current) {
-                let mut path = view.array.path.clone();
-                path.push(Step::Index(view.start + i));
+        match view_step(self.root_value(reference.root), &reference.path, 0) {
+            Some((index, array, element)) => {
+                let mut path = array.path.clone();
+                path.push(Step::Index(element));
                 path.extend_from_slice(&reference.path[index + 1..]);
-                return self.flatten(&Ref {
-                    root: view.array.root,
+                self.flatten(&Ref {
+                    root: array.root,
                     path,
-                });
+                })
             }
-            // A byte of a string, through a byte view, is the last step.
-            if let Value::Str(_) = current {
-                break;
-            }
-            current = step_into(*step, current);
+            None => reference.clone(),
         }
-        reference.clone()
     }
 
     fn read<R>(&self, reference: &Ref, f: impl FnOnce(&Value) -> R) -> R {
         let reference = self.flatten(reference);
-        let mut current = self.root_value(reference.root);
-        for step in &reference.path {
-            if let (Step::Index(i), Value::Str(text)) = (step, current) {
-                return f(&Value::Int(text.as_bytes()[*i] as i128));
-            }
-            current = step_into(*step, current);
-        }
-        f(current)
+        read_steps(self.root_value(reference.root), &reference.path, f)
     }
 
     /// The elements a view shows, as an array.
@@ -410,20 +447,7 @@ impl<'m> Machine<'m> {
             },
             Root::Global(global) => self.globals[global].as_mut().expect("initialized global"),
         };
-        let mut current = root;
-        for step in &reference.path {
-            current = match (step, current) {
-                (Step::Index(i), Value::Array(items)) => &mut items[*i],
-                (Step::DictValue(i), Value::Dict(dict)) => &mut dict.values[*i],
-                (Step::Payload, Value::Union(_, payload)) => payload,
-                (Step::Field(i), Value::Record(_, fields) | Value::Variant(_, _, fields)) => {
-                    &mut fields[*i]
-                }
-                (Step::Env, Value::Function(_, env)) => env,
-                (step, value) => panic!("invalid mutable path step {step:?} into {value:?}"),
-            };
-        }
-        f(current)
+        write_steps(root, &reference.path, f)
     }
 
     fn write(&mut self, place: &Place, value: Value) {
@@ -782,6 +806,31 @@ impl<'m> Machine<'m> {
                     *v = Value::Int((start + ch.len_utf8()) as i128);
                 });
                 Value::str(ch.encode_utf8(&mut [0; 4]))
+            }
+            Rvalue::MakeShared { value, .. } => {
+                Value::Shared(Rc::new(RefCell::new(self.take(value))))
+            }
+            Rvalue::Downgrade(shared) => {
+                let source = self.source(shared);
+                self.with_source(&source, |value| match value {
+                    Value::Shared(shared) => Value::Weak(Rc::downgrade(shared)),
+                    other => panic!("weak handle of {other:?}"),
+                })
+            }
+            Rvalue::Upgrade {
+                weak,
+                shared_tag,
+                nothing_tag,
+            } => {
+                let source = self.source(weak);
+                let upgraded = self.with_source(&source, |value| match value {
+                    Value::Weak(weak) => weak.upgrade(),
+                    other => panic!("upgrade of {other:?}"),
+                });
+                match upgraded {
+                    Some(shared) => Value::Union(*shared_tag, Box::new(Value::Shared(shared))),
+                    None => Value::Union(*nothing_tag, Box::new(Value::Nothing)),
+                }
             }
             Rvalue::MakeClosure {
                 function,

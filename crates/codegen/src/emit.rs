@@ -7,8 +7,9 @@
 //! start zeroed, so dropping a slot that never received a value (or whose
 //! value moved out) does nothing.
 
+use crate::layout::SHARED_HEADER;
 use crate::layout::{Layouts, int_code, int_llvm, needs_drop};
-use sayon_check::types::{FloatType, IntType, Type};
+use sayon_check::types::{FloatType, IntType, Type, Wrapper};
 use sayon_ir::*;
 use sayon_syntax::{SourceMap, Span};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -576,6 +577,15 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     pointer = self.offset_pointer(&pointer, offset);
                     ty = next;
                 }
+                Projection::Deref => {
+                    let Type::Wrapper(Wrapper::Shared, inner) = ty else {
+                        panic!("shared value of {ty}")
+                    };
+                    let block = self.body.tmp();
+                    self.body.line(format!("{block} = load ptr, ptr {pointer}"));
+                    pointer = self.offset_pointer(&block, SHARED_HEADER);
+                    ty = *inner;
+                }
                 Projection::VariantField { variant, field } => {
                     let Type::Named(named) = &ty else {
                         panic!("variant field of {ty}")
@@ -1080,6 +1090,50 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 self.body
                     .line(format!("{result} = icmp sge i64 {position}, 0"));
                 self.body.line(format!("store i1 {result}, ptr {dest}"));
+            }
+            Rvalue::MakeShared { value, ty } => {
+                let size = self.cg.layouts.size_of(ty);
+                let block = self.body.tmp();
+                self.body
+                    .line(format!("{block} = call ptr @sayon_shared_new(i64 {size})"));
+                let payload = self.offset_pointer(&block, SHARED_HEADER);
+                self.store_operand(value, &payload, ty);
+                self.body.line(format!("store ptr {block}, ptr {dest}"));
+            }
+            Rvalue::Downgrade(shared) => {
+                let (pointer, _) = self.pointer(shared);
+                let block = self.body.tmp();
+                self.body.line(format!("{block} = load ptr, ptr {pointer}"));
+                self.body
+                    .line(format!("call void @sayon_weak_retain(ptr {block})"));
+                self.body.line(format!("store ptr {block}, ptr {dest}"));
+            }
+            Rvalue::Upgrade {
+                weak,
+                shared_tag,
+                nothing_tag,
+            } => {
+                let (pointer, _) = self.pointer(weak);
+                let block = self.body.tmp();
+                self.body.line(format!("{block} = load ptr, ptr {pointer}"));
+                let alive = self.body.tmp();
+                self.body.line(format!(
+                    "{alive} = call zeroext i1 @sayon_shared_upgrade(ptr {block})"
+                ));
+                let union_llvm = self.cg.llvm(dest_ty);
+                self.body
+                    .line(format!("store {union_llvm} zeroinitializer, ptr {dest}"));
+                let tag = self.body.tmp();
+                self.body.line(format!(
+                    "{tag} = select i1 {alive}, i32 {shared_tag}, i32 {nothing_tag}"
+                ));
+                self.body.line(format!("store i32 {tag}, ptr {dest}"));
+                let handle = self.body.tmp();
+                self.body.line(format!(
+                    "{handle} = select i1 {alive}, ptr {block}, ptr null"
+                ));
+                let payload = self.offset_pointer(dest, 8);
+                self.body.line(format!("store ptr {handle}, ptr {payload}"));
             }
             Rvalue::Clone {
                 value,
@@ -2350,6 +2404,13 @@ declare i32 @sayon_error_overflow(ptr, ptr, i64, i64, i32, ptr)
 declare i32 @sayon_error_negate(ptr, i64, i32, ptr)
 declare void @sayon_error_drop(ptr)
 declare void @sayon_stream_drop(ptr)
+declare ptr @sayon_shared_new(i64)
+declare void @sayon_shared_release(ptr, ptr)
+declare void @sayon_shared_clone(ptr, ptr)
+declare zeroext i1 @sayon_shared_upgrade(ptr)
+declare void @sayon_weak_retain(ptr)
+declare void @sayon_weak_release(ptr)
+declare void @sayon_weak_clone(ptr, ptr)
 declare i32 @sayon_check_split(ptr, i64, i64, ptr)
 declare void @sayon_stream_clone(ptr, ptr)
 declare void @sayon_error_clone(ptr, ptr)

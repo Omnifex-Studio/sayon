@@ -1,0 +1,57 @@
+error[E_SHARED_CONSTANT]: a constant cannot hold Shared<integer>
+  --> shared.sayon:4:10
+   |
+ 4 | constant GLOBAL = share(1)
+   |          ^^^^^^
+   |
+   = note: a constant never changes, and is the same for the whole program; Shared, Weak, and Cell values are for state that is owned and changed
+   = help: create the value in `main` or a function, and pass it where it is needed
+
+error[E_SHARED_IMMUTABLE]: a shared value cannot change
+  --> shared.sayon:6:1
+   |
+ 6 | settings.value.name = "other"
+   | ^^^^^^^^^^^^^^
+   |
+   = help: keep the parts that change in a Cell, as `Shared<Cell<T>>`, and change them with `shared.value.set(...)`
+
+error[E_UNSUPPORTED_OPERATION]: Shared<Settings> does not support equality comparison
+  --> shared.sayon:7:7
+   |
+ 7 | print(settings == settings)
+   |       ^^^^^^^^^^^^^^^^^^^^ these values cannot be compared
+
+error[E_UNKNOWN_METHOD]: Shared<Settings> has no method `size`
+  --> shared.sayon:8:16
+   |
+ 8 | print(settings.size())
+   |                ^^^^
+   |
+   = note: its methods are `weak()`, and the field `value`
+
+error[E_UNKNOWN_FIELD]: Weak<Settings> has no field `value`
+   --> shared.sayon:10:12
+    |
+ 10 | print(weak.value)
+    |            ^^^^^
+    |
+    = help: a weak handle is read through `weak.upgrade()`, which gives `Shared<T> or nothing`
+
+error[E_VIEW_ESCAPE]: a value of type Shared<View<integer>> cannot hold a view
+   --> shared.sayon:12:8
+    |
+ 12 | kept = share(view(numbers))
+    |        ^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: a view borrows an array for a while: keep it in a variable or pass it to a function, or use clone(...) for an owned copy
+
+error[E_RECURSIVE_TYPE]: `Loop` contains itself, so it would have no size
+   --> shared.sayon:14:6
+    |
+ 14 | type Loop = [inner: Cell<Loop>]
+    |      ^^^^
+    |
+    = help: store nested values in a collection, for example a field `children: Array<Loop>`
+
+7 errors found; nothing was run
+run `sayon explain E_SHARED_CONSTANT` to learn more about an error

@@ -28,8 +28,11 @@
 //! receives a pointer to the environment structure before its arguments.
 
 use sayon_check::types::{
-    FloatType, IntType, NamedType, Type, TypeDef, structure_fields, variant_fields,
+    FloatType, IntType, NamedType, Type, TypeDef, Wrapper, structure_fields, variant_fields,
 };
+
+/// The bytes before the value in a shared value's block.
+pub const SHARED_HEADER: u64 = sayon_runtime::ffi::SHARED_HEADER as u64;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -59,6 +62,9 @@ impl Layouts {
             Type::Range => "%sayon.range".to_string(),
             Type::Dict(..) | Type::Error => "ptr".to_string(),
             Type::Stream => "i64".to_string(),
+            // A cell is laid out like its value.
+            Type::Wrapper(Wrapper::Cell, inner) => self.llvm(inner),
+            Type::Wrapper(..) => "ptr".to_string(),
             Type::Function(_) => "%sayon.func".to_string(),
             Type::View(..) => "%sayon.view".to_string(),
             Type::Union(_) => self.tagged(ty, "union"),
@@ -126,6 +132,8 @@ impl Layouts {
             Type::Boolean | Type::Nothing | Type::Unknown => 1,
             Type::String | Type::Array(_) | Type::Range => 24,
             Type::Dict(..) | Type::Error | Type::Stream => 8,
+            Type::Wrapper(Wrapper::Cell, inner) => self.size_of(inner),
+            Type::Wrapper(..) => 8,
             Type::Function(_) | Type::View(..) => 16,
             Type::Union(_) => 8 + 8 * self.payload_words(ty),
             Type::Named(named) if self.is_enum(named) => 8 + 8 * self.payload_words(ty),
@@ -147,6 +155,7 @@ impl Layouts {
             Type::Named(named) if !self.is_enum(named) => {
                 self.record_layout(&structure_fields(&self.types, named)).2
             }
+            Type::Wrapper(Wrapper::Cell, inner) => self.align_of(inner),
             _ => 8,
         }
     }
@@ -212,7 +221,9 @@ pub fn needs_drop(ty: &Type) -> bool {
         | Type::Dict(..)
         | Type::Error
         | Type::Function(_)
-        | Type::Stream => true,
+        | Type::Stream
+        | Type::Wrapper(Wrapper::Shared | Wrapper::Weak, _) => true,
+        Type::Wrapper(Wrapper::Cell, inner) => needs_drop(inner),
         Type::Union(members) => members.iter().any(needs_drop),
         // Every non-Copy field owns something.
         Type::Named(_) => !ty.is_copy(),

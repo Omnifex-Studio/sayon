@@ -41,6 +41,8 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
         "view" => Builtin::View,
         "mutable_view" => Builtin::MutableView,
         "split_view" => Builtin::SplitView,
+        "share" => Builtin::Share,
+        "cell" => Builtin::MakeCell,
         "haskey" => Builtin::HasKey,
         "readfile" => Builtin::ReadFile,
         "writefile" => Builtin::WriteFile,

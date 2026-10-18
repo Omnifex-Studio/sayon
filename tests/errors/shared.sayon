@@ -1,0 +1,14 @@
+# Shared values, weak handles, and cells used wrongly
+type Settings = [name: string, sizes: Array<integer>]
+
+constant GLOBAL = share(1)
+settings = share(Settings(name = "main", sizes = [1]))
+settings.value.name = "other"
+print(settings == settings)
+print(settings.size())
+weak = settings.weak()
+print(weak.value)
+numbers = [1, 2]
+kept = share(view(numbers))
+
+type Loop = [inner: Cell<Loop>]

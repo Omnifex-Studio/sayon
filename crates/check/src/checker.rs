@@ -2,7 +2,9 @@
 
 use crate::hir::{self, ConstId, FuncId, LocalId, LocalKind};
 use crate::infer::{Bounds, LiteralKind, Traits, Unifier, UnifyError};
-use crate::types::{FieldDef, NamedType, TyVar, Type, TypeDef, TypeDefKind, TypeId, VariantDef};
+use crate::types::{
+    FieldDef, NamedType, TyVar, Type, TypeDef, TypeDefKind, TypeId, VariantDef, Wrapper,
+};
 use sayon_syntax::ast::{self, DeclKind, ParamMode, StmtKind};
 use sayon_syntax::{Diagnostic, Diagnostics, Span};
 use std::collections::{HashMap, HashSet};
@@ -907,6 +909,7 @@ impl<'a> Checker<'a> {
             Type::Dict(key, value) => vec![key, value],
             Type::Union(members) => members.iter().collect(),
             Type::Named(named) => named.args.iter().collect(),
+            Type::Wrapper(_, inner) => vec![inner],
             Type::Function(function) => vec![&function.ret],
             _ => Vec::new(),
         };
@@ -1049,6 +1052,21 @@ impl<'a> Checker<'a> {
                         }
                         let element = self.resolve_type(module, &args[0], generics);
                         Type::view(element, name.name == "MutableView")
+                    }
+                    // A module's own type of the same name comes first.
+                    "Shared" | "Weak" | "Cell"
+                        if !matches!(self.item(module, &name.name), Some(Item::Type(_))) =>
+                    {
+                        if !arity(self, 1) {
+                            return Type::Unknown;
+                        }
+                        let inner = self.resolve_type(module, &args[0], generics);
+                        let kind = match name.name.as_str() {
+                            "Shared" => Wrapper::Shared,
+                            "Weak" => Wrapper::Weak,
+                            _ => Wrapper::Cell,
+                        };
+                        Type::wrapper(kind, inner)
                     }
                     "Dict" => {
                         if !arity(self, 2) {
@@ -1733,6 +1751,25 @@ impl<'a> Checker<'a> {
     fn known_field_type(&mut self, ty: &Type, name: &str, span: Span) -> Type {
         match ty {
             Type::Unknown => Type::Unknown,
+            // A shared value is read through `value`.
+            Type::Wrapper(Wrapper::Shared, inner) if name == "value" => (**inner).clone(),
+            Type::Wrapper(kind, _) => {
+                let help = match kind {
+                    Wrapper::Shared => "read the shared value as `shared.value`",
+                    Wrapper::Weak => {
+                        "a weak handle is read through `weak.upgrade()`, which gives `Shared<T> or nothing`"
+                    }
+                    Wrapper::Cell => {
+                        "nothing inside a cell can be borrowed; copy its value out with `cell.get()`"
+                    }
+                };
+                self.error(
+                    Diagnostic::error("E_UNKNOWN_FIELD", format!("{ty} has no field `{name}`"))
+                        .primary(span, "")
+                        .help(help),
+                );
+                Type::Unknown
+            }
             Type::Named(named) if !self.type_def(named.id).is_enum() => {
                 let def = self.type_def(named.id);
                 match def.field_index(name) {
@@ -2304,6 +2341,7 @@ fn set_copy_flags(ty: &mut Type, flags: &[bool]) {
             set_copy_flags(value, flags);
         }
         Type::Union(members) => members.iter_mut().for_each(|m| set_copy_flags(m, flags)),
+        Type::View(inner, _) | Type::Wrapper(_, inner) => set_copy_flags(inner, flags),
         _ => {}
     }
 }
@@ -2314,6 +2352,8 @@ fn inline_named(ty: &Type) -> Vec<&NamedType> {
     match ty {
         Type::Named(named) => vec![named],
         Type::Union(members) => members.iter().flat_map(inline_named).collect(),
+        // A cell holds its value inline; a shared value is elsewhere.
+        Type::Wrapper(Wrapper::Cell, inner) => inline_named(inner),
         _ => Vec::new(),
     }
 }

@@ -9,8 +9,9 @@
 //! - `hash(ptr) -> i64` hashes a dictionary key, consistently with `eq`.
 
 use crate::emit::{Body, Codegen, Helper, MEMCPY};
+use crate::layout::SHARED_HEADER;
 use crate::layout::{int_code, int_llvm, needs_drop};
-use sayon_check::types::{FloatType, NamedType, Type, structure_fields, variant_fields};
+use sayon_check::types::{FloatType, NamedType, Type, Wrapper, structure_fields, variant_fields};
 use std::fmt::Write as _;
 
 impl<'m> Codegen<'m> {
@@ -321,6 +322,21 @@ impl<'m> Codegen<'m> {
             Type::String => body.line("call void @sayon_str_drop(ptr %p)"),
             Type::Error => body.line("call void @sayon_error_drop(ptr %p)"),
             Type::Stream => body.line("call void @sayon_stream_drop(ptr %p)"),
+            Type::Wrapper(Wrapper::Shared, inner) => {
+                let drop = if needs_drop(inner) {
+                    self.helper(Helper::Drop, inner)
+                } else {
+                    "null".to_string()
+                };
+                body.line(format!(
+                    "call void @sayon_shared_release(ptr %p, ptr {drop})"
+                ));
+            }
+            Type::Wrapper(Wrapper::Weak, _) => body.line("call void @sayon_weak_release(ptr %p)"),
+            Type::Wrapper(Wrapper::Cell, inner) => {
+                let drop = self.helper(Helper::Drop, inner);
+                body.line(format!("call void {drop}(ptr %p)"));
+            }
             Type::Dict(_, value) => {
                 let drop = if needs_drop(value) {
                     self.helper(Helper::Drop, value)
@@ -417,6 +433,21 @@ impl<'m> Codegen<'m> {
             Type::String => body.line("call void @sayon_str_clone(ptr %src, ptr %dst)"),
             Type::Error => body.line("call void @sayon_error_clone(ptr %src, ptr %dst)"),
             Type::Stream => body.line("call void @sayon_stream_clone(ptr %src, ptr %dst)"),
+            Type::Wrapper(Wrapper::Shared, _) => {
+                body.line("call void @sayon_shared_clone(ptr %src, ptr %dst)")
+            }
+            Type::Wrapper(Wrapper::Weak, _) => {
+                body.line("call void @sayon_weak_clone(ptr %src, ptr %dst)")
+            }
+            Type::Wrapper(Wrapper::Cell, inner) => {
+                if needs_drop(inner) {
+                    let clone = self.helper(Helper::Clone, inner);
+                    body.line(format!("call void {clone}(ptr %src, ptr %dst)"));
+                } else {
+                    self.intrinsic(MEMCPY.to_string());
+                    body.memcpy("%dst", "%src", &self.layouts.size_of(inner).to_string());
+                }
+            }
             Type::Dict(_, value) => {
                 let clone = if needs_drop(value) {
                     self.helper(Helper::Clone, value)
@@ -529,8 +560,10 @@ impl<'m> Codegen<'m> {
             Type::Float(FloatType::F32) => scalar(body, "float", "fcmp oeq"),
             Type::Boolean => scalar(body, "i1", "icmp eq"),
             Type::Nothing | Type::Unknown => body.line("ret i1 true"),
-            // Function values, views, and streams are never compared.
-            Type::Function(_) | Type::View(..) | Type::Stream => body.line("ret i1 false"),
+            // Function values, views, streams, and handles are never compared.
+            Type::Function(_) | Type::View(..) | Type::Stream | Type::Wrapper(..) => {
+                body.line("ret i1 false")
+            }
             Type::String => {
                 let result = body.tmp();
                 body.line(format!(
@@ -732,6 +765,23 @@ impl<'m> Codegen<'m> {
             Type::Nothing | Type::Unknown => self.text(body, "nothing"),
             Type::Function(_) => self.text(body, "function"),
             Type::Stream => self.text(body, "stream"),
+            // A shared value and a cell show their value.
+            Type::Wrapper(Wrapper::Shared, inner) => {
+                let display = self.helper(Helper::Display, inner);
+                let block = body.tmp();
+                body.line(format!("{block} = load ptr, ptr %value"));
+                let value = offset_pointer(body, &block, SHARED_HEADER);
+                body.line(format!(
+                    "call void {display}(ptr %builder, ptr {value}, i1 %nested)"
+                ));
+            }
+            Type::Wrapper(Wrapper::Weak, _) => self.text(body, "weak"),
+            Type::Wrapper(Wrapper::Cell, inner) => {
+                let display = self.helper(Helper::Display, inner);
+                body.line(format!(
+                    "call void {display}(ptr %builder, ptr %value, i1 %nested)"
+                ));
+            }
             Type::String => {
                 body.line("call void @sayon_builder_str(ptr %builder, ptr %value, i1 %nested)")
             }
