@@ -205,7 +205,8 @@ impl<'a> Checker<'a> {
     /// Finalizes the function literals checked since `first`. A literal
     /// shares the type parameters of the named function it appears in.
     fn finish_closures(&mut self, first: usize) {
-        for (closure, owner) in self.closures[first..].to_vec() {
+        for index in first..self.closures.len() {
+            let (closure, owner) = self.closures[index];
             let Some(mut function) = self.functions[closure.0 as usize].hir.take() else {
                 continue;
             };

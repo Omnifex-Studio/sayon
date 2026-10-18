@@ -110,6 +110,7 @@ Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) evaluates its target once. In
 | `Range` | The result of `range(...)` |
 | `Error` | A recoverable error value |
 | `Outcome<T>` | The result of a `try` expression: `success(value)` or `failure(problem)` |
+| `function(A, B) -> R` | A function value taking `A` and `B` and returning `R`; parameters may be marked `own` or `update` |
 | structures | Declared with `type`: named fields |
 | enums | Declared with `enum`: one of several variants, each with its own fields |
 
@@ -338,7 +339,47 @@ How a function uses a parameter decides what the call does with the argument:
 
 Values of Copy types (numbers, booleans, `nothing`, ranges, structures and enums whose fields are all Copy, and unions of these) are passed to read and own parameters as copies; a function may change its copy without affecting the caller. An `update` parameter always receives the caller's variable, so `function translate(update p: Point)` moves the caller's point.
 
-An annotated parameter defaults to read; changing or keeping it requires `update` or `own`. An unannotated parameter's mode is inferred from the function's body: the least mode it needs.
+An annotated parameter defaults to read; changing or keeping it requires `update` or `own`. An unannotated parameter's mode is inferred from the function's body: the least mode it needs. A parameter whose type holds a function value has its mode inferred even when annotated, because calling a function value borrows it for changes (see below).
+
+### Function values and closures
+
+A named function is a value, and `function(...)` in an expression makes a closure: a function that captures the variables it uses from where it is written.
+
+```sayon
+function apply(func, x, y)
+    return func(x, y)
+
+function add(a, b)
+    return a + b
+
+print(apply(add, 10, 20))                          # 30
+print(apply(function(a, b) return a * b, 6, 7))    # 42
+
+function make_counter()
+    count = 0
+    return function()
+        count = count + 1
+        return count
+
+counter = make_counter()
+print(counter())  # 1
+print(counter())  # 2
+```
+
+- A function literal's body is an indented block, or a single `return` or expression on the header's line: `function(x) return x * 2`.
+- A function value is called with every argument; defaults apply only to direct calls of a named function. A literal cannot have defaults or type parameters; its types are inferred where it is used, or written as annotations.
+- A literal's parameters are read borrows unless they are marked `own` or `update`, or the function type expected where it is written says otherwise. A named function used as a value must declare `own` or `update` on parameters it takes over or changes (`E_PARAMETER_MODE`).
+- Function types are written `function(integer, own string) -> boolean`; `-> R` may be left out when the function returns nothing. Inside a union, parenthesize them: `(function(string) -> nothing) or nothing`.
+- Function values can be stored in variables, collections, structure fields, and unions, passed, returned, and copied with `clone`. They cannot be compared.
+
+What a closure captures:
+
+- A Copy value the closure only reads is copied when the closure is made.
+- An owned value moves into the closure. The enclosing code can no longer use it, as after any other transfer; give the closure a copy with `clone` to keep one.
+- A variable the closure changes belongs to the closure from then on, even when its value is Copy, so `make_counter`'s calls keep counting. The enclosing code can no longer use it.
+- A closure cannot move a captured value out of itself (`E_MOVE_CAPTURED`), because it can be called again: return `clone(value)` instead.
+- A closure made in a loop captures that iteration's value.
+- Calling a function value borrows it for changes, since the call may change what it captured. A read-only parameter holding a function value cannot be called; an unannotated one is inferred to be `update`. A `constant` can hold named functions and closures that only read what they capture, and those can be called.
 
 ## Ownership
 
@@ -352,6 +393,7 @@ Each string, array, dictionary, and error, and each structure or enum value that
 - Elements of a collection cannot be moved out; use `clone(...)` or `pop(...)`.
 - An owned field cannot be moved out of a structure held by a variable, which would leave it incomplete: clone the field, or move the whole structure. A field of a computed value, such as `make_person().name`, can be taken.
 - Module constants cannot be moved or changed.
+- A closure takes the owned values it captures, and the variables it changes (see [Function values and closures](#function-values-and-closures)).
 
 ```sayon
 numbers = [1, 2, 3]

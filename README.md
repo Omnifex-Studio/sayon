@@ -32,6 +32,7 @@ Sayon is in early development and not ready for real programs. What works today:
 - A front end for the current language subset: lexer, parser, type inference, union narrowing, and ownership checking
 - Structures and enums, including generic ones, and `match` with nested patterns, guards, and exhaustiveness checking
 - Errors captured as values with `try` expressions, `Outcome<T>`, and `is error` narrowing
+- Functions as values and closures that own what they capture
 - An interpreter that runs checked programs, with checked integer arithmetic and cleanup on every exit path
 - A native backend: programs compile through LLVM to standalone Windows executables that need no runtime DLLs
 - Modules: programs can be split across files with `import`
@@ -39,7 +40,7 @@ Sayon is in early development and not ready for real programs. What works today:
 - `test` blocks and the `sayon test` runner, and the `sayon fmt` formatter
 - Projects with a `sayon.toml` manifest, and the `run`, `build`, `check`, `test`, `fmt`, `init`, `clean`, and `doctor` commands
 
-Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Closures, string slicing, and dependencies come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
+Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. String slicing and dependencies come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
 
 ## Installing
 

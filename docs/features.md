@@ -36,7 +36,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Structures and enums, including generic ones; field access and assignment | experimental | M2 |
 | `match` with literal, variant, union-member, and nested patterns, guards, exhaustiveness and unreachable-case checks | experimental | M2 |
 | Record patterns (destructuring structures in `case`), `or` patterns | planned | M2 |
-| Function values, closures, captured state | planned | M2 |
+| Function values, closures, captured state, function types | experimental | M2 |
 | `try` expressions, `is error` narrowing, `Outcome<T>`, unused-outcome warning | experimental | M2 |
 | Dictionary keys other than strings | planned | M2 |
 | Borrowed views (`View<T>`, `MutableView<T>`) | planned | M2 |
