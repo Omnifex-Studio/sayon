@@ -18,3 +18,11 @@ true true false
 ["first.txt", "inner", "inner/nested", "inner/nested/deep.txt", "second.txt"] false
 false
 IOError
+4 3 6
+["é", "t", "é"] ["e", "́", "t", "é"]
+5 1 2
+["\r\n", "o", "k"] 0
+[104, 195, 169] hé
+h�i
+EncodingError the bytes are not valid UTF-8 from byte 1
+14 195 [32, 119, 195] [104, 195, 169]

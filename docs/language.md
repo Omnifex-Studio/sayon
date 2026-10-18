@@ -75,6 +75,23 @@ for character in word
 
 Indexing a string walks it from the start, so `text[i]` takes time proportional to `i`; a `for` loop visits every character in one pass.
 
+Text has three kinds of units, and each operation names the one it counts:
+
+| Unit | Is | Counted by | Taken apart by |
+|---|---|---|---|
+| byte | one byte of the UTF-8 encoding | `bytelength` | `strings.bytes` (a copy), `strings.byte_view` (no copy) |
+| character | a Unicode scalar value, such as `e` or the combining accent U+0301 | `length` | `text[i]`, `for`, `strings.characters` |
+| grapheme | what a reader sees as one character: a letter with its accents, a whole emoji sequence, a flag | `strings.grapheme_count` | `strings.graphemes` |
+
+```sayon
+strings = import("standard/strings.sayon")
+
+word = "e\u{301}t\u{e9}"                       # "été", the first é written as e and an accent
+print(bytelength(word), length(word), strings.grapheme_count(word))   # 6 4 3
+```
+
+Graphemes follow the extended grapheme clusters of Unicode 17.0 (Unicode Standard Annex #29). Casing and the other operations do not depend on the locale.
+
 ### Arrays and dictionaries
 
 An array literal whose elements have different types gets the union of those types:
@@ -520,6 +537,7 @@ print(numbers)                         # [10, 6, 8, 1, 9]
 
 - `length`, `v[i]`, `for` loops, `print`, and `tostring` work on views as on arrays; `v[i] = value` works on a mutable view. Bounds outside the array raise `BoundsError`.
 - While a view is still used later in its block, the array it borrows cannot be changed, moved, or replaced, and while a mutable view is, the array cannot be used at all except through the view. After the view's last use, the array is free again.
+- `strings.byte_view(text, start, end)` is a `View<byte>` of a string's UTF-8 bytes, without copying them; it borrows the string as a view borrows an array, so the variable holding the string cannot be replaced while the view is used.
 - A view lives in variables and parameters. It cannot be stored in a collection, structure, enum, or union, captured by a closure, or held by a constant (`E_VIEW_ESCAPE`), and it must borrow a variable, not a temporary array (`E_VIEW_TEMPORARY`).
 - A function can return a view of one of its parameters; the caller's argument then stays borrowed for as long as the result is used. Returning a view of the function's own variable is an error (`E_VIEW_RETURN`).
 - `View<T>` values are copied like numbers; a `MutableView<T>` is moved, so only one exists at a time. `clone(view)` makes an array of copies of the elements.
@@ -609,7 +627,7 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 | `standard/io.sayon` | `read_file`, `write_file`, `append_file`, `read_lines`, `read_file_bytes`, `write_file_bytes`, `read_line` (standard input; `nothing` at the end), `write` (no newline), `write_error`; `open` for a `File` with the methods `read_line`, `lines`, `read`, `read_bytes`, `write`, `write_line`, `write_bytes`, `flush`, `position`, `seek`, `close`; `copy` |
 | `standard/os.sayon` | `arguments` (the words after `--` with `sayon run`), `environment`, `platform`, `current_directory`, `exit` |
 | `standard/filesystem.sayon` | `exists`, `is_file`, `is_directory`, `is_link`, `list` (sorted names), `walk` (everything below a directory), `size`, `create_directory`, `remove`, `rename`, `copy`, `join`, `name`, `parent`, `extension` |
-| `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters`, `code` (a character's Unicode code), `character` (the character with a code) |
+| `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters`, `code` (a character's Unicode code), `character` (the character with a code), `graphemes`, `grapheme_count`, `bytes`, `byte_view`, `from_bytes` (strict UTF-8), `from_bytes_lossy` |
 | `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer` |
 | `standard/time.sayon` | `Duration` (`nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `add`, `subtract`, `scale`, `in_seconds`, `in_milliseconds`, `describe`), the monotonic clock (`start`, `elapsed`, `between`, `sleep`), and UTC dates (`DateTime`, `now`, `unix_seconds`, `from_unix`, `to_unix`, `shift`, `difference`, `weekday`, `is_leap_year`, `days_in_month`, `format` and `parse` for ISO 8601) |
 | `standard/collections.sayon` | `sort` and `sort_by` (stable), `reverse`; `Set<T>` with `new_set`, `set_add`, `set_contains`, `set_remove`, `set_size`, `set_values` (as methods: `set.add(value)`); `Queue<T>` with `new_queue`, `queue_add`, `queue_take`, `queue_size` |
@@ -760,7 +778,7 @@ utilities = import("dependencies/utilities/src/library.sayon")
 - Fetched sources are kept in `SAYON_CACHE`, or the user's cache folder (`%LOCALAPPDATA%\Sayon\cache` on Windows). Git must be installed to fetch them.
 - Dependencies by version from a package registry arrive with the registry (milestone M5).
 
-`sayon doctor` reports where the standard library, the runtime library, and clang were found. `sayon explain CODE` explains a diagnostic or runtime error code; [errors.md](errors.md) lists them all.
+`sayon doctor` reports the Unicode version the toolchain follows and where the standard library, the runtime library, and clang were found. `sayon explain CODE` explains a diagnostic or runtime error code; [errors.md](errors.md) lists them all.
 
 ## Tests
 

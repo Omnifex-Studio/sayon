@@ -124,6 +124,11 @@ hosts! {
     Exit = "exit"(Integer) -> Nothing;
     Walk = "walk"(String) -> StringArray;
     IsLink = "is_link"(String) -> Boolean;
+    Graphemes = "graphemes"(String) -> StringArray;
+    GraphemeCount = "grapheme_count"(String) -> Integer;
+    Bytes = "bytes"(String) -> Bytes;
+    FromBytes = "from_bytes"(Bytes) -> String;
+    FromBytesLossy = "from_bytes_lossy"(Bytes) -> String;
 }
 
 /// The code of the error `os.exit` raises to end the program. `catch` and
@@ -410,6 +415,31 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
                 .map(|()| V::Nothing)
                 .map_err(|e| io_error("write", path, &e))
         }
+        Host::Graphemes => Ok(V::Strings(
+            crate::graphemes::clusters(string(args, 0))
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        )),
+        Host::GraphemeCount => Ok(V::Integer(crate::graphemes::count(string(args, 0)) as i64)),
+        Host::Bytes => Ok(V::Bytes(string(args, 0).as_bytes().to_vec())),
+        Host::FromBytes => {
+            let bytes = bytes(args, 0);
+            String::from_utf8(bytes.to_vec())
+                .map(V::String)
+                .map_err(|error| {
+                    (
+                        "EncodingError",
+                        format!(
+                            "the bytes are not valid UTF-8 from byte {}",
+                            error.utf8_error().valid_up_to()
+                        ),
+                    )
+                })
+        }
+        Host::FromBytesLossy => Ok(V::String(
+            String::from_utf8_lossy(bytes(args, 0)).into_owned(),
+        )),
         Host::Walk => {
             let mut stack = walk_entries(std::path::Path::new(string(args, 0)), "")?;
             stack.reverse();

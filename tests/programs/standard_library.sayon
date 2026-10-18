@@ -63,3 +63,20 @@ try
     filesystem.size("missing.tmp")
 catch problem
     print(problem.code)
+
+# characters, graphemes, and bytes
+family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"
+accented = "e\u{301}t\u{e9}"
+print(length(accented), strings.grapheme_count(accented), bytelength(accented))
+print(strings.graphemes(accented), strings.characters(accented))
+print(length(family), strings.grapheme_count(family), strings.grapheme_count("\u{1F1EB}\u{1F1F7}\u{1F1E9}\u{1F1EA}"))
+print(strings.graphemes("\r\nok"), strings.grapheme_count(""))
+encoded = strings.bytes("hé")
+print(encoded, strings.from_bytes(encoded))
+print(strings.from_bytes_lossy([104, 255, 105]))
+broken = try strings.from_bytes([104, 195])
+if broken is error
+    print(broken.code, broken.message)
+sentence = "héllo, wörld"
+raw = strings.byte_view(sentence)
+print(length(raw), raw[1], strings.byte_view(sentence, 7, 10), clone(strings.byte_view(sentence, 0, 3)))

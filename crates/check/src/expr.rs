@@ -1524,9 +1524,13 @@ impl<'a> Checker<'a> {
             Builtin::View | Builtin::MutableView => {
                 let mutable = builtin == Builtin::MutableView;
                 let base = self.check_expr(cx, &args[0], None);
+                let standard = self.modules[cx.module.0 as usize].standard;
                 let element = match self.unifier.resolve(&base.ty) {
                     Type::Array(element) => *element,
                     Type::View(element, base_mutable) if base_mutable || !mutable => *element,
+                    // `strings.byte_view`: the UTF-8 bytes of a string, which
+                    // cannot change.
+                    Type::String if standard && !mutable => Type::Int(crate::types::IntType::U8),
                     Type::Unknown => Type::Unknown,
                     Type::Var(_) => {
                         let element = self.fresh_var(span);

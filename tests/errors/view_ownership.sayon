@@ -34,3 +34,13 @@ function grow(values: View<integer>, update target: Array<integer>)
     push(target, values[0])
 
 grow(view(items), items)
+
+# So must the argument a returned view borrows.
+kept = first_half(["x", "y"])
+
+# A byte view of a string borrows it too.
+strings = import("standard/strings.sayon")
+variable text = "abc"
+bytes = strings.byte_view(text)
+text = "other"
+print(bytes)

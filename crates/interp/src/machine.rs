@@ -356,6 +356,10 @@ impl<'m> Machine<'m> {
                     path,
                 });
             }
+            // A byte of a string, through a byte view, is the last step.
+            if let Value::Str(_) = current {
+                break;
+            }
             current = step_into(*step, current);
         }
         reference.clone()
@@ -365,6 +369,9 @@ impl<'m> Machine<'m> {
         let reference = self.flatten(reference);
         let mut current = self.root_value(reference.root);
         for step in &reference.path {
+            if let (Step::Index(i), Value::Str(text)) = (step, current) {
+                return f(&Value::Int(text.as_bytes()[*i] as i128));
+            }
             current = step_into(*step, current);
         }
         f(current)
@@ -376,6 +383,12 @@ impl<'m> Machine<'m> {
             Value::Array(items) => {
                 Value::Array(items[view.start..view.start + view.length].to_vec())
             }
+            Value::Str(text) => Value::Array(
+                text.as_bytes()[view.start..view.start + view.length]
+                    .iter()
+                    .map(|&byte| Value::Int(byte as i128))
+                    .collect(),
+            ),
             other => panic!("view of {other:?}"),
         })
     }
@@ -901,6 +914,7 @@ impl<'m> Machine<'m> {
                 let reference = self.flatten(&self.resolve(base));
                 let (array, offset, length) = self.read(&reference, |v| match v {
                     Value::Array(items) => (reference.clone(), 0, items.len()),
+                    Value::Str(text) => (reference.clone(), 0, text.len()),
                     Value::View(view) => (view.array.clone(), view.start, view.length),
                     other => panic!("view of {other:?}"),
                 });

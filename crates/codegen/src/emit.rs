@@ -1644,8 +1644,11 @@ impl<'c, 'm> FnEmit<'c, 'm> {
             }
             Op::MakeView { base, start, end } => {
                 let (pointer, ty) = self.place_ptr(base);
-                let (Type::Array(element) | Type::View(element, _)) = ty else {
-                    panic!("view of {ty}")
+                // A string starts like an array of its UTF-8 bytes.
+                let element = match ty {
+                    Type::Array(element) | Type::View(element, _) => *element,
+                    Type::String => Type::Int(IntType::U8),
+                    other => panic!("view of {other}"),
                 };
                 let data = self.body.tmp();
                 self.body.line(format!("{data} = load ptr, ptr {pointer}"));

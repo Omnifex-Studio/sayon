@@ -363,6 +363,14 @@ impl<'p> Analyzer<'p> {
         });
     }
 
+    fn view_temporary(&mut self, base: Span) {
+        self.emit("E_VIEW_TEMPORARY", base, || {
+            Diagnostic::error("E_VIEW_TEMPORARY", "a view needs a variable to borrow from")
+                .primary(base, "this value is gone after this statement")
+                .help("store it in a variable first, and make the view of that")
+        });
+    }
+
     /// Records what a returned view borrows: it must be one parameter.
     fn returned_view(&mut self, value: &Expr) {
         let owners = self.view_source(value);
@@ -954,6 +962,16 @@ impl<'p> Analyzer<'p> {
                 }
             }
             ExprKind::Call { function, args, .. } => {
+                // A returned view borrows one argument, which must outlive
+                // the statement, as for `view` itself.
+                if matches!(ty, Type::View(..))
+                    && let Some(&position) = self.view_returns.get(function)
+                    && let Some(arg) = args.get(position)
+                    && matches!(arg.expr.ty, Type::Array(_) | Type::String)
+                    && !Self::is_place(&arg.expr)
+                {
+                    self.view_temporary(arg.expr.span);
+                }
                 let modes = self.modes.get(function).cloned().unwrap_or_default();
                 let callee = self.names.get(function).cloned().unwrap_or_default();
                 for (index, arg) in args.iter_mut().enumerate() {
@@ -963,18 +981,10 @@ impl<'p> Analyzer<'p> {
             }
             ExprKind::Builtin { builtin, args } => {
                 if matches!(builtin, Builtin::View | Builtin::MutableView)
-                    && matches!(args[0].expr.ty, Type::Array(_))
+                    && matches!(args[0].expr.ty, Type::Array(_) | Type::String)
                     && !Self::is_place(&args[0].expr)
                 {
-                    let base = args[0].expr.span;
-                    self.emit("E_VIEW_TEMPORARY", base, || {
-                        Diagnostic::error(
-                            "E_VIEW_TEMPORARY",
-                            "a view needs a variable to borrow from",
-                        )
-                        .primary(base, "this array is gone after this statement")
-                        .help("store the array in a variable first, and make the view of that")
-                    });
+                    self.view_temporary(args[0].expr.span);
                 }
                 let name = builtin.name().to_string();
                 self.args(args, &name, state);

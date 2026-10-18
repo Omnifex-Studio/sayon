@@ -374,7 +374,7 @@ function first_two(items: Array<integer>) -> View<integer>
 
 ### E_VIEW_TEMPORARY
 
-A view is made of an array that is not stored anywhere, such as `view([1, 2, 3])`, which is destroyed at the end of the statement. Store the array in a variable and make the view of that.
+A view is made of an array or string that is not stored anywhere, such as `view([1, 2, 3])`, which is destroyed at the end of the statement. The same holds for a function that returns a view of its argument, such as `first_half(["a", "b"])` or `strings.byte_view("text")`. Store the value in a variable and make the view of that.
 
 ## Modules and projects
 

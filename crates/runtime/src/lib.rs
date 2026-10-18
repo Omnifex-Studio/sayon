@@ -4,6 +4,8 @@
 //! `ffi` holds the functions compiled programs call.
 
 pub mod ffi;
+pub mod graphemes;
 pub mod host;
 pub mod streams;
 pub mod text;
+pub mod unicode_tables;

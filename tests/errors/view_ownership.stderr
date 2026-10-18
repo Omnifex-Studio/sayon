@@ -48,9 +48,9 @@ error[E_VIEW_TEMPORARY]: a view needs a variable to borrow from
    --> view_ownership.sayon:26:18
     |
  26 | temporary = view([1, 2, 3])
-    |                  ^^^^^^^^^ this array is gone after this statement
+    |                  ^^^^^^^^^ this value is gone after this statement
     |
-    = help: store the array in a variable first, and make the view of that
+    = help: store it in a variable first, and make the view of that
 
 error[E_BORROW_CONFLICT]: cannot change `items` while the loop is reading it
    --> view_ownership.sayon:31:10
@@ -71,5 +71,23 @@ error[E_BORROW_CONFLICT]: `items` is used twice in one call to `grow`
     |
     = help: `grow` needs exclusive access; pass a clone or split the call
 
-8 errors found; nothing was run
+error[E_VIEW_TEMPORARY]: a view needs a variable to borrow from
+   --> view_ownership.sayon:39:19
+    |
+ 39 | kept = first_half(["x", "y"])
+    |                   ^^^^^^^^^^ this value is gone after this statement
+    |
+    = help: store it in a variable first, and make the view of that
+
+error[E_BORROW_CONFLICT]: cannot change `text` while the view `bytes` of it is still in use
+   --> view_ownership.sayon:45:1
+    |
+ 45 | text = "other"
+    | ^^^^^^^^^^^^^^
+ 46 | print(bytes)
+    | ------------ `bytes` is used until here
+    |
+    = help: finish using `bytes` first, or give it a copy: `clone(bytes)` is an array of its elements
+
+10 errors found; nothing was run
 run `sayon explain E_BORROW_CONFLICT` to learn more about an error

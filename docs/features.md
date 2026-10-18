@@ -42,9 +42,10 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `try` expressions, `is error` narrowing, `Outcome<T>`, unused-outcome warning | experimental | M2 |
 | Dictionary keys of any integer, boolean, string, or `nothing` type, and structures, enums, and unions of those | experimental | M2 |
 | Borrowed views (`View<T>`, `MutableView<T>`): `view`, `mutable_view`, indexing, loops, returned views of parameters, borrows until last use | experimental | M2 |
-| Splitting a mutable view into non-overlapping parts; views of strings and bytes | planned | M2 to M3 |
+| Byte views of strings (`strings.byte_view`) | experimental | M2 |
+| Splitting a mutable view into non-overlapping parts | planned | M2 |
 | String indexing and character iteration (`text[i]`, `for character in text`); slicing with `strings.slice` | experimental | M2 |
-| Byte views and grapheme operations on strings | planned | M2 to M3 |
+| Grapheme clusters (Unicode 17.0), UTF-8 bytes of strings and strings from bytes | experimental | M2 |
 | `Shared`, `Weak`, `Cell`, `Mutex` | planned | M3 |
 | `foreign` declarations, `unsafe`, pointers, C interoperability | planned | M3 |
 | Fibers, channels, `select` | planned | M3 |

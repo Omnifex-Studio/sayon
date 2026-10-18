@@ -570,6 +570,10 @@ pub fn doctor() -> u8 {
         std::env::consts::ARCH,
         std::env::consts::OS
     );
+    println!(
+        "  Unicode {}",
+        sayon_runtime::unicode_tables::UNICODE_VERSION
+    );
     let mut healthy = true;
     let mut line = |ok: bool, what: &str, detail: String| {
         healthy &= ok;

@@ -1,4 +1,6 @@
-# Operations on text. Positions and lengths count Unicode characters.
+# Operations on text. Positions and lengths count Unicode characters (code
+# points); `graphemes` works with what readers see as characters, and
+# `bytes` with the UTF-8 encoding.
 #
 #     strings = import("standard/strings.sayon")
 #     words = strings.split("a,b,c", ",")
@@ -56,6 +58,36 @@ function slice(text: string, start: integer, end: integer) -> string
 # Each character as a one-character string.
 function characters(text: string) -> Array<string>
     return host_characters(text)
+
+# The user-perceived characters of a text, its extended grapheme clusters:
+# a letter with its accents, a whole emoji sequence, or a flag is one, so
+# `graphemes("e\u{301}")` is ["é"] while `characters` gives two strings.
+# The rules are those of Unicode 17.0.
+function graphemes(text: string) -> Array<string>
+    return host_graphemes(text)
+
+# The number of user-perceived characters, as `graphemes` finds them.
+function grapheme_count(text: string) -> integer
+    return host_grapheme_count(text)
+
+# The text's UTF-8 encoding; `bytelength(text)` is its length.
+function bytes(text: string) -> Array<byte>
+    return host_bytes(text)
+
+# The UTF-8 bytes of a text from `start` up to, but not including, `end`,
+# without copying them. The view borrows the text for as long as it is used.
+function byte_view(text: string, start = 0, end = bytelength(text)) -> View<byte>
+    return view(text, start, end)
+
+# The text that UTF-8 bytes encode. Fails with EncodingError when they are
+# not valid UTF-8.
+function from_bytes(bytes: Array<byte>) -> string
+    return host_from_bytes(bytes)
+
+# The text that UTF-8 bytes encode, with U+FFFD, the replacement character,
+# in place of each invalid sequence.
+function from_bytes_lossy(bytes: Array<byte>) -> string
+    return host_from_bytes_lossy(bytes)
 
 # The Unicode code of a one-character string, such as 65 for "A".
 function code(character: string) -> integer
