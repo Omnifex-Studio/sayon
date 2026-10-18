@@ -245,6 +245,35 @@ fn unavailable_features_name_their_milestone() {
 }
 
 #[test]
+fn alternatives_and_structure_patterns() {
+    let shapes = "enum Shape\n    circle(radius: float)\n    square(side: float)\n    point\n\n";
+    ok(&format!(
+        "{shapes}function size(s: Shape) -> float\n    match s\n        case circle(r) or square(r)\n            return r\n        case point\n            return 0.0\n"
+    ));
+    fails(
+        &format!(
+            "{shapes}function size(s: Shape)\n    match s\n        case circle(r) or point\n            print(r)\n        case square(_)\n            print(0)\n"
+        ),
+        "E_OR_BINDING",
+    );
+    ok(&format!(
+        "{POINT}function f(p: Point)\n    match p\n        case Point(x = 0.0) or Point(0.0, 1.0)\n            print(\"a\")\n        case Point(x = x, y = y)\n            print(x, y)\n"
+    ));
+    fails(
+        &format!(
+            "{POINT}function f(p: Point)\n    match p\n        case Point(x = 0.0)\n            print(\"a\")\n"
+        ),
+        "E_NONEXHAUSTIVE",
+    );
+    fails(
+        &format!(
+            "{POINT}function f(p: Point)\n    match p\n        case Point(z = 0.0)\n            print(\"a\")\n        case _\n            print(\"b\")\n"
+        ),
+        "E_UNKNOWN_FIELD",
+    );
+}
+
+#[test]
 fn strings_have_character_positions() {
     ok("word = \"abc\"\nfirst: string = word[0]\nfor character in word\n    print(character)\n");
     fails("word = \"abc\"\nword[0] = \"x\"\n", "E_IMMUTABLE_STRING");

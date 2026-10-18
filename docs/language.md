@@ -303,6 +303,9 @@ function area(shape: Shape) -> float
 | a name | anything, binding it to the name (unless it names a variant without fields) |
 | a literal: `0`, `-1`, `2.5`, `"text"`, `true`, `nothing` | an equal value |
 | `variant(pattern, ...)` | that variant, with each field matching its pattern |
+| `Structure(pattern, ...)` | a structure whose fields, in declaration order, match the patterns |
+| `Name(field = pattern, ...)` | a variant or structure whose named fields match; fields left out match anything |
+| `pattern or pattern` | a value either alternative matches |
 
 Patterns nest: `case some(circle(r))`. On a union, a literal or variant pattern selects the member it belongs to, and a name after cases that handled some members holds only the remaining ones:
 
@@ -317,8 +320,30 @@ function describe(value: integer or string or nothing) -> string
             return "something: {other}"     # other is integer or string
 ```
 
+Alternatives share one body. Every alternative must bind the same names with the same types, and when a guard fails the next alternative is tried:
+
+```sayon
+type Point = [x: float, y: float]
+
+function where(p: Point) -> string
+    match p
+        case Point(x = 0.0, y = 0.0)
+            return "origin"
+        case Point(x = 0.0, y = y) or Point(x = y, y = 0.0)
+            return "on an axis at {y}"
+        case _
+            return "elsewhere"
+
+function size(shape: Shape) -> float
+    match shape
+        case circle(s) or square(s)
+            return s
+        case _
+            return 0.0
+```
+
 - A `match` must handle every possible value; the error lists what is missing. End with `case _` to handle everything else. Cases with a guard do not count toward this, since the guard can fail.
-- A case that can never run, because the cases above it match everything it would, is reported as a warning.
+- A case that can never run, because the cases above it match everything it would, is reported as a warning, as is an alternative that the cases and alternatives before it already cover.
 - Matching a variable borrows its value, and names bound by a case borrow its parts: copy them with `clone`, and do not change the variable while such a case runs. Matching `move(variable)` or a computed value gives the match ownership, so the names bound by cases without a guard own their parts.
 
 ## Operators

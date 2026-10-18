@@ -48,7 +48,10 @@ enum_decl   = [ "public" | "private" ] "enum" NAME [ generics ] NEWLINE INDENT v
 variant     = NAME [ "(" field { "," field } [ "," ] ")" ] ;
 match       = "match" expression NEWLINE INDENT arm { arm } DEDENT ;
 arm         = "case" pattern [ "if" expression ] block ;
-pattern     = "_" | NAME [ "(" pattern { "," pattern } ")" ] | literal ;
+pattern     = pattern_atom { "or" pattern_atom } ;
+pattern_atom = "_" | literal
+            | NAME [ "(" pattern { "," pattern } ")" ]
+            | NAME "(" NAME "=" pattern { "," NAME "=" pattern } ")" ;
 
 type        = type_atom { "or" type_atom } ;
 type_atom   = [ NAME "." ] NAME [ "<" type { "," type } ">" ] | "nothing" | "(" type ")"
@@ -126,7 +129,9 @@ Parameter modes are inferred for unannotated parameters as the least of read, up
 
 A `match` whose value is a place (a variable, element, field, or constant) reads it in place: case bindings of owned types are references into it, and Copy bindings are copies. A match on a temporary or on `move(x)` owns its value: it is held in a temporary, the bindings of cases without a guard are moved out of it, and what remains is destroyed when the match ends. Bindings of guarded cases always borrow, so a failed guard never leaves a value partly moved. A Copy value is matched on a copy.
 
-Coverage is computed with the usual pattern-matrix usefulness algorithm. A match is exhaustive when a wildcard is not useful after its unguarded cases; a case is unreachable when its pattern is not useful after the unguarded cases above it. Enums, unions, `boolean`, and `nothing` have finite constructor sets; numbers and strings do not. A binding at the top of a case on a union value gets the union of the members still useful there.
+An arm with `or` alternatives is lowered once for each combination of alternatives, in order, sharing nothing but its source: each copy tests and binds its own alternative, so a failed guard falls through to the next copy. The checker requires the alternatives to bind the same locals with the same types, so every copy of the body sees the same variables.
+
+Coverage is computed with the usual pattern-matrix usefulness algorithm. A match is exhaustive when a wildcard is not useful after its unguarded cases; a case is unreachable when its pattern is not useful after the unguarded cases above it. Enums, unions, `boolean`, and `nothing` have finite constructor sets, and a structure has exactly one; numbers and strings do not. A row whose first pattern has alternatives counts as one row per alternative. A binding at the top of a case on a union value gets the union of the members still useful there.
 
 ## Cleanup and control flow
 

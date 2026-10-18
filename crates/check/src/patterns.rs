@@ -7,11 +7,11 @@
 //! unguarded arms; an arm is unreachable when its pattern is not useful
 //! after the unguarded arms above it.
 
-use crate::checker::{Checker, FnCtx, Scope};
-use crate::hir::{self, ExprKind, LocalKind, Pattern, StmtKind, Usage};
+use crate::checker::{Checker, FnCtx, Item, Scope};
+use crate::hir::{self, ExprKind, LocalId, LocalKind, Pattern, StmtKind, Usage};
 use crate::infer::LiteralKind;
-use crate::types::{Type, variant_fields};
-use sayon_syntax::ast::{self, PatternKind};
+use crate::types::{Type, structure_fields, variant_fields};
+use sayon_syntax::ast::{self, Ident, PatternKind};
 use sayon_syntax::{Diagnostic, Span};
 
 /// The values a pattern matches, for coverage analysis.
@@ -19,12 +19,16 @@ use sayon_syntax::{Diagnostic, Span};
 enum Space {
     Any,
     Ctor(Ctor, Vec<Space>),
+    /// Any of these.
+    Or(Vec<Space>),
 }
 
 /// One way a value can be built.
 #[derive(Clone, Debug, PartialEq)]
 enum Ctor {
     Variant(u32),
+    /// The one way to build a structure.
+    Record,
     /// A union holding this member type.
     Member(Type),
     Bool(bool),
@@ -35,13 +39,44 @@ enum Ctor {
 
 type Row = Vec<Space>;
 
+/// The names a pattern binds. While checking an alternative after the first
+/// of an `or` pattern, `rebind` lists the names the first one bound, with
+/// whether this alternative has bound each yet.
+#[derive(Default)]
+struct Bound {
+    names: Vec<(String, Span)>,
+    rebind: Option<Vec<(String, LocalId, bool)>>,
+}
+
+/// Rows whose first pattern is an `or` become one row per alternative.
+fn expand(rows: &[Row]) -> Vec<Row> {
+    let mut out = Vec::new();
+    for row in rows {
+        match row.split_first() {
+            Some((Space::Or(alternatives), rest)) => {
+                let split: Vec<Row> = alternatives
+                    .iter()
+                    .map(|alternative| {
+                        let mut row = vec![alternative.clone()];
+                        row.extend_from_slice(rest);
+                        row
+                    })
+                    .collect();
+                out.extend(expand(&split));
+            }
+            _ => out.push(row.clone()),
+        }
+    }
+    out
+}
+
 fn specialize(rows: &[Row], ctor: &Ctor, arity: usize) -> Vec<Row> {
     rows.iter()
         .filter_map(|row| {
             let (head, rest) = row.split_first()?;
             let mut out = match head {
                 Space::Ctor(c, args) if c == ctor => args.clone(),
-                Space::Ctor(..) => return None,
+                Space::Ctor(..) | Space::Or(_) => return None,
                 Space::Any => vec![Space::Any; arity],
             };
             out.extend_from_slice(rest);
@@ -105,9 +140,9 @@ impl<'a> Checker<'a> {
         let mut invalid = false;
         for arm in arms {
             cx.scopes.push(Scope::new());
-            let mut names = Vec::new();
+            let mut bound = Bound::default();
             let errors_before = self.diagnostics.error_count();
-            let pattern = self.check_pattern(cx, &arm.pattern, &ty, Some(&rows), &mut names);
+            let pattern = self.check_pattern(cx, &arm.pattern, &ty, Some(&rows), &mut bound);
             // A pattern with errors says nothing reliable about coverage.
             let pattern_failed = self.diagnostics.error_count() > errors_before;
             invalid |= pattern_failed;
@@ -127,12 +162,36 @@ impl<'a> Checker<'a> {
             }
             let space = self.space(&pattern);
             let resolved = self.unifier.resolve(&ty);
-            if !self.useful(&rows, std::slice::from_ref(&space), &[resolved]) {
+            if !self.useful(
+                &rows,
+                std::slice::from_ref(&space),
+                std::slice::from_ref(&resolved),
+            ) {
                 self.error(
                     Diagnostic::warning("W_UNREACHABLE_CASE", "this case is never reached")
                         .primary(arm.pattern.span, "")
                         .note("the cases above it already match every value it would"),
                 );
+            } else if let (Space::Or(alternatives), PatternKind::Or(written)) =
+                (&space, &arm.pattern.kind)
+            {
+                // An alternative that the cases above, or the alternatives
+                // before it, already cover.
+                let mut covered = rows.clone();
+                for (alternative, source) in alternatives.iter().zip(written) {
+                    let vector = std::slice::from_ref(alternative);
+                    if !self.useful(&covered, vector, std::slice::from_ref(&resolved)) {
+                        self.error(
+                            Diagnostic::warning(
+                                "W_UNREACHABLE_CASE",
+                                "this alternative is never reached",
+                            )
+                            .primary(source.span, "")
+                            .note("the cases and alternatives before it already match every value it would"),
+                        );
+                    }
+                    covered.push(vec![alternative.clone()]);
+                }
             }
             if guard.is_none() {
                 rows.push(vec![space]);
@@ -188,10 +247,14 @@ impl<'a> Checker<'a> {
         pattern: &ast::Pattern,
         ty: &Type,
         prior: Option<&[Row]>,
-        names: &mut Vec<(String, Span)>,
+        bound: &mut Bound,
     ) -> Pattern {
         match &pattern.kind {
             PatternKind::Wildcard => Pattern::Wildcard,
+            PatternKind::Or(alternatives) => self.or_pattern(cx, alternatives, ty, bound),
+            PatternKind::Fields { name, fields } => {
+                self.fields_pattern(cx, name, fields, ty, pattern.span, bound)
+            }
             PatternKind::Name(name) => {
                 if let Some((enum_ty, member, variant)) =
                     self.pattern_variant(cx, ty, &name.name, name.span)
@@ -224,7 +287,56 @@ impl<'a> Checker<'a> {
                     };
                     return wrap(member, variant);
                 }
-                if let Some((_, first)) = names.iter().find(|(n, _)| *n == name.name) {
+                if let Some(rebind) = &mut bound.rebind {
+                    return match rebind.iter_mut().find(|(n, _, _)| *n == name.name) {
+                        Some((_, _, true)) => {
+                            self.error(
+                                Diagnostic::error(
+                                    "E_DUPLICATE_DECLARATION",
+                                    format!("`{}` is bound twice in one alternative", name.name),
+                                )
+                                .primary(name.span, ""),
+                            );
+                            Pattern::Wildcard
+                        }
+                        Some((_, local, seen)) => {
+                            *seen = true;
+                            let local = *local;
+                            let local_ty = cx.locals[local.0 as usize].ty.clone();
+                            if self.unifier.unify(&local_ty, ty).is_err() {
+                                let first = self.unifier.resolve_for_display(&local_ty);
+                                let here = self.unifier.resolve_for_display(ty);
+                                self.error(
+                                    Diagnostic::error(
+                                        "E_TYPE_MISMATCH",
+                                        format!(
+                                            "`{}` is {first} in the first alternative but {here} here",
+                                            name.name
+                                        ),
+                                    )
+                                    .primary(name.span, "")
+                                    .help("a name bound by several alternatives must have one type"),
+                                );
+                            }
+                            Pattern::Binding(local)
+                        }
+                        None => {
+                            self.error(
+                                Diagnostic::error(
+                                    "E_OR_BINDING",
+                                    format!(
+                                        "`{}` is bound here but not in the first alternative",
+                                        name.name
+                                    ),
+                                )
+                                .primary(name.span, "")
+                                .help("every alternative of a case must bind the same names"),
+                            );
+                            Pattern::Wildcard
+                        }
+                    };
+                }
+                if let Some((_, first)) = bound.names.iter().find(|(n, _)| *n == name.name) {
                     let first = *first;
                     self.error(
                         Diagnostic::error(
@@ -236,7 +348,7 @@ impl<'a> Checker<'a> {
                     );
                     return Pattern::Wildcard;
                 }
-                names.push((name.name.clone(), name.span));
+                bound.names.push((name.name.clone(), name.span));
                 let binding_ty = match prior {
                     Some(rows) => self.remaining_type(ty, rows),
                     None => ty.clone(),
@@ -248,6 +360,44 @@ impl<'a> Checker<'a> {
                 let Some((enum_ty, member, variant)) =
                     self.pattern_variant(cx, ty, &name.name, name.span)
                 else {
+                    if let Some((record_ty, member)) = self.pattern_structure(cx, ty, name) {
+                        let field_types = self.record_field_types(&record_ty);
+                        if args.len() != field_types.len() {
+                            let fields = self.record_field_names(&record_ty);
+                            self.error(
+                                Diagnostic::error(
+                                    "E_PATTERN_ARITY",
+                                    format!(
+                                        "`{}` has {} field{} ({}), but the pattern gives {}",
+                                        name.name,
+                                        fields.len(),
+                                        if fields.len() == 1 { "" } else { "s" },
+                                        fields.join(", "),
+                                        args.len()
+                                    ),
+                                )
+                                .primary(pattern.span, "")
+                                .help("name the fields you need instead: `Name(field = pattern)`"),
+                            );
+                        }
+                        let mut fields = Vec::new();
+                        for (index, field_ty) in field_types.iter().enumerate() {
+                            fields.push(match args.get(index) {
+                                Some(arg) => self.check_pattern(cx, arg, field_ty, None, bound),
+                                None => Pattern::Wildcard,
+                            });
+                        }
+                        for arg in args.iter().skip(field_types.len()) {
+                            self.check_pattern(cx, arg, &Type::Unknown, None, bound);
+                        }
+                        return wrap(
+                            member,
+                            Pattern::Record {
+                                ty: record_ty,
+                                fields,
+                            },
+                        );
+                    }
                     let resolved = self.unifier.resolve(ty);
                     let message = match &resolved {
                         Type::Unknown => None,
@@ -262,7 +412,7 @@ impl<'a> Checker<'a> {
                         );
                     }
                     for arg in args {
-                        self.check_pattern(cx, arg, &Type::Unknown, None, names);
+                        self.check_pattern(cx, arg, &Type::Unknown, None, bound);
                     }
                     return Pattern::Wildcard;
                 };
@@ -294,12 +444,12 @@ impl<'a> Checker<'a> {
                 let mut fields = Vec::new();
                 for (index, field_ty) in field_types.iter().enumerate() {
                     fields.push(match args.get(index) {
-                        Some(arg) => self.check_pattern(cx, arg, field_ty, None, names),
+                        Some(arg) => self.check_pattern(cx, arg, field_ty, None, bound),
                         None => Pattern::Wildcard,
                     });
                 }
                 for arg in args.iter().skip(field_types.len()) {
-                    self.check_pattern(cx, arg, &Type::Unknown, None, names);
+                    self.check_pattern(cx, arg, &Type::Unknown, None, bound);
                 }
                 wrap(
                     member,
@@ -311,6 +461,255 @@ impl<'a> Checker<'a> {
                 )
             }
             PatternKind::Literal(literal) => self.literal_pattern(cx, literal, ty),
+        }
+    }
+
+    /// `a or b`: the first alternative declares the names it binds, and
+    /// every other alternative must bind the same names, with the same types.
+    fn or_pattern(
+        &mut self,
+        cx: &mut FnCtx,
+        alternatives: &[ast::Pattern],
+        ty: &Type,
+        bound: &mut Bound,
+    ) -> Pattern {
+        let mut checked = Vec::new();
+        if let Some(rebind) = &bound.rebind {
+            // Inside a later alternative of an enclosing `or`: each of these
+            // alternatives must bind the same names as the others.
+            let start: Vec<bool> = rebind.iter().map(|entry| entry.2).collect();
+            let mut result: Option<Vec<bool>> = None;
+            for alternative in alternatives {
+                if let Some(rebind) = &mut bound.rebind {
+                    for (entry, seen) in rebind.iter_mut().zip(&start) {
+                        entry.2 = *seen;
+                    }
+                }
+                checked.push(self.check_pattern(cx, alternative, ty, None, bound));
+                let flags: Vec<bool> = bound
+                    .rebind
+                    .as_ref()
+                    .map(|r| r.iter().map(|entry| entry.2).collect())
+                    .unwrap_or_default();
+                match &result {
+                    None => result = Some(flags),
+                    Some(expected) if *expected != flags => {
+                        self.different_bindings(alternative.span)
+                    }
+                    Some(_) => {}
+                }
+            }
+            if let (Some(rebind), Some(result)) = (&mut bound.rebind, result) {
+                for (entry, seen) in rebind.iter_mut().zip(result) {
+                    entry.2 = seen;
+                }
+            }
+            return Pattern::Or(checked);
+        }
+        let before = bound.names.len();
+        checked.push(self.check_pattern(cx, &alternatives[0], ty, None, bound));
+        let declared: Vec<(String, LocalId, bool)> = bound.names[before..]
+            .iter()
+            .filter_map(|(name, _)| cx.lookup(name).map(|local| (name.clone(), local, false)))
+            .collect();
+        for alternative in &alternatives[1..] {
+            bound.rebind = Some(declared.clone());
+            checked.push(self.check_pattern(cx, alternative, ty, None, bound));
+            let missing: Vec<String> = bound
+                .rebind
+                .take()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|(_, _, seen)| !seen)
+                .map(|(name, _, _)| format!("`{name}`"))
+                .collect();
+            if !missing.is_empty() {
+                self.error(
+                    Diagnostic::error(
+                        "E_OR_BINDING",
+                        format!("this alternative does not bind {}", missing.join(", ")),
+                    )
+                    .primary(alternative.span, "")
+                    .help("every alternative of a case must bind the same names"),
+                );
+            }
+        }
+        Pattern::Or(checked)
+    }
+
+    fn different_bindings(&mut self, span: Span) {
+        self.error(
+            Diagnostic::error(
+                "E_OR_BINDING",
+                "these alternatives do not bind the same names",
+            )
+            .primary(span, "")
+            .help("every alternative of a case must bind the same names"),
+        );
+    }
+
+    /// `Name(field = pattern, ...)`: the named fields of a variant or a
+    /// structure; the others match anything.
+    fn fields_pattern(
+        &mut self,
+        cx: &mut FnCtx,
+        name: &Ident,
+        given: &[(Ident, ast::Pattern)],
+        ty: &Type,
+        span: Span,
+        bound: &mut Bound,
+    ) -> Pattern {
+        if let Some((enum_ty, member, variant)) =
+            self.pattern_variant(cx, ty, &name.name, name.span)
+        {
+            let id = enum_ty.as_named().expect("enum").id;
+            let names: Vec<String> = self.type_def(id).variants()[variant as usize]
+                .fields
+                .iter()
+                .map(|f| f.name.clone())
+                .collect();
+            let types = self.variant_field_types(&enum_ty, variant);
+            let fields = self.named_fields(cx, &name.name, &names, &types, given, bound);
+            return wrap(
+                member,
+                Pattern::Variant {
+                    ty: enum_ty,
+                    variant,
+                    fields,
+                },
+            );
+        }
+        if let Some((record_ty, member)) = self.pattern_structure(cx, ty, name) {
+            let names = self.record_field_names(&record_ty);
+            let types = self.record_field_types(&record_ty);
+            let fields = self.named_fields(cx, &name.name, &names, &types, given, bound);
+            return wrap(
+                member,
+                Pattern::Record {
+                    ty: record_ty,
+                    fields,
+                },
+            );
+        }
+        if !matches!(self.unifier.resolve(ty), Type::Unknown) {
+            self.error(
+                Diagnostic::error(
+                    "E_UNKNOWN_VARIANT",
+                    format!("no structure or variant `{}` matches here", name.name),
+                )
+                .primary(span, ""),
+            );
+        }
+        for (_, pattern) in given {
+            self.check_pattern(cx, pattern, &Type::Unknown, None, bound);
+        }
+        Pattern::Wildcard
+    }
+
+    fn named_fields(
+        &mut self,
+        cx: &mut FnCtx,
+        owner: &str,
+        names: &[String],
+        types: &[Type],
+        given: &[(Ident, ast::Pattern)],
+        bound: &mut Bound,
+    ) -> Vec<Pattern> {
+        let mut fields: Vec<Pattern> = names.iter().map(|_| Pattern::Wildcard).collect();
+        let mut seen: Vec<Option<Span>> = vec![None; names.len()];
+        for (field, pattern) in given {
+            match names.iter().position(|n| *n == field.name) {
+                Some(index) if seen[index].is_some() => {
+                    let first = seen[index].expect("seen");
+                    self.error(
+                        Diagnostic::error(
+                            "E_DUPLICATE_FIELD",
+                            format!("the field `{}` appears twice in this pattern", field.name),
+                        )
+                        .primary(field.span, "")
+                        .secondary(first, "first given here"),
+                    );
+                    self.check_pattern(cx, pattern, &types[index], None, bound);
+                }
+                Some(index) => {
+                    seen[index] = Some(field.span);
+                    fields[index] = self.check_pattern(cx, pattern, &types[index], None, bound);
+                }
+                None => {
+                    self.error(
+                        Diagnostic::error(
+                            "E_UNKNOWN_FIELD",
+                            format!("`{owner}` has no field `{}`", field.name),
+                        )
+                        .primary(field.span, "")
+                        .help(format!("its fields are {}", names.join(", "))),
+                    );
+                    self.check_pattern(cx, pattern, &Type::Unknown, None, bound);
+                }
+            }
+        }
+        fields
+    }
+
+    /// The structure a pattern name refers to, given the type it matches: the
+    /// type itself, or the member of a union that is that structure.
+    fn pattern_structure(
+        &mut self,
+        cx: &FnCtx,
+        ty: &Type,
+        name: &Ident,
+    ) -> Option<(Type, Option<Type>)> {
+        let Some(Item::Type(id)) = self.item(cx.module, &name.name) else {
+            return None;
+        };
+        if self.type_def(id).is_enum() {
+            return None;
+        }
+        let resolved = self.unifier.resolve(ty);
+        match &resolved {
+            Type::Named(named) if named.id == id => Some((resolved.clone(), None)),
+            Type::Union(members) => members
+                .iter()
+                .find(|member| matches!(member, Type::Named(named) if named.id == id))
+                .map(|member| (member.clone(), Some(member.clone()))),
+            Type::Var(_) => {
+                let record = self.instantiate_named(id, name.span);
+                self.unify_at(ty, &record, name.span, "the matched value");
+                Some((record, None))
+            }
+            Type::Unknown => None,
+            other => {
+                self.error(
+                    Diagnostic::error(
+                        "E_TYPE_MISMATCH",
+                        format!("{other} is never a `{}`", name.name),
+                    )
+                    .primary(name.span, ""),
+                );
+                Some((Type::Unknown, None))
+            }
+        }
+    }
+
+    fn record_field_types(&self, record: &Type) -> Vec<Type> {
+        match record {
+            Type::Named(named) => structure_fields(&self.type_defs, named)
+                .iter()
+                .map(|ty| self.unifier.resolve(ty))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn record_field_names(&self, record: &Type) -> Vec<String> {
+        match record {
+            Type::Named(named) => self
+                .type_def(named.id)
+                .fields()
+                .iter()
+                .map(|f| f.name.clone())
+                .collect(),
+            _ => Vec::new(),
         }
     }
 
@@ -509,6 +908,12 @@ impl<'a> Checker<'a> {
                 Ctor::Member(self.unifier.resolve(member)),
                 vec![self.space(inner)],
             ),
+            Pattern::Record { fields, .. } => {
+                Space::Ctor(Ctor::Record, fields.iter().map(|f| self.space(f)).collect())
+            }
+            Pattern::Or(alternatives) => {
+                Space::Or(alternatives.iter().map(|a| self.space(a)).collect())
+            }
         }
     }
 
@@ -520,6 +925,7 @@ impl<'a> Checker<'a> {
                     .map(|i| Ctor::Variant(i as u32))
                     .collect(),
             ),
+            Type::Named(_) => Some(vec![Ctor::Record]),
             Type::Union(members) => Some(members.iter().cloned().map(Ctor::Member).collect()),
             Type::Boolean => Some(vec![Ctor::Bool(false), Ctor::Bool(true)]),
             Type::Nothing => Some(vec![Ctor::Nothing]),
@@ -531,18 +937,25 @@ impl<'a> Checker<'a> {
     fn ctor_types(&self, ty: &Type, ctor: &Ctor) -> Vec<Type> {
         match (ctor, ty) {
             (Ctor::Variant(variant), Type::Named(_)) => self.variant_field_types(ty, *variant),
+            (Ctor::Record, Type::Named(_)) => self.record_field_types(ty),
             (Ctor::Member(member), _) => vec![member.clone()],
             _ => Vec::new(),
         }
     }
 
     fn useful(&self, rows: &[Row], vector: &[Space], types: &[Type]) -> bool {
+        let rows = &expand(rows);
         let Some((head, rest)) = vector.split_first() else {
             return rows.is_empty();
         };
         let ty = types.first().cloned().unwrap_or(Type::Unknown);
         let rest_types = types.get(1..).unwrap_or_default();
         match head {
+            Space::Or(alternatives) => alternatives.iter().any(|alternative| {
+                let mut next = vec![alternative.clone()];
+                next.extend_from_slice(rest);
+                self.useful(rows, &next, types)
+            }),
             Space::Ctor(ctor, args) => {
                 let mut sub_types = self.ctor_types(&ty, ctor);
                 sub_types.resize(args.len(), Type::Unknown);
@@ -570,6 +983,7 @@ impl<'a> Checker<'a> {
 
     /// A combination of values that no row matches, if there is one.
     fn witness(&self, rows: &[Row], types: &[Type]) -> Option<Vec<Space>> {
+        let rows = &expand(rows);
         let Some(ty) = types.first() else {
             return rows.is_empty().then(Vec::new);
         };
@@ -609,6 +1023,7 @@ impl<'a> Checker<'a> {
     /// Descriptions of the values the rows leave unmatched: one per missing
     /// constructor of the matched type.
     fn missing_cases(&self, rows: &[Row], ty: &Type) -> Vec<String> {
+        let rows = &expand(rows);
         if !self.useful(rows, &[Space::Any], std::slice::from_ref(ty)) {
             return Vec::new();
         }
@@ -634,7 +1049,29 @@ impl<'a> Checker<'a> {
     fn describe(&self, space: &Space, ty: &Type) -> String {
         match space {
             Space::Any => "_".to_string(),
+            Space::Or(alternatives) => alternatives
+                .iter()
+                .map(|alternative| self.describe(alternative, ty))
+                .collect::<Vec<_>>()
+                .join(" or "),
             Space::Ctor(ctor, args) => match ctor {
+                Ctor::Record => {
+                    let Type::Named(named) = ty else {
+                        return "_".to_string();
+                    };
+                    let def = self.type_def(named.id);
+                    let types = self.record_field_types(ty);
+                    let parts: Vec<String> = def
+                        .fields()
+                        .iter()
+                        .zip(args)
+                        .zip(types.iter().chain(std::iter::repeat(&Type::Unknown)))
+                        .map(|((field, arg), ty)| {
+                            format!("{} = {}", field.name, self.describe(arg, ty))
+                        })
+                        .collect();
+                    format!("{}({})", def.name, parts.join(", "))
+                }
                 Ctor::Variant(variant) => {
                     let Type::Named(named) = ty else {
                         return "_".to_string();

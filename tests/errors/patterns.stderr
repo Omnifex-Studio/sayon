@@ -1,0 +1,49 @@
+error[E_OR_BINDING]: this alternative does not bind `r`
+   --> patterns.sayon:10:27
+    |
+ 10 |         case circle(r) or point
+    |                           ^^^^^
+    |
+    = help: every alternative of a case must bind the same names
+
+error[E_TYPE_MISMATCH]: `r` is float in the first alternative but string here
+   --> patterns.sayon:17:33
+    |
+ 17 |         case circle(r) or label(r)
+    |                                 ^
+    |
+    = help: a name bound by several alternatives must have one type
+
+warning[W_UNREACHABLE_CASE]: this alternative is never reached
+   --> patterns.sayon:24:27
+    |
+ 24 |         case circle(_) or circle(_) or point
+    |                           ^^^^^^^^^
+    |
+    = note: the cases and alternatives before it already match every value it would
+
+error[E_NONEXHAUSTIVE]: `match` does not handle every possible value
+   --> patterns.sayon:30:11
+    |
+ 30 |     match p
+    |           ^ not handled: `Point(x = _, y = _)`
+    |
+    = help: add a `case` for each, or end with `case _` to handle everything else
+
+error[E_UNKNOWN_FIELD]: `Point` has no field `z`
+   --> patterns.sayon:36:20
+    |
+ 36 |         case Point(z = 1.0)
+    |                    ^
+    |
+    = help: its fields are x, y
+
+error[E_PATTERN_ARITY]: `Point` has 2 fields (x, y), but the pattern gives 1
+   --> patterns.sayon:38:14
+    |
+ 38 |         case Point(1.0)
+    |              ^^^^^^^^^^
+    |
+    = help: name the fields you need instead: `Name(field = pattern)`
+
+5 errors found; nothing was run

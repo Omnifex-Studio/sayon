@@ -1,0 +1,41 @@
+enum Shape
+    circle(radius: float)
+    label(text: string)
+    point
+
+type Point = [x: float, y: float]
+
+function a(shape: Shape)
+    match shape
+        case circle(r) or point
+            print(r)
+        case label(_)
+            print("label")
+
+function b(shape: Shape)
+    match shape
+        case circle(r) or label(r)
+            print(r)
+        case point
+            print("point")
+
+function c(shape: Shape)
+    match shape
+        case circle(_) or circle(_) or point
+            print("x")
+        case label(_)
+            print("label")
+
+function d(p: Point)
+    match p
+        case Point(x = 0.0)
+            print("zero")
+
+function e(p: Point)
+    match p
+        case Point(z = 1.0)
+            print("z")
+        case Point(1.0)
+            print("one")
+        case _
+            print("other")

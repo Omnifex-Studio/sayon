@@ -30,7 +30,7 @@ print(length(numbers))  # numbers is still owned here
 Sayon is in early development and not ready for real programs. What works today:
 
 - A front end for the current language subset: lexer, parser, type inference, union narrowing, and ownership checking
-- Structures and enums, including generic ones, and `match` with nested patterns, guards, and exhaustiveness checking
+- Structures and enums, including generic ones, and `match` with nested and structure patterns, alternatives, guards, and exhaustiveness checking
 - Errors captured as values with `try` expressions, `Outcome<T>`, and `is error` narrowing
 - Functions as values and closures that own what they capture
 - An interpreter that runs checked programs, with checked integer arithmetic and cleanup on every exit path

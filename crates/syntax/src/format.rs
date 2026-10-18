@@ -589,6 +589,18 @@ impl<'s> Printer<'s> {
                 let args: Vec<String> = args.iter().map(|a| self.pattern(a)).collect();
                 format!("{}({})", name.name, args.join(", "))
             }
+            PatternKind::Fields { name, fields } => {
+                let fields: Vec<String> = fields
+                    .iter()
+                    .map(|(field, pattern)| format!("{} = {}", field.name, self.pattern(pattern)))
+                    .collect();
+                format!("{}({})", name.name, fields.join(", "))
+            }
+            PatternKind::Or(alternatives) => {
+                let alternatives: Vec<String> =
+                    alternatives.iter().map(|a| self.pattern(a)).collect();
+                alternatives.join(" or ")
+            }
         }
     }
 
@@ -999,6 +1011,22 @@ fn pattern_shape(pattern: &Pattern, source: &str) -> String {
         PatternKind::Variant { name, args } => {
             let args: Vec<String> = args.iter().map(|a| pattern_shape(a, source)).collect();
             format!("{}({})", name.name, args.join(","))
+        }
+        PatternKind::Fields { name, fields } => {
+            let fields: Vec<String> = fields
+                .iter()
+                .map(|(field, pattern)| {
+                    format!("{}={}", field.name, pattern_shape(pattern, source))
+                })
+                .collect();
+            format!("{}({})", name.name, fields.join(","))
+        }
+        PatternKind::Or(alternatives) => {
+            let alternatives: Vec<String> = alternatives
+                .iter()
+                .map(|a| pattern_shape(a, source))
+                .collect();
+            format!("({})", alternatives.join("|"))
         }
     }
 }

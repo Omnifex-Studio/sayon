@@ -107,6 +107,47 @@ fn lower_program(program: &hir::Program, include_tests: bool) -> LowerOutput {
     }
 }
 
+/// Every way to pick one alternative of each `or` pattern met along the
+/// way, in the order matching tries them. Each list gives the chosen
+/// alternative of each `or`, in the order a left-to-right walk reaches them.
+fn choice_lists(pattern: &hir::Pattern) -> Vec<Vec<usize>> {
+    let sequence = |patterns: &[hir::Pattern]| {
+        patterns.iter().fold(vec![Vec::new()], |lists, pattern| {
+            let parts = choice_lists(pattern);
+            lists
+                .iter()
+                .flat_map(|list| {
+                    parts.iter().map(move |part| {
+                        let mut joined = list.clone();
+                        joined.extend_from_slice(part);
+                        joined
+                    })
+                })
+                .collect()
+        })
+    };
+    match pattern {
+        hir::Pattern::Wildcard | hir::Pattern::Binding(_) | hir::Pattern::Literal(_) => {
+            vec![Vec::new()]
+        }
+        hir::Pattern::Variant { fields, .. } | hir::Pattern::Record { fields, .. } => {
+            sequence(fields)
+        }
+        hir::Pattern::Member { inner, .. } => choice_lists(inner),
+        hir::Pattern::Or(alternatives) => alternatives
+            .iter()
+            .enumerate()
+            .flat_map(|(index, alternative)| {
+                choice_lists(alternative).into_iter().map(move |rest| {
+                    let mut list = vec![index];
+                    list.extend(rest);
+                    list
+                })
+            })
+            .collect(),
+    }
+}
+
 fn instance_name(name: &str, args: &[Type]) -> String {
     if args.is_empty() {
         name.to_string()
@@ -844,16 +885,23 @@ impl<'l, 'p> FnLower<'l, 'p> {
         };
         let consuming = owned && !copy;
         let end = self.new_block();
-        for arm in arms {
+        // An arm with `or` alternatives is lowered once for each combination
+        // of alternatives, in order, so a failed guard tries the next one.
+        let expanded = arms.iter().flat_map(|arm| {
+            choice_lists(&arm.pattern)
+                .into_iter()
+                .map(move |choices| (arm, choices))
+        });
+        for (arm, choices) in expanded {
             if self.terminated {
                 break;
             }
             let next = self.new_block();
-            self.test_pattern(&place, &ty, &arm.pattern, next);
+            self.test_pattern(&place, &ty, &arm.pattern, next, &mut choices.iter());
             self.push_scope();
             self.block_scopes.push(self.scopes.len() - 1);
             let take = consuming && arm.guard.is_none();
-            self.bind_pattern(&place, &ty, &arm.pattern, take);
+            self.bind_pattern(&place, &ty, &arm.pattern, take, &mut choices.iter());
             if let Some(guard) = &arm.guard {
                 // Guarded bindings only copy or borrow, so failing leaves
                 // nothing to clean up.
@@ -878,10 +926,29 @@ impl<'l, 'p> FnLower<'l, 'p> {
         self.pop_scope();
     }
 
-    /// Branches to `fail` unless the value at `place` matches `pattern`.
-    fn test_pattern(&mut self, place: &Place, ty: &Type, pattern: &'p hir::Pattern, fail: BlockId) {
+    /// Branches to `fail` unless the value at `place` matches `pattern`,
+    /// taking the alternative of each `or` pattern from `choices`.
+    fn test_pattern(
+        &mut self,
+        place: &Place,
+        ty: &Type,
+        pattern: &'p hir::Pattern,
+        fail: BlockId,
+        choices: &mut std::slice::Iter<usize>,
+    ) {
         match pattern {
             hir::Pattern::Wildcard | hir::Pattern::Binding(_) => {}
+            hir::Pattern::Or(alternatives) => {
+                let choice = *choices.next().expect("a choice for each alternative");
+                self.test_pattern(place, ty, &alternatives[choice], fail, choices);
+            }
+            hir::Pattern::Record { fields, .. } => {
+                let field_types = self.record_field_types(ty);
+                for (index, (field, field_ty)) in fields.iter().zip(&field_types).enumerate() {
+                    let inner = place.project(Projection::Field(index as u32));
+                    self.test_pattern(&inner, field_ty, field, fail, choices);
+                }
+            }
             hir::Pattern::Literal(literal) => {
                 let flag = self.new_slot(Type::Boolean, SlotKind::Value, None);
                 let lhs = self.read_operand(place, ty);
@@ -918,7 +985,7 @@ impl<'l, 'p> FnLower<'l, 'p> {
                         variant: *variant,
                         field: index as u32,
                     });
-                    self.test_pattern(&inner, field_ty, field, fail);
+                    self.test_pattern(&inner, field_ty, field, fail, choices);
                 }
             }
             hir::Pattern::Member { member, inner } => {
@@ -929,7 +996,7 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 self.assign(Place::slot(flag), Rvalue::TagIs { value, tag });
                 self.branch_unless(flag, fail);
                 let payload = place.project(Projection::Payload(tag));
-                self.test_pattern(&payload, &member, inner, fail);
+                self.test_pattern(&payload, &member, inner, fail, choices);
             }
         }
     }
@@ -937,9 +1004,27 @@ impl<'l, 'p> FnLower<'l, 'p> {
     /// Binds a pattern's names to the parts of the value at `place`: Copy
     /// values are copied; others are moved out when `take` is set, and
     /// borrowed otherwise.
-    fn bind_pattern(&mut self, place: &Place, ty: &Type, pattern: &'p hir::Pattern, take: bool) {
+    fn bind_pattern(
+        &mut self,
+        place: &Place,
+        ty: &Type,
+        pattern: &'p hir::Pattern,
+        take: bool,
+        choices: &mut std::slice::Iter<usize>,
+    ) {
         match pattern {
             hir::Pattern::Wildcard | hir::Pattern::Literal(_) => {}
+            hir::Pattern::Or(alternatives) => {
+                let choice = *choices.next().expect("a choice for each alternative");
+                self.bind_pattern(place, ty, &alternatives[choice], take, choices);
+            }
+            hir::Pattern::Record { fields, .. } => {
+                let field_types = self.record_field_types(ty);
+                for (index, (field, field_ty)) in fields.iter().zip(&field_types).enumerate() {
+                    let inner = place.project(Projection::Field(index as u32));
+                    self.bind_pattern(&inner, field_ty, field, take, choices);
+                }
+            }
             hir::Pattern::Binding(local) => {
                 let info = &self.locals[local.0 as usize];
                 let local_ty = self.ty(&info.ty);
@@ -971,15 +1056,24 @@ impl<'l, 'p> FnLower<'l, 'p> {
                         variant: *variant,
                         field: index as u32,
                     });
-                    self.bind_pattern(&inner, field_ty, field, take);
+                    self.bind_pattern(&inner, field_ty, field, take, choices);
                 }
             }
             hir::Pattern::Member { member, inner } => {
                 let member = self.ty(member);
                 let tag = self.l.tag(&member);
                 let payload = place.project(Projection::Payload(tag));
-                self.bind_pattern(&payload, &member, inner, take);
+                self.bind_pattern(&payload, &member, inner, take, choices);
             }
+        }
+    }
+
+    fn record_field_types(&self, ty: &Type) -> Vec<Type> {
+        match ty {
+            Type::Named(named) => {
+                sayon_check::types::structure_fields(&self.l.program.types, named)
+            }
+            _ => Vec::new(),
         }
     }
 

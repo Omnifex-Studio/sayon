@@ -976,6 +976,22 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern> {
+        let first = self.parse_pattern_atom()?;
+        if !self.check_keyword(Keyword::Or) {
+            return Ok(first);
+        }
+        let start = first.span;
+        let mut alternatives = vec![first];
+        while self.eat_keyword(Keyword::Or) {
+            alternatives.push(self.parse_pattern_atom()?);
+        }
+        Ok(Pattern {
+            kind: PatternKind::Or(alternatives),
+            span: start.to(self.previous_span()),
+        })
+    }
+
+    fn parse_pattern_atom(&mut self) -> Result<Pattern> {
         let token = self.peek();
         let start = token.span;
         let kind = match &token.kind {
@@ -987,16 +1003,29 @@ impl<'t> Parser<'t> {
                 let name = self.expect_ident("a pattern")?;
                 if self.eat(&TokenKind::LeftParen) {
                     self.nesting += 1;
+                    let named = matches!(self.peek().kind, TokenKind::Identifier(_))
+                        && self.peek_at(1).kind == TokenKind::Assign;
                     let mut args = Vec::new();
+                    let mut fields = Vec::new();
                     while !self.check(&TokenKind::RightParen) {
-                        args.push(self.parse_pattern()?);
+                        if named {
+                            let field = self.expect_ident("a field name")?;
+                            self.expect(&TokenKind::Assign, "`=` after the field name")?;
+                            fields.push((field, self.parse_pattern()?));
+                        } else {
+                            args.push(self.parse_pattern()?);
+                        }
                         if !self.eat(&TokenKind::Comma) {
                             break;
                         }
                     }
                     self.expect(&TokenKind::RightParen, "`)`")?;
                     self.nesting -= 1;
-                    PatternKind::Variant { name, args }
+                    if named {
+                        PatternKind::Fields { name, fields }
+                    } else {
+                        PatternKind::Variant { name, args }
+                    }
                 } else {
                     PatternKind::Name(name)
                 }

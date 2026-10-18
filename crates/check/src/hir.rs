@@ -208,6 +208,13 @@ pub enum Pattern {
         member: Type,
         inner: Box<Pattern>,
     },
+    /// A structure of type `ty`, with a pattern for each field.
+    Record {
+        ty: Type,
+        fields: Vec<Pattern>,
+    },
+    /// Any of the alternatives, which all bind the same locals.
+    Or(Vec<Pattern>),
 }
 
 impl Pattern {
@@ -215,8 +222,15 @@ impl Pattern {
     pub fn bindings(&self, out: &mut Vec<LocalId>) {
         match self {
             Pattern::Binding(local) => out.push(*local),
-            Pattern::Variant { fields, .. } => fields.iter().for_each(|f| f.bindings(out)),
+            Pattern::Variant { fields, .. } | Pattern::Record { fields, .. } => {
+                fields.iter().for_each(|f| f.bindings(out))
+            }
             Pattern::Member { inner, .. } => inner.bindings(out),
+            Pattern::Or(alternatives) => {
+                if let Some(first) = alternatives.first() {
+                    first.bindings(out);
+                }
+            }
             Pattern::Wildcard | Pattern::Literal(_) => {}
         }
     }

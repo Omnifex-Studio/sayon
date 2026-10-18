@@ -134,10 +134,20 @@ pub enum PatternKind {
     Literal(Expr),
     /// A binding or a payload-free variant, decided during checking.
     Name(Ident),
+    /// A variant with a pattern for each field, or a structure with a
+    /// pattern for each field in declaration order.
     Variant {
         name: Ident,
         args: Vec<Pattern>,
     },
+    /// A variant or structure with patterns for the named fields; the other
+    /// fields match anything.
+    Fields {
+        name: Ident,
+        fields: Vec<(Ident, Pattern)>,
+    },
+    /// Matches when any of the alternatives does.
+    Or(Vec<Pattern>),
 }
 
 #[derive(Clone, Debug)]

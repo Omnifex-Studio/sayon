@@ -1795,13 +1795,18 @@ impl<'a> Checker<'a> {
         match pattern {
             hir::Pattern::Wildcard | hir::Pattern::Binding(_) => {}
             hir::Pattern::Literal(value) => self.finalize_expr(value),
-            hir::Pattern::Variant { ty, fields, .. } => {
+            hir::Pattern::Variant { ty, fields, .. } | hir::Pattern::Record { ty, fields } => {
                 *ty = self.finalize_type(ty);
                 fields.iter_mut().for_each(|f| self.finalize_pattern(f));
             }
             hir::Pattern::Member { member, inner } => {
                 *member = self.finalize_type(member);
                 self.finalize_pattern(inner);
+            }
+            hir::Pattern::Or(alternatives) => {
+                alternatives
+                    .iter_mut()
+                    .for_each(|a| self.finalize_pattern(a));
             }
         }
     }

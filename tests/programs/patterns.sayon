@@ -1,0 +1,93 @@
+enum Shape
+    circle(radius: float)
+    square(side: float)
+    rectangle(width: float, height: float)
+    point
+
+type Point = [x: float, y: float]
+
+type Person = [name: string, age: integer]
+
+function describe(shape: Shape) -> string
+    match shape
+        case circle(size) or square(size)
+            return "round or square of size {size}"
+        case rectangle(width = w)
+            return "rectangle {w} wide"
+        case point
+            return "a point"
+
+print(describe(circle(1.5)))
+print(describe(square(2.0)))
+print(describe(Shape.rectangle(3.0, 4.0)))
+print(describe(point))
+
+function where(p: Point) -> string
+    match p
+        case Point(x = 0.0, y = 0.0)
+            return "origin"
+        case Point(0.0, y)
+            return "on the y axis at {y}"
+        case Point(x = x, y = 0.0)
+            return "on the x axis at {x}"
+        case _
+            return "elsewhere"
+
+print(where(Point(x = 0.0, y = 0.0)))
+print(where(Point(x = 0.0, y = 2.0)))
+print(where(Point(x = 3.0, y = 0.0)))
+print(where(Point(x = 1.0, y = 1.0)))
+
+function classify(n: integer) -> string
+    match n
+        case 0 or 1
+            return "tiny"
+        case 2 or 3 or 5 or 7
+            return "small prime"
+        case _
+            return "other"
+
+for n in [0, 1, 3, 4, 7]
+    print(n, classify(n))
+
+people = [Person(name = "Ada", age = 36), Person(name = "Lin", age = 7)]
+for person in people
+    match person
+        case Person(name = name, age = 7)
+            print("{name} is seven")
+        case Person(name = name)
+            print("{name} is not seven")
+
+function label(value: integer or string or nothing) -> string
+    match value
+        case nothing or ""
+            return "empty"
+        case text if text == "x"
+            return "the letter x"
+        case _
+            return "something"
+
+print(label(nothing), label(""), label("x"), label(4))
+
+# Alternatives that move what they bind out of an owned value.
+enum Note
+    title(text: string)
+    body(text: string)
+    count(value: integer)
+
+notes = [title("Plan"), count(3), body("Write it")]
+for note in notes
+    match note
+        case title(text) or body(text)
+            print("text:", text)
+        case count(value)
+            print("count:", value)
+
+function take(own note: Note) -> string
+    match move(note)
+        case title(text) or body(text)
+            return text
+        case count(_)
+            return "a count"
+
+print(take(body("kept")), take(count(1)))
