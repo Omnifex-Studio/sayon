@@ -341,14 +341,11 @@ impl<'m> Machine<'m> {
 
     fn read<R>(&self, reference: &Ref, f: impl FnOnce(&Value) -> R) -> R {
         let mut current = self.root_value(reference.root);
-        for (index, step) in reference.path.iter().enumerate() {
+        for step in &reference.path {
             current = match (step, current) {
                 (Step::Index(i), Value::Array(items)) => &items[*i],
                 (Step::DictValue(i), Value::Dict(dict)) => &dict.values[*i],
-                (Step::DictKey(i), Value::Dict(dict)) => {
-                    debug_assert_eq!(index + 1, reference.path.len());
-                    return f(&Value::Str(dict.keys[*i].clone()));
-                }
+                (Step::DictKey(i), Value::Dict(dict)) => &dict.keys[*i],
                 (Step::Payload, Value::Union(_, payload)) => payload,
                 (Step::Field(i), Value::Record(_, fields) | Value::Variant(_, _, fields)) => {
                     &fields[*i]
@@ -523,11 +520,11 @@ impl<'m> Machine<'m> {
                 });
             }
             Inst::DictSet { dict, key, value } => {
-                let key = self.string(key);
+                let key = self.take(key);
                 let value = self.take(value);
                 let reference = self.resolve(dict);
                 self.with_mut(&reference, |target| match target {
-                    Value::Dict(dict) => dict.set(&key, value),
+                    Value::Dict(dict) => dict.set(key, value),
                     other => panic!("dictionary assignment into {other:?}"),
                 });
             }
@@ -610,9 +607,9 @@ impl<'m> Machine<'m> {
             Rvalue::MakeDict { entries, .. } => {
                 let mut dict = Dict::default();
                 for (key, value) in entries {
-                    let key = self.string(key);
+                    let key = self.take(key);
                     let value = self.take(value);
-                    dict.set(&key, value);
+                    dict.set(key, value);
                 }
                 Value::Dict(Box::new(dict))
             }
@@ -671,7 +668,7 @@ impl<'m> Machine<'m> {
             }
             Rvalue::ByteLength(value) => Value::Int(self.string(value).len() as i128),
             Rvalue::HasKey { dict, key } => {
-                let key = self.string(key);
+                let key = self.take(key);
                 let source = self.source(dict);
                 Value::Bool(self.with_source(&source, |v| match v {
                     Value::Dict(dict) => dict.find(&key).is_some(),
@@ -858,7 +855,7 @@ impl<'m> Machine<'m> {
                 }
             }
             Op::DictFind { dict, key } => {
-                let key = self.string(key);
+                let key = self.take(key);
                 let source = self.source(dict);
                 let position = self.with_source(&source, |v| match v {
                     Value::Dict(dict) => dict.find(&key),
@@ -866,11 +863,15 @@ impl<'m> Machine<'m> {
                 });
                 match position {
                     Some(position) => Ok(Value::Int(position as i128)),
-                    None => Err(self.error(
-                        "KeyError",
-                        format!("the key \"{key}\" is not in the dictionary"),
-                        span,
-                    )),
+                    None => {
+                        let mut shown = String::new();
+                        display(&key, &mut shown, true, &self.module.types);
+                        Err(self.error(
+                            "KeyError",
+                            format!("the key {shown} is not in the dictionary"),
+                            span,
+                        ))
+                    }
                 }
             }
             Op::Print(values) => {

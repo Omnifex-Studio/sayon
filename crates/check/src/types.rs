@@ -414,6 +414,46 @@ pub fn structure_fields(types: &[TypeDef], named: &NamedType) -> Vec<Type> {
         .collect()
 }
 
+/// The part of a type that keeps its values from being dictionary keys, if
+/// any. Keys are compared by value and must keep their identity: integers,
+/// booleans, strings, `nothing`, and structures, enums, and unions of those.
+/// Floats (NaN is unequal to itself), collections, function values, errors,
+/// and ranges are not keys. Type parameters and unknown types are decided
+/// where they are filled in.
+pub fn non_key_part(types: &[TypeDef], ty: &Type) -> Option<Type> {
+    fn search(types: &[TypeDef], ty: &Type, seen: &mut Vec<TypeId>) -> Option<Type> {
+        match ty {
+            Type::Int(_)
+            | Type::Boolean
+            | Type::String
+            | Type::Nothing
+            | Type::Unknown
+            | Type::Param(_)
+            | Type::Var(_) => None,
+            Type::Union(members) => members.iter().find_map(|m| search(types, m, seen)),
+            Type::Named(named) => {
+                if seen.contains(&named.id) {
+                    return None;
+                }
+                seen.push(named.id);
+                let def = &types[named.id.0 as usize];
+                let variant_fields = def.variants().iter().flat_map(|v| &v.fields);
+                def.fields()
+                    .iter()
+                    .chain(variant_fields)
+                    .find_map(|field| search(types, &field.ty.substitute(&named.args), seen))
+            }
+            Type::Float(_)
+            | Type::Array(_)
+            | Type::Dict(..)
+            | Type::Function(_)
+            | Type::Error
+            | Type::Range => Some(ty.clone()),
+        }
+    }
+    search(types, ty, &mut Vec::new())
+}
+
 /// Whether a value of the type can contain a function value.
 pub fn holds_function(types: &[TypeDef], ty: &Type) -> bool {
     fn search(types: &[TypeDef], ty: &Type, seen: &mut Vec<TypeId>) -> bool {

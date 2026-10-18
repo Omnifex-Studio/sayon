@@ -45,7 +45,7 @@ Keywords are always single words, such as `elseif` (never `else if`). Reserved w
 | Nothing | `nothing` | `nothing` |
 | String | `"text"` | `string` |
 | Array | `[1, 2, 3]`, `[]` | `Array<T>` |
-| Dictionary | `["name" = "Ada", "city" = "London"]` | `Dict<string, T>` |
+| Dictionary | `["name" = "Ada", "city" = "London"]`, `[1 = "one"]` | `Dict<K, V>` with the keys' and values' types |
 
 Underscores in numbers must sit between digits. Number prefixes are lowercase. An integer literal never becomes a float: `x: float = 1` is an error; write `1.0`.
 
@@ -83,7 +83,20 @@ An array literal whose elements have different types gets the union of those typ
 mixed = [1, "text", true]        # Array<integer or boolean or string>
 ```
 
-An empty literal `[]` takes its type from an annotation or from later use, such as a `push`. Dictionary keys are strings in this release. Dictionaries keep insertion order. Replacing a key's value keeps the key's position.
+An empty literal `[]` takes its type from an annotation or from later use, such as a `push`. Dictionaries keep insertion order. Replacing a key's value keeps the key's position.
+
+Dictionary keys are compared by value. A key can be an integer, a boolean, a string, `nothing`, or a structure, enum, or union made only of those; floats, collections, function values, and errors cannot be keys (`E_KEY_TYPE`), since a key must stay equal to itself. A key is copied into the dictionary.
+
+```sayon
+type Point = [x: integer, y: integer]
+
+squares = [1 = 1, 2 = 4]
+grid: Dict<Point, string> = []
+grid[Point(x = 0, y = 0)] = "origin"
+print(squares[2], grid)       # 4 [Point(x = 0, y = 0) = "origin"]
+```
+
+In `[name = value]` a bare name is a structure field, unless a dictionary is expected there: then the name is evaluated as a key, so `directions: Dict<Direction, integer> = [north = 0, south = 180]` uses the variants `north` and `south`.
 
 ## Bindings and scope
 
@@ -116,7 +129,7 @@ Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) evaluates its target once. In
 | `string` | Immutable UTF-8 text |
 | `nothing` | The absence of a value |
 | `Array<T>` | A growable sequence |
-| `Dict<string, T>` | An insertion-ordered dictionary |
+| `Dict<K, V>` | An insertion-ordered dictionary from keys of type `K` to values of type `V` |
 | `A or B` | A value of one of the member types |
 | `Range` | The result of `range(...)` |
 | `Error` | A recoverable error value |

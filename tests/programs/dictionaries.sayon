@@ -1,0 +1,61 @@
+squares = [1 = 1, 2 = 4, 3 = 9]
+print(squares[2], squares)
+squares[10] = 100
+print(haskey(squares, 10), haskey(squares, 4), length(squares))
+for number, square in squares
+    print(number, square)
+
+flags: Dict<boolean, string> = []
+flags[true] = "yes"
+flags[false] = "no"
+print(flags[true], flags)
+
+type Point = [x: integer, y: integer]
+
+grid: Dict<Point, string> = []
+grid[Point(x = 0, y = 0)] = "origin"
+grid[Point(x = 1, y = 2)] = "treasure"
+print(grid[Point(x = 1, y = 2)], length(grid))
+grid[Point(x = 0, y = 0)] = "start"
+print(grid)
+
+enum Direction
+    north
+    south
+    custom(name: string)
+
+names: Dict<Direction, integer> = [north = 0, south = 180]
+names[custom("up")] = 90
+print(names[custom("up")], names[south])
+
+mixed: Dict<integer or string, string> = []
+mixed[1] = "one"
+mixed["two"] = "two"
+print(mixed[1], mixed["two"], mixed)
+
+counts: Dict<string, integer> = []
+for word in ["a", "b", "a", "c", "a"]
+    if haskey(counts, word)
+        counts[word] += 1
+    else
+        counts[word] = 1
+print(counts)
+
+many: Dict<integer, integer> = []
+for i in range(1000)
+    many[i * 7] = i
+total = 0
+for i in range(1000)
+    total += many[i * 7]
+print(total, length(many))
+
+copy = clone(grid)
+copy[Point(x = 5, y = 5)] = "far"
+print(length(grid), length(copy), copy == grid)
+
+outcome = try squares[42]
+if outcome is error
+    print(outcome.message)
+outcome2 = try clone(grid[Point(x = 9, y = 9)])
+if outcome2 is error
+    print(outcome2.message)

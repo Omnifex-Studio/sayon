@@ -17,7 +17,6 @@
 
 use crate::text;
 use std::alloc::{Layout, alloc, dealloc, realloc};
-use std::collections::HashMap;
 use std::ffi::{CStr, c_char};
 use std::io::Write;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -63,9 +62,16 @@ pub struct SayonError {
     pub location: Option<String>,
 }
 
+/// An insertion-ordered dictionary: keys and values in insertion order, and
+/// an open-addressing table of positions found by the keys' hashes.
 pub struct SayonDict {
-    keys: Vec<SayonStr>,
-    index: HashMap<Box<str>, usize>,
+    ops: *const KeyOps,
+    /// Key storage in 8-byte words, `key_stride` words per key.
+    keys: Vec<u64>,
+    key_stride: usize,
+    hashes: Vec<u64>,
+    /// Positions plus one, or 0 for a free slot; the length is a power of two.
+    table: Vec<u32>,
     /// Value storage in 8-byte words, `stride` words per value.
     values: Vec<u64>,
     stride: usize,
@@ -548,12 +554,128 @@ pub unsafe extern "C" fn sayon_check_index(
 
 // ----- dictionaries ------------------------------------------------------------------------
 
+/// The generated helpers a dictionary uses for its key type.
+#[repr(C)]
+pub struct KeyOps {
+    pub size: i64,
+    pub hash: unsafe extern "C" fn(*const u8) -> i64,
+    pub eq: EqFn,
+    /// `None` for keys that are copied bit for bit.
+    pub clone: CloneFn,
+    /// `None` for keys that own nothing.
+    pub drop: DropFn,
+    pub display: unsafe extern "C" fn(*mut Builder, *const u8, bool),
+}
+
+/// Spreads the bits of a key hash over the table.
+fn mix(hash: i64) -> u64 {
+    let mut x = hash as u64;
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94d0_49bb_1331_11eb);
+    x ^ (x >> 31)
+}
+
+impl SayonDict {
+    fn len(&self) -> usize {
+        self.hashes.len()
+    }
+
+    fn key(&self, position: usize) -> *const u8 {
+        // SAFETY: the position is below the length.
+        unsafe { self.keys.as_ptr().add(position * self.key_stride) as *const u8 }
+    }
+
+    fn value(&mut self, position: usize) -> *mut u8 {
+        // SAFETY: the position is below the length.
+        unsafe { self.values.as_mut_ptr().add(position * self.stride) as *mut u8 }
+    }
+
+    unsafe fn hash_of(&self, key: *const u8) -> u64 {
+        // SAFETY: the key is a valid value of the key type.
+        unsafe { mix(((*self.ops).hash)(key)) }
+    }
+
+    unsafe fn find(&self, key: *const u8) -> Option<usize> {
+        if self.table.is_empty() {
+            return None;
+        }
+        // SAFETY: valid key; the table holds positions of stored keys.
+        unsafe {
+            let hash = self.hash_of(key);
+            let mask = self.table.len() - 1;
+            let mut slot = hash as usize & mask;
+            loop {
+                let entry = self.table[slot];
+                if entry == 0 {
+                    return None;
+                }
+                let position = entry as usize - 1;
+                if self.hashes[position] == hash && ((*self.ops).eq)(self.key(position), key) {
+                    return Some(position);
+                }
+                slot = (slot + 1) & mask;
+            }
+        }
+    }
+
+    fn place(&mut self, position: usize) {
+        let mask = self.table.len() - 1;
+        let mut slot = self.hashes[position] as usize & mask;
+        while self.table[slot] != 0 {
+            slot = (slot + 1) & mask;
+        }
+        self.table[slot] = position as u32 + 1;
+    }
+
+    /// Appends a copy of the key with an empty value, returning its position.
+    unsafe fn push(&mut self, key: *const u8, hash: u64) -> usize {
+        if (self.len() + 1) * 4 > self.table.len() * 3 {
+            self.table = vec![0; (self.table.len() * 2).max(8)];
+            for position in 0..self.len() {
+                self.place(position);
+            }
+        }
+        let position = self.len();
+        self.keys.resize(self.keys.len() + self.key_stride, 0);
+        // SAFETY: the new key storage is `key_stride` words.
+        unsafe {
+            let target = self.keys.as_mut_ptr().add(position * self.key_stride) as *mut u8;
+            match (*self.ops).clone {
+                Some(clone) => clone(key, target),
+                None => std::ptr::copy_nonoverlapping(key, target, (*self.ops).size as usize),
+            }
+        }
+        self.hashes.push(hash);
+        self.values.resize(self.values.len() + self.stride, 0);
+        self.place(position);
+        position
+    }
+
+    unsafe fn describe(&self, key: *const u8) -> String {
+        let mut builder = Builder(String::new());
+        // SAFETY: valid key and builder.
+        unsafe { ((*self.ops).display)(&mut builder, key, true) };
+        builder.0
+    }
+}
+
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sayon_dict_new(out: *mut *mut SayonDict, value_size: i64) {
+pub unsafe extern "C" fn sayon_dict_new(
+    out: *mut *mut SayonDict,
+    ops: *const KeyOps,
+    value_size: i64,
+) {
     let value_size = value_size.max(0) as usize;
+    // SAFETY: `ops` is a static table from the generated code.
+    let key_size = unsafe { (*ops).size.max(0) as usize };
     let dict = SayonDict {
+        ops,
         keys: Vec::new(),
-        index: HashMap::new(),
+        key_stride: key_size.div_ceil(8).max(1),
+        hashes: Vec::new(),
+        table: Vec::new(),
         values: Vec::new(),
         stride: value_size.div_ceil(8).max(1),
         value_size,
@@ -566,95 +688,86 @@ pub unsafe extern "C" fn sayon_dict_new(out: *mut *mut SayonDict, value_size: i6
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sayon_dict_len(d: *const SayonDict) -> i64 {
     // SAFETY: valid dictionary.
-    unsafe { (*d).keys.len() as i64 }
+    unsafe { (*d).len() as i64 }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sayon_dict_find(d: *const SayonDict, key: *const SayonStr) -> i64 {
+pub unsafe extern "C" fn sayon_dict_find(d: *const SayonDict, key: *const u8) -> i64 {
     // SAFETY: valid dictionary and key.
-    unsafe { (*d).index.get(as_str(key)).map(|&i| i as i64).unwrap_or(-1) }
+    unsafe { (*d).find(key).map(|i| i as i64).unwrap_or(-1) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sayon_dict_find_checked(
     err: *mut *mut SayonError,
     d: *const SayonDict,
-    key: *const SayonStr,
+    key: *const u8,
     location: *const c_char,
     out: *mut i64,
 ) -> i32 {
     // SAFETY: valid pointers.
     unsafe {
-        match (*d).index.get(as_str(key)) {
-            Some(&position) => {
+        match (*d).find(key) {
+            Some(position) => {
                 *out = position as i64;
                 0
             }
-            None => set_error(
-                err,
-                "KeyError",
-                format!("the key \"{}\" is not in the dictionary", as_str(key)),
-                location,
-            ),
+            None => {
+                let shown = (*d).describe(key);
+                set_error(
+                    err,
+                    "KeyError",
+                    format!("the key {shown} is not in the dictionary"),
+                    location,
+                )
+            }
         }
     }
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sayon_dict_key_ptr(d: *const SayonDict, position: i64) -> *const SayonStr {
+pub unsafe extern "C" fn sayon_dict_key_ptr(d: *const SayonDict, position: i64) -> *const u8 {
     // SAFETY: valid dictionary and position.
-    unsafe {
-        let dict = &*d;
-        &dict.keys[position as usize]
-    }
+    unsafe { (*d).key(position as usize) }
 }
 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sayon_dict_value_ptr(d: *mut SayonDict, position: i64) -> *mut u8 {
     // SAFETY: valid dictionary and position.
-    unsafe {
-        let dict = &mut *d;
-        dict.values
-            .as_mut_ptr()
-            .add(position as usize * dict.stride) as *mut u8
-    }
+    unsafe { (*d).value(position as usize) }
 }
 
-/// Inserts or replaces an entry. The value's bytes are moved in; a replaced
-/// value is destroyed with `drop_value`.
+/// Inserts or replaces an entry. The key is copied; the value's bytes are
+/// moved in, and a replaced value is destroyed with `drop_value`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sayon_dict_set(
     d: *mut SayonDict,
-    key: *const SayonStr,
+    key: *const u8,
     value: *const u8,
     drop_value: DropFn,
 ) {
     // SAFETY: valid dictionary, key, and value of `value_size` bytes.
     unsafe {
         let dict = &mut *d;
-        let key_text = as_str(key);
-        let position = match dict.index.get(key_text) {
-            Some(&position) => {
+        let position = match dict.find(key) {
+            Some(position) => {
                 if let Some(drop_value) = drop_value {
-                    drop_value(sayon_dict_value_ptr(d, position as i64));
+                    drop_value(dict.value(position));
                 }
                 position
             }
             None => {
-                let position = dict.keys.len();
-                dict.keys.push(owned(key_text.to_string()));
-                dict.index.insert(key_text.into(), position);
-                dict.values.resize(dict.values.len() + dict.stride, 0);
-                position
+                let hash = dict.hash_of(key);
+                dict.push(key, hash)
             }
         };
-        let target = sayon_dict_value_ptr(d, position as i64);
-        std::ptr::copy_nonoverlapping(value, target, (*d).value_size);
+        let target = dict.value(position);
+        std::ptr::copy_nonoverlapping(value, target, dict.value_size);
     }
 }
 
-/// Destroys every value with `drop_value`, frees the dictionary, and leaves
-/// the slot empty.
+/// Destroys every key and value, frees the dictionary, and leaves the slot
+/// empty.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sayon_dict_drop(slot: *mut *mut SayonDict, drop_value: DropFn) {
     // SAFETY: `slot` holds null or a dictionary from `sayon_dict_new`.
@@ -663,15 +776,15 @@ pub unsafe extern "C" fn sayon_dict_drop(slot: *mut *mut SayonDict, drop_value: 
         if d.is_null() {
             return;
         }
-        if let Some(drop_value) = drop_value {
-            for position in 0..(*d).keys.len() {
-                drop_value(sayon_dict_value_ptr(d, position as i64));
-            }
-        }
         let mut dict = Box::from_raw(d);
         released();
-        for key in &mut dict.keys {
-            sayon_str_drop(key);
+        for position in 0..dict.len() {
+            if let Some(drop_value) = drop_value {
+                drop_value(dict.value(position));
+            }
+            if let Some(drop_key) = (*dict.ops).drop {
+                drop_key(dict.key(position) as *mut u8);
+            }
         }
         *slot = std::ptr::null_mut();
     }
@@ -686,17 +799,12 @@ pub unsafe extern "C" fn sayon_dict_clone(
     // SAFETY: valid source; `dst` is writable.
     unsafe {
         let source = &*src;
-        sayon_dict_new(dst, source.value_size as i64);
-        let target = *dst;
-        for (position, key) in source.keys.iter().enumerate() {
-            let text = as_str(key);
-            (*target).keys.push(owned(text.to_string()));
-            (*target).index.insert(text.into(), position);
-            (*target)
-                .values
-                .resize((*target).values.len() + source.stride, 0);
+        sayon_dict_new(dst, source.ops, source.value_size as i64);
+        let target = &mut **dst;
+        for position in 0..source.len() {
+            let copied = target.push(source.key(position), source.hashes[position]);
             let from = source.values.as_ptr().add(position * source.stride) as *const u8;
-            let to = sayon_dict_value_ptr(target, position as i64);
+            let to = target.value(copied);
             match clone_value {
                 Some(clone_value) => clone_value(from, to),
                 None => std::ptr::copy_nonoverlapping(from, to, source.value_size),
@@ -711,14 +819,14 @@ pub unsafe extern "C" fn sayon_dict_eq(
     b: *const SayonDict,
     eq_value: EqFn,
 ) -> bool {
-    // SAFETY: valid dictionaries.
+    // SAFETY: valid dictionaries of the same type.
     unsafe {
         let (x, y) = (&*a, &*b);
-        if x.keys.len() != y.keys.len() {
+        if x.len() != y.len() {
             return false;
         }
-        for (position, key) in x.keys.iter().enumerate() {
-            let Some(&other) = y.index.get(as_str(key)) else {
+        for position in 0..x.len() {
+            let Some(other) = y.find(x.key(position)) else {
                 return false;
             };
             let left = x.values.as_ptr().add(position * x.stride) as *const u8;
@@ -729,6 +837,19 @@ pub unsafe extern "C" fn sayon_dict_eq(
         }
         true
     }
+}
+
+/// A hash of a string's bytes, for dictionary keys.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_str_hash(s: *const SayonStr) -> i64 {
+    // SAFETY: valid string.
+    let text = unsafe { as_str(s) };
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.bytes() {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash as i64
 }
 
 // ----- errors ----------------------------------------------------------------------------------

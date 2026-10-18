@@ -159,7 +159,7 @@ A moved-from place is empty, and destroying an empty place does nothing, so clea
 | `string` | `{ ptr data, i64 length, i64 capacity }`, capacity 0 for static text; a one-character ASCII string taken from another string points into a static table | 24 |
 | `Array<T>` | `{ ptr data, i64 length, i64 capacity }`, elements contiguous | 24 |
 | `Range` | `{ i64 start, i64 end, i64 step }` | 24 |
-| `Dict<string, T>`, `Error` | pointer to a runtime object | 8 |
+| `Dict<K, V>`, `Error` | pointer to a runtime object | 8 |
 | union | `{ i32 tag, [N x i64] payload }`, payload at offset 8 | 8 + 8N |
 | structure | `{ fields... }` in declaration order, each at its natural alignment | sum of fields with padding |
 | enum | `{ i32 tag, [N x i64] payload }`; tag is the variant's position plus one; a variant's fields are laid out like a structure starting at offset 8 | 8 + 8N |
@@ -170,6 +170,8 @@ Union tags are assigned per member type across the whole program (the module's u
 Structures and enums are stored inline, so a type that contains itself without a collection in between is rejected (`E_RECURSIVE_TYPE`). Destroying a structure destroys its owned fields; destroying an enum destroys the fields of its current variant. Moving one field out zeroes just that field, which keeps the rest destroyable.
 
 A closure's environment is a heap block: a pointer to a function that destroys and frees it, a pointer to a function that copies it, then a structure with one field per captured variable, from offset 16. Inside the closure, each captured variable is a reference to its field, so changes persist between calls. A closure that captures nothing, and a named function used as a value, has a null environment. A named function's value calls a small adapter that accepts the environment pointer and forwards its arguments, so every function value of a type is called the same way.
+
+A dictionary keeps its keys and values in two arrays in insertion order, and finds keys through an open-addressing table of positions keyed by hash. Each key type has a static table of generated helpers the dictionary calls: hash, equality, copy, destroy, and display (for `KeyError` messages). A key's hash combines its parts' hashes in order: a union or enum includes its tag, a string hashes its bytes, and integers hash their values, so values that are equal hash alike.
 
 ## Calls and parameter passing
 

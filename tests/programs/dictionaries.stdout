@@ -1,0 +1,16 @@
+4 [1 = 1, 2 = 4, 3 = 9]
+true false 4
+1 1
+2 4
+3 9
+10 100
+yes [true = "yes", false = "no"]
+treasure 2
+[Point(x = 0, y = 0) = "start", Point(x = 1, y = 2) = "treasure"]
+90 180
+one two [1 = "one", "two" = "two"]
+["a" = 3, "b" = 1, "c" = 1]
+499500 1000
+2 3 false
+the key 42 is not in the dictionary
+the key Point(x = 9, y = 9) is not in the dictionary

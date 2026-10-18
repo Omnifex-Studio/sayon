@@ -6,6 +6,7 @@
 //! - `display(ptr builder, ptr value, i1 nested)` appends the `tostring` text.
 //! - `envdrop(ptr block)` destroys a closure environment and frees its block.
 //! - `envclone(ptr block) -> ptr` returns a new block with a deep copy.
+//! - `hash(ptr) -> i64` hashes a dictionary key, consistently with `eq`.
 
 use crate::emit::{Body, Codegen, Helper, MEMCPY};
 use crate::layout::{int_code, int_llvm, needs_drop};
@@ -22,6 +23,7 @@ impl<'m> Codegen<'m> {
             Helper::Display => ("void", "ptr %builder, ptr %value, i1 zeroext %nested"),
             Helper::EnvDrop => ("void", "ptr %p"),
             Helper::EnvClone => ("ptr", "ptr %p"),
+            Helper::Hash => ("i64", "ptr %p"),
         };
         match kind {
             Helper::Drop => self.drop_body(&mut body, ty),
@@ -30,6 +32,7 @@ impl<'m> Codegen<'m> {
             Helper::Display => self.display_body(&mut body, ty),
             Helper::EnvDrop => self.env_drop_body(&mut body, ty),
             Helper::EnvClone => self.env_clone_body(&mut body, ty),
+            Helper::Hash => self.hash_body(&mut body, ty),
         }
         let _ = write!(
             self.helper_code,
@@ -173,6 +176,101 @@ impl<'m> Codegen<'m> {
                     .map(|index| (index as u32 + 1, member.clone()))
             })
             .collect()
+    }
+
+    /// Folds the hashes of the parts at the given offsets into `acc`.
+    fn hash_parts(&mut self, body: &mut Body, acc: &str, parts: &[(Type, u64)]) {
+        for (ty, offset) in parts {
+            let hash = self.helper(Helper::Hash, ty);
+            let address = offset_pointer(body, "%p", *offset);
+            let part = body.tmp();
+            body.line(format!("{part} = call i64 {hash}(ptr {address})"));
+            let current = body.tmp();
+            body.line(format!("{current} = load i64, ptr {acc}"));
+            let combined = combine(body, &current, &part);
+            body.line(format!("store i64 {combined}, ptr {acc}"));
+        }
+    }
+
+    fn hash_body(&mut self, body: &mut Body, ty: &Type) {
+        match ty {
+            Type::Int(int) => {
+                let value = body.tmp();
+                body.line(format!("{value} = load {}, ptr %p", int_llvm(*int)));
+                if int.bits() == 64 {
+                    body.line(format!("ret i64 {value}"));
+                } else {
+                    let wide = body.tmp();
+                    let instruction = if int.signed() { "sext" } else { "zext" };
+                    body.line(format!(
+                        "{wide} = {instruction} {} {value} to i64",
+                        int_llvm(*int)
+                    ));
+                    body.line(format!("ret i64 {wide}"));
+                }
+            }
+            Type::Boolean => {
+                let value = body.tmp();
+                body.line(format!("{value} = load i1, ptr %p"));
+                let wide = body.tmp();
+                body.line(format!("{wide} = zext i1 {value} to i64"));
+                body.line(format!("ret i64 {wide}"));
+            }
+            Type::String => {
+                let hash = body.tmp();
+                body.line(format!("{hash} = call i64 @sayon_str_hash(ptr %p)"));
+                body.line(format!("ret i64 {hash}"));
+            }
+            Type::Union(_) => {
+                let acc = body.alloca("i64");
+                body.line(format!("store i64 0, ptr {acc}"));
+                let members = self.tagged_members(ty);
+                let tag = self.union_switch(body, "%p", ty, &members, |cg, b, member, done| {
+                    let hash = cg.helper(Helper::Hash, member);
+                    let payload = offset_pointer(b, "%p", 8);
+                    let part = b.tmp();
+                    b.line(format!("{part} = call i64 {hash}(ptr {payload})"));
+                    b.line(format!("store i64 {part}, ptr {acc}"));
+                    b.line(format!("br label %{done}"));
+                });
+                let wide = body.tmp();
+                body.line(format!("{wide} = zext i32 {tag} to i64"));
+                let part = body.tmp();
+                body.line(format!("{part} = load i64, ptr {acc}"));
+                let combined = combine(body, &wide, &part);
+                body.line(format!("ret i64 {combined}"));
+            }
+            Type::Named(named) if self.layouts.is_enum(named) => {
+                let acc = body.alloca("i64");
+                let tag = body.tmp();
+                body.line(format!("{tag} = load i32, ptr %p"));
+                let wide = body.tmp();
+                body.line(format!("{wide} = zext i32 {tag} to i64"));
+                body.line(format!("store i64 {wide}, ptr {acc}"));
+                let variants: Vec<u32> = (0..self.variant_count(named))
+                    .filter(|v| !self.parts(named, Some(*v)).is_empty())
+                    .collect();
+                self.enum_switch(body, "%p", &variants, |cg, b, variant, done| {
+                    let parts = cg.parts(named, Some(variant));
+                    cg.hash_parts(b, &acc, &parts);
+                    b.line(format!("br label %{done}"));
+                });
+                let result = body.tmp();
+                body.line(format!("{result} = load i64, ptr {acc}"));
+                body.line(format!("ret i64 {result}"));
+            }
+            Type::Named(named) => {
+                let acc = body.alloca("i64");
+                body.line(format!("store i64 0, ptr {acc}"));
+                let parts = self.parts(named, None);
+                self.hash_parts(body, &acc, &parts);
+                let result = body.tmp();
+                body.line(format!("{result} = load i64, ptr {acc}"));
+                body.line(format!("ret i64 {result}"));
+            }
+            // `nothing`, and types the checker never accepts as keys.
+            _ => body.line("ret i64 0"),
+        }
     }
 
     fn env_drop_body(&mut self, body: &mut Body, env: &Type) {
@@ -664,8 +762,9 @@ impl<'m> Codegen<'m> {
                     "call void @sayon_builder_bytes(ptr %builder, ptr {close}, i64 1)"
                 ));
             }
-            Type::Dict(_, value) => {
+            Type::Dict(key_ty, value) => {
                 let display = self.helper(Helper::Display, value);
+                let key_display = self.helper(Helper::Display, key_ty);
                 let open = self.bytes(b"[");
                 let separator = self.bytes(b", ");
                 let equals = self.bytes(b" = ");
@@ -684,7 +783,7 @@ impl<'m> Codegen<'m> {
                         "{key} = call ptr @sayon_dict_key_ptr(ptr {handle}, i64 {index})"
                     ));
                     b.line(format!(
-                        "call void @sayon_builder_str(ptr %builder, ptr {key}, i1 true)"
+                        "call void {key_display}(ptr %builder, ptr {key}, i1 true)"
                     ));
                     b.line(format!(
                         "call void @sayon_builder_bytes(ptr %builder, ptr {equals}, i64 3)"
@@ -772,6 +871,15 @@ impl<'m> Codegen<'m> {
             text.len()
         ));
     }
+}
+
+/// Mixes a part's hash into a running hash.
+fn combine(body: &mut Body, running: &str, part: &str) -> String {
+    let mixed = body.tmp();
+    body.line(format!("{mixed} = xor i64 {running}, {part}"));
+    let result = body.tmp();
+    body.line(format!("{result} = mul i64 {mixed}, 1099511628211"));
+    result
 }
 
 /// `pointer + offset` bytes.

@@ -245,6 +245,27 @@ fn unavailable_features_name_their_milestone() {
 }
 
 #[test]
+fn dictionaries_take_value_keys() {
+    let program = ok("squares = [1 = 1, 2 = 4]\nprint(squares[1], haskey(squares, 3))\n");
+    let entry = &program.functions[program.entry.0 as usize];
+    let StmtKind::Let { value, .. } = &entry.body.stmts[0].kind else {
+        panic!()
+    };
+    assert_eq!(value.ty.to_string(), "Dict<integer, integer>");
+    ok(
+        "type Cell = [row: integer, column: integer]\ncells: Dict<Cell, string> = []\ncells[Cell(row = 1, column = 2)] = \"x\"\n",
+    );
+    ok("enum Side\n    left\n    right\n\nwidths: Dict<Side, integer> = [left = 1, right = 2]\n");
+    fails("weights: Dict<float, integer> = []\n", "E_KEY_TYPE");
+    fails("halves = [0.5 = \"half\"]\n", "E_KEY_TYPE");
+    fails(
+        &format!("{POINT}spots: Dict<Point, string> = []\n"),
+        "E_KEY_TYPE",
+    );
+    fails("twice = [1 = \"a\", 1 = \"b\"]\n", "E_DUPLICATE_KEY");
+}
+
+#[test]
 fn alternatives_and_structure_patterns() {
     let shapes = "enum Shape\n    circle(radius: float)\n    square(side: float)\n    point\n\n";
     ok(&format!(

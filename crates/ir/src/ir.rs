@@ -68,7 +68,7 @@ impl Module {
         match (projection, ty) {
             (Projection::Index(_), Type::Array(element)) => (**element).clone(),
             (Projection::DictValue(_), Type::Dict(_, value)) => (**value).clone(),
-            (Projection::DictKey(_), Type::Dict(..)) => Type::String,
+            (Projection::DictKey(_), Type::Dict(key, _)) => (**key).clone(),
             (Projection::Payload(tag), _) => {
                 self.union_member(*tag).cloned().unwrap_or(Type::Unknown)
             }
@@ -262,7 +262,10 @@ pub enum Rvalue {
         element: Type,
         items: Vec<Operand>,
     },
+    /// A dictionary with keys of type `key` and values of type `value`;
+    /// each key is copied in.
     MakeDict {
+        key: Type,
         value: Type,
         entries: Vec<(Operand, Operand)>,
     },

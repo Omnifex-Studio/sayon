@@ -425,6 +425,9 @@ impl<'a> Checker<'a> {
         if items.is_empty() {
             return match expected {
                 Some(ty @ (Type::Array(_) | Type::Dict(..))) => {
+                    if let Type::Dict(..) = ty {
+                        self.typed_dict_literals.insert(span);
+                    }
                     expr(ExprKind::Array(Vec::new()), ty, span)
                 }
                 _ => {
@@ -504,34 +507,43 @@ impl<'a> Checker<'a> {
         matches!(union, Type::Union(_)).then_some(union)
     }
 
-    fn check_dict(
+    pub(crate) fn check_dict(
         &mut self,
         cx: &mut FnCtx,
         entries: &[(ast::Expr, ast::Expr)],
         expected: Option<&Type>,
         span: Span,
     ) -> hir::Expr {
-        let value_type = match expected.map(|e| self.unifier.shallow(e)) {
-            Some(Type::Dict(_, value)) => (*value).clone(),
-            _ => self.fresh_var(span),
+        let (key_type, value_type) = match expected.map(|e| self.unifier.shallow(e)) {
+            Some(Type::Dict(key, value)) => {
+                self.typed_dict_literals.insert(span);
+                ((*key).clone(), (*value).clone())
+            }
+            _ => (self.fresh_var(span), self.fresh_var(span)),
         };
         let mut checked = Vec::new();
         let mut seen: Vec<(String, Span)> = Vec::new();
         for (key, value) in entries {
             let key_expr =
-                self.check_expr_as(cx, key, &Type::String, "dictionary keys are strings");
-            if let ExprKind::String(text) = &key_expr.kind {
-                if let Some((_, first)) = seen.iter().find(|(k, _)| k == text) {
+                self.check_expr_as(cx, key, &key_type, "dictionary keys must have one type");
+            let literal = match &key_expr.kind {
+                ExprKind::String(text) => Some(format!("\"{text}\"")),
+                ExprKind::Integer(number) => Some(number.to_string()),
+                ExprKind::Boolean(flag) => Some(flag.to_string()),
+                _ => None,
+            };
+            if let Some(shown) = literal {
+                if let Some((_, first)) = seen.iter().find(|(k, _)| *k == shown) {
                     self.error(
                         Diagnostic::error(
                             "E_DUPLICATE_KEY",
-                            format!("the key \"{text}\" appears more than once"),
+                            format!("the key {shown} appears more than once"),
                         )
                         .primary(key.span, "duplicate key")
                         .secondary(*first, "first used here"),
                     );
                 } else {
-                    seen.push((text.clone(), key.span));
+                    seen.push((shown, key.span));
                 }
             }
             let value_expr = self.check_expr_as(
@@ -544,7 +556,7 @@ impl<'a> Checker<'a> {
         }
         expr(
             ExprKind::Dict(checked),
-            Type::dict(Type::String, value_type),
+            Type::dict(key_type, value_type),
             span,
         )
     }
@@ -1396,14 +1408,15 @@ impl<'a> Checker<'a> {
                 )
             }
             Builtin::HasKey => {
+                let key_type = self.fresh_var(span);
                 let value = self.fresh_var(span);
                 let dict = self.check_expr_as(
                     cx,
                     &args[0],
-                    &Type::dict(Type::String, value),
+                    &Type::dict(key_type.clone(), value),
                     "`haskey` checks a dictionary",
                 );
-                let key = self.check_expr_as(cx, &args[1], &Type::String, "dictionary key");
+                let key = self.check_expr_as(cx, &args[1], &key_type, "dictionary key");
                 (vec![read(dict), read(key)], Type::Boolean)
             }
             Builtin::ReadFile => {

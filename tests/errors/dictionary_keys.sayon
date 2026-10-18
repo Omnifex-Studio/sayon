@@ -1,0 +1,8 @@
+type Spot = [x: float, y: float]
+
+weights: Dict<float, integer> = []
+halves = [0.5 = "half"]
+lists: Dict<Array<integer>, string> = []
+spots: Dict<Spot, string> = []
+mixed = [1 = "a", "b" = "c"]
+twice = [1 = "a", 1 = "b"]

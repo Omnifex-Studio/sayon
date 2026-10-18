@@ -280,6 +280,11 @@ pub(crate) struct Checker<'a> {
     /// Functions in the component currently being inferred.
     pub current_component: Vec<FuncId>,
     pub reported_vars: HashSet<TyVar>,
+    /// Where an unusable key type was reported, so each place is reported once.
+    pub reported_key_spans: HashSet<Span>,
+    /// Dictionary literals whose key type came from the type expected there,
+    /// which was checked where it was written.
+    pub typed_dict_literals: HashSet<Span>,
     pub scc_order: Vec<Vec<FuncId>>,
     /// Test blocks of the entry module: module, description, span, body.
     pub test_blocks: Vec<(ModuleId, String, Span, &'a ast::Block)>,
@@ -320,6 +325,8 @@ impl<'a> Checker<'a> {
             deferred: Vec::new(),
             current_component: Vec::new(),
             reported_vars: HashSet::new(),
+            reported_key_spans: HashSet::new(),
+            typed_dict_literals: HashSet::new(),
             scc_order: Vec::new(),
             test_blocks: Vec::new(),
             enclosing: Vec::new(),
@@ -872,18 +879,7 @@ impl<'a> Checker<'a> {
                         }
                         let key = self.resolve_type(module, &args[0], generics);
                         let value = self.resolve_type(module, &args[1], generics);
-                        if key != Type::String && key != Type::Unknown {
-                            self.error(
-                                Diagnostic::error(
-                                    "E_UNAVAILABLE",
-                                    "dictionary keys are strings in this release",
-                                )
-                                .primary(
-                                    args[0].span,
-                                    "other key types are planned for milestone M2",
-                                ),
-                            );
-                        }
+                        self.check_key_type(&key, args[0].span);
                         Type::dict(key, value)
                     }
                     other => {
@@ -924,7 +920,7 @@ impl<'a> Checker<'a> {
                             self.error(
                                 Diagnostic::error("E_UNKNOWN_TYPE", format!("unknown type `{other}`"))
                                     .primary(name.span, "not a known type")
-                                    .help("built-in types include integer, float, boolean, string, nothing, Array<T> and Dict<string, T>; declare your own with `type` or `enum`"),
+                                    .help("built-in types include integer, float, boolean, string, nothing, Array<T> and Dict<K, V>; declare your own with `type` or `enum`"),
                             );
                         }
                         Type::Unknown
@@ -1168,6 +1164,24 @@ impl<'a> Checker<'a> {
             });
         }
         resolved
+    }
+
+    /// Reports a dictionary key type whose values cannot be keys.
+    pub fn check_key_type(&mut self, key: &Type, span: Span) {
+        if let Some(part) = crate::types::non_key_part(&self.type_defs, key)
+            && self.reported_key_spans.insert(span)
+        {
+            let message = if part == *key {
+                format!("{key} cannot be a dictionary key")
+            } else {
+                format!("{key} cannot be a dictionary key, because it holds {part}")
+            };
+            self.error(
+                Diagnostic::error("E_KEY_TYPE", message)
+                    .primary(span, "")
+                    .help("keys can be integers, booleans, strings, `nothing`, and structures, enums, and unions of those"),
+            );
+        }
     }
 
     /// Whether a value of the type can contain a function value.
@@ -1923,6 +1937,13 @@ impl<'a> Checker<'a> {
                 for item in items {
                     self.finalize_expr(item);
                 }
+                // `[]` used as a dictionary.
+                if let Type::Dict(key, _) = &expr.ty
+                    && !self.typed_dict_literals.contains(&expr.span)
+                {
+                    let key = (**key).clone();
+                    self.check_key_type(&key, expr.span);
+                }
             }
             Record(fields) => {
                 for (_, value) in fields {
@@ -1934,6 +1955,12 @@ impl<'a> Checker<'a> {
                 for (key, value) in entries {
                     self.finalize_expr(key);
                     self.finalize_expr(value);
+                }
+                if let Type::Dict(key, _) = &expr.ty
+                    && !self.typed_dict_literals.contains(&expr.span)
+                {
+                    let key = (**key).clone();
+                    self.check_key_type(&key, expr.span);
                 }
             }
             Index { target, index } => {

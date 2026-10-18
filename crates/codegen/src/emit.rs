@@ -24,6 +24,8 @@ pub(crate) enum Helper {
     EnvDrop,
     /// Copies a closure environment block, returning the new one.
     EnvClone,
+    /// A hash of a dictionary key.
+    Hash,
 }
 
 pub struct Codegen<'m> {
@@ -37,6 +39,8 @@ pub struct Codegen<'m> {
     pub(crate) helper_code: String,
     intrinsics: HashSet<String>,
     function_code: String,
+    /// The `KeyOps` table of each dictionary key type.
+    key_ops: HashMap<Type, String>,
 }
 
 /// A function body under construction.
@@ -153,7 +157,35 @@ impl<'m> Codegen<'m> {
             helper_code: String::new(),
             intrinsics: HashSet::new(),
             function_code: String::new(),
+            key_ops: HashMap::new(),
         }
+    }
+
+    /// The table of helpers a dictionary with keys of type `key` uses:
+    /// `{ size, hash, eq, clone or null, drop or null, display }`.
+    pub(crate) fn key_ops(&mut self, key: &Type) -> String {
+        if let Some(name) = self.key_ops.get(key) {
+            return name.clone();
+        }
+        let name = format!("@sayon.keys.{}", self.key_ops.len());
+        let hash = self.helper(Helper::Hash, key);
+        let eq = self.helper(Helper::Eq, key);
+        let display = self.helper(Helper::Display, key);
+        let (clone, drop) = if needs_drop(key) {
+            (
+                self.helper(Helper::Clone, key),
+                self.helper(Helper::Drop, key),
+            )
+        } else {
+            ("null".to_string(), "null".to_string())
+        };
+        let size = self.layouts.size_of(key);
+        let _ = writeln!(
+            self.constant_defs,
+            "{name} = internal constant {{ i64, ptr, ptr, ptr, ptr, ptr }} {{ i64 {size}, ptr {hash}, ptr {eq}, ptr {clone}, ptr {drop}, ptr {display} }}"
+        );
+        self.key_ops.insert(key.clone(), name.clone());
+        name
     }
 
     pub(crate) fn llvm(&mut self, ty: &Type) -> String {
@@ -214,6 +246,7 @@ impl<'m> Codegen<'m> {
             Helper::Display => "display",
             Helper::EnvDrop => "envdrop",
             Helper::EnvClone => "envclone",
+            Helper::Hash => "hash",
         };
         let name = format!("@sayon.{prefix}.{}", self.helpers.len());
         self.helpers.insert((kind, ty.clone()), name.clone());
@@ -500,7 +533,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     ty = *element;
                 }
                 Projection::DictValue(slot) | Projection::DictKey(slot) => {
-                    let Type::Dict(_, value) = ty else {
+                    let Type::Dict(key, value) = ty else {
                         panic!("dictionary access into {ty}")
                     };
                     let handle = self.body.tmp();
@@ -511,7 +544,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                         .line(format!("{index} = load i64, ptr %s{}", slot.0));
                     let address = self.body.tmp();
                     let (function, result) = match projection {
-                        Projection::DictKey(_) => ("sayon_dict_key_ptr", Type::String),
+                        Projection::DictKey(_) => ("sayon_dict_key_ptr", *key),
                         _ => ("sayon_dict_value_ptr", *value),
                     };
                     self.body.line(format!(
@@ -880,9 +913,14 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 self.body
                     .line(format!("store i64 {}, ptr {length_ptr}", items.len()));
             }
-            Rvalue::MakeDict { value, entries } => {
+            Rvalue::MakeDict {
+                key,
+                value,
+                entries,
+            } => {
+                let ops = self.cg.key_ops(key);
                 self.body.line(format!(
-                    "call void @sayon_dict_new(ptr {dest}, i64 {})",
+                    "call void @sayon_dict_new(ptr {dest}, ptr {ops}, i64 {})",
                     self.cg.layouts.size_of(value)
                 ));
                 if entries.is_empty() {
@@ -2105,7 +2143,8 @@ declare i32 @sayon_print(ptr, ptr, ptr)
 declare void @sayon_array_reserve(ptr, i64, i64)
 declare void @sayon_array_free(ptr, i64)
 declare i32 @sayon_check_index(ptr, i64, i64, ptr)
-declare void @sayon_dict_new(ptr, i64)
+declare void @sayon_dict_new(ptr, ptr, i64)
+declare i64 @sayon_str_hash(ptr)
 declare i64 @sayon_dict_len(ptr)
 declare i64 @sayon_dict_find(ptr, ptr)
 declare i32 @sayon_dict_find_checked(ptr, ptr, ptr, ptr, ptr)

@@ -4,6 +4,7 @@ use sayon_check::types::{TypeDef, TypeId};
 use sayon_ir::FunctionId;
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 /// A runtime value. Owned values form a tree: moving a value moves the whole
@@ -63,12 +64,51 @@ impl Value {
     }
 }
 
-/// An insertion-ordered dictionary with string keys.
+/// An insertion-ordered dictionary. Its keys are values of a type the
+/// checker accepts as a key: integers, booleans, strings, `nothing`, and
+/// structures, enums, and unions made only of those.
 #[derive(Clone, Debug, Default)]
 pub struct Dict {
-    pub keys: Vec<Rc<str>>,
+    pub keys: Vec<Value>,
     pub values: Vec<Value>,
-    index: HashMap<Rc<str>, usize>,
+    index: HashMap<Key, usize>,
+}
+
+/// A key compared and hashed by content.
+#[derive(Clone, Debug)]
+struct Key(Value);
+
+impl PartialEq for Key {
+    fn eq(&self, other: &Key) -> bool {
+        values_equal(&self.0, &other.0)
+    }
+}
+
+impl Eq for Key {}
+
+impl Hash for Key {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        hash_value(&self.0, state);
+    }
+}
+
+fn hash_value(value: &Value, state: &mut impl Hasher) {
+    match value {
+        Value::Int(number) => number.hash(state),
+        Value::Bool(flag) => flag.hash(state),
+        Value::Nothing => 0u8.hash(state),
+        Value::Str(text) => text.hash(state),
+        Value::Union(tag, payload) => {
+            tag.hash(state);
+            hash_value(payload, state);
+        }
+        Value::Record(_, fields) => fields.iter().for_each(|field| hash_value(field, state)),
+        Value::Variant(_, variant, fields) => {
+            variant.hash(state);
+            fields.iter().for_each(|field| hash_value(field, state));
+        }
+        other => panic!("{other:?} cannot be a dictionary key"),
+    }
 }
 
 impl Dict {
@@ -80,18 +120,18 @@ impl Dict {
         self.keys.is_empty()
     }
 
-    pub fn find(&self, key: &str) -> Option<usize> {
-        self.index.get(key).copied()
+    pub fn find(&self, key: &Value) -> Option<usize> {
+        self.index.get(&Key(key.clone())).copied()
     }
 
     /// Replaces the value of an existing key in place, or appends a new entry.
-    pub fn set(&mut self, key: &str, value: Value) {
-        match self.index.get(key) {
+    pub fn set(&mut self, key: Value, value: Value) {
+        let key = Key(key);
+        match self.index.get(&key) {
             Some(&position) => self.values[position] = value,
             None => {
-                let key: Rc<str> = Rc::from(key);
-                self.index.insert(key.clone(), self.keys.len());
-                self.keys.push(key);
+                self.keys.push(key.0.clone());
+                self.index.insert(key, self.keys.len() - 1);
                 self.values.push(value);
             }
         }
@@ -147,7 +187,7 @@ pub fn display(value: &Value, out: &mut String, nested: bool, types: &[TypeDef])
                 if index > 0 {
                     out.push_str(", ");
                 }
-                quote(key, out);
+                display(key, out, true);
                 out.push_str(" = ");
                 display(value, out, true);
             }
@@ -276,8 +316,8 @@ mod tests {
         let array = Value::Array(vec![Value::Int(1), Value::str("text"), Value::Bool(true)]);
         assert_eq!(to_display_string(&array, &[]), "[1, \"text\", true]");
         let mut dict = Dict::default();
-        dict.set("name", Value::str("Alice"));
-        dict.set("age", Value::Int(30));
+        dict.set(Value::str("name"), Value::str("Alice"));
+        dict.set(Value::str("age"), Value::Int(30));
         assert_eq!(
             to_display_string(&Value::Dict(Box::new(dict)), &[]),
             "[\"name\" = \"Alice\", \"age\" = 30]"
@@ -288,11 +328,11 @@ mod tests {
     #[test]
     fn dictionary_equality_ignores_order() {
         let mut a = Dict::default();
-        a.set("x", Value::Int(1));
-        a.set("y", Value::Int(2));
+        a.set(Value::str("x"), Value::Int(1));
+        a.set(Value::str("y"), Value::Int(2));
         let mut b = Dict::default();
-        b.set("y", Value::Int(2));
-        b.set("x", Value::Int(1));
+        b.set(Value::str("y"), Value::Int(2));
+        b.set(Value::str("x"), Value::Int(1));
         assert!(values_equal(
             &Value::Dict(Box::new(a)),
             &Value::Dict(Box::new(b))
@@ -302,10 +342,10 @@ mod tests {
     #[test]
     fn replacing_a_key_keeps_its_position() {
         let mut dict = Dict::default();
-        dict.set("a", Value::Int(1));
-        dict.set("b", Value::Int(2));
-        dict.set("a", Value::Int(3));
-        assert_eq!(&*dict.keys[0], "a");
+        dict.set(Value::str("a"), Value::Int(1));
+        dict.set(Value::str("b"), Value::Int(2));
+        dict.set(Value::str("a"), Value::Int(3));
+        assert_eq!(dict.keys[0].as_str(), "a");
         assert!(values_equal(&dict.values[0], &Value::Int(3)));
     }
 }

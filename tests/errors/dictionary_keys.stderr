@@ -1,0 +1,46 @@
+error[E_KEY_TYPE]: float cannot be a dictionary key
+  --> dictionary_keys.sayon:3:15
+   |
+ 3 | weights: Dict<float, integer> = []
+   |               ^^^^^
+   |
+   = help: keys can be integers, booleans, strings, `nothing`, and structures, enums, and unions of those
+
+error[E_KEY_TYPE]: float cannot be a dictionary key
+  --> dictionary_keys.sayon:4:10
+   |
+ 4 | halves = [0.5 = "half"]
+   |          ^^^^^^^^^^^^^^
+   |
+   = help: keys can be integers, booleans, strings, `nothing`, and structures, enums, and unions of those
+
+error[E_KEY_TYPE]: Array<integer> cannot be a dictionary key
+  --> dictionary_keys.sayon:5:13
+   |
+ 5 | lists: Dict<Array<integer>, string> = []
+   |             ^^^^^^^^^^^^^^
+   |
+   = help: keys can be integers, booleans, strings, `nothing`, and structures, enums, and unions of those
+
+error[E_KEY_TYPE]: Spot cannot be a dictionary key, because it holds float
+  --> dictionary_keys.sayon:6:13
+   |
+ 6 | spots: Dict<Spot, string> = []
+   |             ^^^^
+   |
+   = help: keys can be integers, booleans, strings, `nothing`, and structures, enums, and unions of those
+
+error[E_TYPE_MISMATCH]: an integer literal cannot have type string
+  --> dictionary_keys.sayon:7:19
+   |
+ 7 | mixed = [1 = "a", "b" = "c"]
+   |                   ^^^ dictionary keys must have one type
+
+error[E_DUPLICATE_KEY]: the key 1 appears more than once
+  --> dictionary_keys.sayon:8:19
+   |
+ 8 | twice = [1 = "a", 1 = "b"]
+   |          - first used here
+   |                   ^ duplicate key
+
+6 errors found; nothing was run

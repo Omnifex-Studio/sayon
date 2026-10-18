@@ -38,7 +38,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Structure patterns (positional and by field name), named variant fields, `or` alternatives | experimental | M2 |
 | Function values, closures, captured state, function types | experimental | M2 |
 | `try` expressions, `is error` narrowing, `Outcome<T>`, unused-outcome warning | experimental | M2 |
-| Dictionary keys other than strings | planned | M2 |
+| Dictionary keys of any integer, boolean, string, or `nothing` type, and structures, enums, and unions of those | experimental | M2 |
 | Borrowed views (`View<T>`, `MutableView<T>`) | planned | M2 |
 | String indexing and character iteration (`text[i]`, `for character in text`); slicing with `strings.slice` | experimental | M2 |
 | Byte views and grapheme operations on strings | planned | M2 |

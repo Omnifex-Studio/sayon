@@ -1733,6 +1733,17 @@ impl<'l, 'p> FnLower<'l, 'p> {
         }
     }
 
+    /// A generic function's instance can make a dictionary whose key type,
+    /// filled in from the type arguments, cannot be a key.
+    fn check_key_type(&mut self, key: &Type, span: Span) {
+        if let Some(part) = sayon_check::types::non_key_part(&self.l.program.types, key) {
+            self.report(
+                Diagnostic::error("E_KEY_TYPE", format!("{part} cannot be a dictionary key"))
+                    .primary(span, format!("in the instance `{}`", self.f.name)),
+            );
+        }
+    }
+
     fn literal_int(&mut self, value: i128, ty: &Type, span: Span) -> Constant {
         match ty {
             Type::Int(int) => {
@@ -1972,10 +1983,12 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 }
             }
             H::Array(items) => {
-                if let Type::Dict(_, value) = &ty {
+                if let Type::Dict(key, value) = &ty {
+                    self.check_key_type(key, span);
                     self.assign(
                         dest,
                         Rvalue::MakeDict {
+                            key: (**key).clone(),
                             value: (**value).clone(),
                             entries: Vec::new(),
                         },
@@ -1999,10 +2012,11 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 );
             }
             H::Dict(entries) => {
-                let value_ty = match &ty {
-                    Type::Dict(_, value) => (**value).clone(),
-                    _ => Type::Unknown,
+                let (key_ty, value_ty) = match &ty {
+                    Type::Dict(key, value) => ((**key).clone(), (**value).clone()),
+                    _ => (Type::Unknown, Type::Unknown),
                 };
+                self.check_key_type(&key_ty, span);
                 let operands = entries
                     .iter()
                     .map(|(key, value)| {
@@ -2015,6 +2029,7 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 self.assign(
                     dest,
                     Rvalue::MakeDict {
+                        key: key_ty,
                         value: value_ty,
                         entries: operands,
                     },

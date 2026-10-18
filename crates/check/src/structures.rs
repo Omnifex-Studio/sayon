@@ -181,6 +181,22 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> hir::Expr {
         let target = expected.map(|ty| self.unifier.resolve(ty));
+        // Where a dictionary is expected, `[north = 0]` has keys named by
+        // variables, constants, or variants.
+        if let Some(Type::Dict(..)) = &target {
+            let entries: Vec<(ast::Expr, ast::Expr)> = fields
+                .iter()
+                .map(|(name, value)| {
+                    let key = ast::Expr {
+                        id: ast::ExprId(u32::MAX),
+                        kind: ast::ExprKind::Name(name.clone()),
+                        span: name.span,
+                    };
+                    (key, value.clone())
+                })
+                .collect();
+            return self.check_dict(cx, &entries, expected, span);
+        }
         let structures: Vec<Type> = match &target {
             Some(Type::Named(named)) if !self.type_def(named.id).is_enum() => {
                 vec![target.clone().expect("target")]
