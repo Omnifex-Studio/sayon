@@ -26,6 +26,10 @@ pub enum HostType {
     Bytes,
     /// `unsigned` (64 bits), for results only.
     Unsigned,
+    /// A raw address, `pointer`.
+    Pointer,
+    /// An owned NUL-terminated buffer, `c_string`; passed as its address.
+    CString,
 }
 
 macro_rules! hosts {
@@ -138,6 +142,12 @@ hosts! {
     Bytes = "bytes"(String) -> Bytes;
     FromBytes = "from_bytes"(Bytes) -> String;
     FromBytesLossy = "from_bytes_lossy"(Bytes) -> String;
+    CString = "c_string"(String) -> CString;
+    CStringAddress = "c_string_address"(CString) -> Pointer;
+    ReadCString = "read_c_string"(Pointer) -> String;
+    ReadBytes = "read_bytes"(Pointer, Integer) -> Bytes;
+    WriteBytes = "write_bytes"(Pointer, Bytes) -> Nothing;
+    PointerOffset = "pointer_offset"(Pointer, Integer) -> Pointer;
 }
 
 /// The code of the error `os.exit` raises to end the program. `catch` and
@@ -182,6 +192,8 @@ pub enum HostArg<'a> {
     Strings(Vec<&'a str>),
     Stream(i64),
     Bytes(Vec<u8>),
+    /// An address: a `pointer`, or where a `c_string`'s bytes are.
+    Pointer(usize),
 }
 
 /// A primitive's result.
@@ -198,6 +210,9 @@ pub enum HostValue {
     Stream(i64),
     Bytes(Vec<u8>),
     Unsigned(u64),
+    Pointer(usize),
+    /// The bytes of a new C string, without the NUL that ends it.
+    CString(Vec<u8>),
 }
 
 /// A recoverable error: code and message.
@@ -249,6 +264,21 @@ fn bytes<'b>(args: &'b [HostArg], index: usize) -> &'b [u8] {
     match args.get(index) {
         Some(HostArg::Bytes(bytes)) => bytes,
         other => panic!("host argument {index} should be bytes, found {other:?}"),
+    }
+}
+
+fn pointer(args: &[HostArg], index: usize) -> usize {
+    match args.get(index) {
+        Some(HostArg::Pointer(address)) => *address,
+        other => panic!("host argument {index} should be a pointer, found {other:?}"),
+    }
+}
+
+/// The address of argument `index`, or the error for `null_pointer`.
+fn non_null(args: &[HostArg], index: usize, action: &str) -> Result<usize, HostError> {
+    match pointer(args, index) {
+        0 => Err(("NullPointerError", format!("cannot {action} null_pointer"))),
+        address => Ok(address),
     }
 }
 
@@ -547,6 +577,64 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
         }
         Host::FromBytesLossy => Ok(V::String(
             String::from_utf8_lossy(bytes(args, 0)).into_owned(),
+        )),
+        Host::CString => {
+            let text = string(args, 0);
+            match text.find('\0') {
+                Some(position) => Err((
+                    "ValueError",
+                    format!(
+                        "the text holds a NUL character at byte {position}, which C would take for its end"
+                    ),
+                )),
+                None => Ok(V::CString(text.as_bytes().to_vec())),
+            }
+        }
+        Host::CStringAddress => Ok(V::Pointer(pointer(args, 0))),
+        // The raw accesses below are reached only from `unsafe` functions
+        // of `standard/foreign`, whose callers vouch for the memory.
+        Host::ReadCString => {
+            let address = non_null(args, 0, "read text from")?;
+            // SAFETY: unsafe code promised a NUL-terminated buffer here.
+            let bytes =
+                unsafe { std::ffi::CStr::from_ptr(address as *const std::ffi::c_char) }.to_bytes();
+            String::from_utf8(bytes.to_vec())
+                .map(V::String)
+                .map_err(|error| {
+                    (
+                        "EncodingError",
+                        format!(
+                            "the C string is not valid UTF-8 from byte {}",
+                            error.utf8_error().valid_up_to()
+                        ),
+                    )
+                })
+        }
+        Host::ReadBytes => {
+            let count = integer(args, 1);
+            if count < 0 {
+                return Err(("ValueError", format!("cannot read {count} bytes")));
+            }
+            if count == 0 {
+                return Ok(V::Bytes(Vec::new()));
+            }
+            let address = non_null(args, 0, "read from")?;
+            // SAFETY: unsafe code promised `count` readable bytes here.
+            let bytes = unsafe { std::slice::from_raw_parts(address as *const u8, count as usize) };
+            Ok(V::Bytes(bytes.to_vec()))
+        }
+        Host::WriteBytes => {
+            let data = bytes(args, 1);
+            if data.is_empty() {
+                return Ok(V::Nothing);
+            }
+            let address = non_null(args, 0, "write to")?;
+            // SAFETY: unsafe code promised room for the bytes here.
+            unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), address as *mut u8, data.len()) };
+            Ok(V::Nothing)
+        }
+        Host::PointerOffset => Ok(V::Pointer(
+            pointer(args, 0).wrapping_add_signed(integer(args, 1) as isize),
         )),
         Host::Walk => {
             let mut stack = walk_entries(std::path::Path::new(string(args, 0)), "")?;

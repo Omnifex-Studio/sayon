@@ -1,0 +1,30 @@
+error[E_FOREIGN_SIGNATURE]: a foreign function's parameters have no `own` or `update`
+  --> foreign_syntax.sayon:2:21
+   |
+ 2 |     function strlen(own text: c_string) -> c_size
+   |                     ^^^
+   |
+   = help: C receives each argument as a value; pass a pointer for C to change
+
+error[E_FOREIGN_SIGNATURE]: a foreign function's parameters cannot have default values
+  --> foreign_syntax.sayon:3:33
+   |
+ 3 |     function abs(value: c_int = 1) -> c_int
+   |                                 ^
+
+error[E_FOREIGN_SIGNATURE]: `address` needs its C type
+  --> foreign_syntax.sayon:4:19
+   |
+ 4 |     function free(address)
+   |                   ^^^^^^^
+   |
+   = help: write the type, for example `size: c_size`
+
+error[E_SYNTAX]: expected the library's name as plain text, such as "c", found string literal
+  --> foreign_syntax.sayon:6:9
+   |
+ 6 | foreign "{name}"
+   |         ^^^^^^^^ expected the library's name as plain text, such as "c"
+
+4 errors found; nothing was run
+run `sayon explain E_FOREIGN_SIGNATURE` to learn more about an error

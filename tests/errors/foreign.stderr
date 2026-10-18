@@ -1,0 +1,126 @@
+error[E_FOREIGN_TYPE]: a C function cannot take string
+  --> foreign.sayon:5:25
+   |
+ 5 |     function puts(text: string) -> c_int
+   |                         ^^^^^^
+   |
+   = help: take a `c_string`, made with `c_string(text)`
+
+error[E_FOREIGN_TYPE]: a C function cannot take boolean
+  --> foreign.sayon:6:25
+   |
+ 6 |     function exit(code: boolean)
+   |                         ^^^^^^^
+   |
+   = help: C takes a boolean as a `c_int`, 0 or 1
+
+error[E_FOREIGN_TYPE]: a C function cannot give c_string
+  --> foreign.sayon:7:40
+   |
+ 7 |     function getenv(name: c_string) -> c_string
+   |                                        ^^^^^^^^
+   |
+   = help: C gives text as a `pointer`; declare the result as `pointer` and read it with `memory.read_text` of standard/memory
+
+error[E_UNSAFE]: `strlen` is a C function, so it needs unsafe code
+   --> foreign.sayon:11:10
+    |
+ 11 | length = strlen(name)
+    |          ^^^^^^
+    |
+    = note: the compiler cannot check what C code and raw memory do; `unsafe` marks where that is your responsibility
+    = help: write `unsafe` before the call, or put it in an `unsafe` block, once you have made sure the call is correct
+
+error[E_UNSAFE_VALUE]: the C function `strlen` can only be called
+   --> foreign.sayon:12:11
+    |
+ 12 | measure = strlen
+    |           ^^^^^^
+    |
+    = help: wrap the call in a function literal with an `unsafe` inside it
+
+error[E_UNSAFE]: `read` is an unsafe function, so it needs unsafe code
+   --> foreign.sayon:13:14
+    |
+ 13 | raw = memory.read<integer>(null_pointer)
+    |              ^^^^
+    |
+    = note: the compiler cannot check what C code and raw memory do; `unsafe` marks where that is your responsibility
+    = help: write `unsafe` before the call, or put it in an `unsafe` block, once you have made sure the call is correct
+
+error[E_UNSAFE_VALUE]: the unsafe function `read_text` can only be called
+   --> foreign.sayon:14:10
+    |
+ 14 | reader = memory.read_text
+    |          ^^^^^^^^^^^^^^^^
+    |
+    = help: a function value can be called anywhere, so wrap the call in a function literal with an `unsafe` inside it
+
+warning[W_UNUSED_UNSAFE]: nothing here needs `unsafe`
+   --> foreign.sayon:16:1
+    |
+ 16 | unsafe
+    | ^^^^^^
+    |
+    = help: remove `unsafe`, so that it marks only the code that needs it
+
+warning[W_UNUSED_UNSAFE]: this `unsafe` is inside unsafe code already
+   --> foreign.sayon:20:5
+    |
+ 20 |     unsafe printf(name, "text", true)
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: remove `unsafe`, so that it marks only the code that needs it
+
+error[E_FOREIGN_TYPE]: string cannot be passed to C
+   --> foreign.sayon:20:25
+    |
+ 20 |     unsafe printf(name, "text", true)
+    |                         ^^^^^^
+    |
+    = help: pass a `c_string`, made with `c_string(text)`
+
+error[E_FOREIGN_TYPE]: boolean cannot be passed to C
+   --> foreign.sayon:20:33
+    |
+ 20 |     unsafe printf(name, "text", true)
+    |                                 ^^^^
+    |
+    = help: C takes a boolean as a `c_int`, 0 or 1
+
+error[E_UNSUPPORTED_OPERATION]: string does not support reading from memory
+   --> foreign.sayon:23:12
+    |
+ 23 |     word = memory.read<string>(null_pointer)
+    |            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ explicit type argument
+
+error[E_UNSUPPORTED_OPERATION]: c_string does not support cloning
+   --> foreign.sayon:25:14
+    |
+ 25 | copy = clone(name)
+    |              ^^^^ a C string has one owner; make another with `c_string(text)`
+
+error[E_UNSUPPORTED_OPERATION]: c_string does not support equality comparison
+   --> foreign.sayon:26:8
+    |
+ 26 | same = name == c_string("text")
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^ these values cannot be compared
+
+error[E_FOREIGN_POSITION]: `foreign` blocks belong at the top level of a file
+   --> foreign.sayon:29:13
+    |
+ 29 |     foreign "c"
+    |             ^^^
+    |
+    = help: move the block out of the code it is in
+
+error[E_UNSAFE_POSITION]: an unsafe function is declared at the top level of a file
+   --> foreign.sayon:31:5
+    |
+ 31 |     unsafe function hidden()
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: declare it at the top level, or use an `unsafe` block inside this function
+
+14 errors found; nothing was run
+run `sayon explain E_FOREIGN_TYPE` to learn more about an error

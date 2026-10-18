@@ -267,7 +267,8 @@ fn declaration_names(stmt: &ast::Stmt, out: &mut Vec<Diagnostic>) {
         }
         ast::StmtKind::While { body, .. }
         | ast::StmtKind::For { body, .. }
-        | ast::StmtKind::Test { body, .. } => block_declarations(body, out),
+        | ast::StmtKind::Test { body, .. }
+        | ast::StmtKind::Unsafe(body) => block_declarations(body, out),
         ast::StmtKind::Try {
             body,
             catch,
@@ -368,7 +369,17 @@ fn stmt_names(stmt: &ast::Stmt, used: &mut HashSet<String>) {
                 block_names(&arm.body, used);
             }
         }
-        ast::StmtKind::Test { body, .. } => block_names(body, used),
+        ast::StmtKind::Test { body, .. } | ast::StmtKind::Unsafe(body) => block_names(body, used),
+        ast::StmtKind::Foreign { functions, .. } => {
+            for function in functions {
+                for ty in function.params.iter().filter_map(|p| p.ty.as_ref()) {
+                    type_names(ty, used);
+                }
+                if let Some(ret) = &function.ret {
+                    type_names(ret, used);
+                }
+            }
+        }
         ast::StmtKind::Return(None)
         | ast::StmtKind::Break
         | ast::StmtKind::Continue
@@ -450,7 +461,7 @@ fn expr_names(expr: &ast::Expr, used: &mut HashSet<String>) {
             expr_names(lhs, used);
             expr_names(rhs, used);
         }
-        E::IsError(inner) | E::TryExpr(inner) => expr_names(inner, used),
+        E::IsError(inner) | E::TryExpr(inner) | E::Unsafe(inner) => expr_names(inner, used),
         E::Function(function) => function_names(function, used),
         E::Integer { .. }
         | E::Float(_)

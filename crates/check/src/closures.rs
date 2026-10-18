@@ -204,6 +204,7 @@ impl<'a> Checker<'a> {
         let mut child = FnCtx::new(cx.module, cx.func, ret.clone(), false);
         child.generics = generics.clone();
         child.captures = Some(Vec::new());
+        child.unsafe_body = self.in_unsafe(cx);
 
         let mut params = Vec::new();
         let mut types = Vec::new();

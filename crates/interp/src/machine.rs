@@ -70,6 +70,8 @@ pub struct Machine<'m> {
     stopping: bool,
     /// The status a task's `os.exit` asked for.
     exit_status: Option<i32>,
+    /// The C libraries and functions the program has called.
+    foreign: crate::foreign::Foreign,
 }
 
 /// The first step of `steps` through a view: its position, the viewed
@@ -141,6 +143,7 @@ fn constant_value(constant: &Constant) -> Value {
         Constant::Bool(value) => Value::Bool(*value),
         Constant::Nothing => Value::Nothing,
         Constant::Str(text) => Value::str(text),
+        Constant::NullPointer => Value::Pointer(0),
     }
 }
 
@@ -156,6 +159,7 @@ impl<'m> Machine<'m> {
             current: 0,
             stopping: false,
             exit_status: None,
+            foreign: Default::default(),
         }
     }
 
@@ -1302,11 +1306,72 @@ impl<'m> Machine<'m> {
                 args,
                 tags,
             } => self.host(*function, args, *tags, span),
+            Op::CallForeign { function, args } => {
+                let values: Vec<(Value, Type)> = args
+                    .iter()
+                    .map(|(arg, ty)| {
+                        let source = self.source(arg);
+                        (self.with_source(&source, Value::clone), ty.clone())
+                    })
+                    .collect();
+                // What the program printed comes before what C prints.
+                let _ = self.out.flush();
+                let declaration = &self.module.foreign[function.0 as usize];
+                self.foreign
+                    .call(function.0, declaration, &values)
+                    .map_err(|message| self.error("ForeignError", message, span))
+            }
+            Op::RawRead {
+                address,
+                offset,
+                ty,
+            } => {
+                let address = self.address(address, offset, "read from", span)?;
+                // SAFETY: unsafe code vouched for the memory.
+                Ok(unsafe { crate::foreign::read(address, ty) })
+            }
+            Op::RawWrite {
+                address,
+                offset,
+                value,
+                ty,
+            } => {
+                let address = self.address(address, offset, "write to", span)?;
+                let source = self.source(value);
+                let value = self.with_source(&source, Value::clone);
+                // SAFETY: unsafe code vouched for the memory.
+                unsafe { crate::foreign::write(address, &value, ty) };
+                Ok(Value::Nothing)
+            }
             Op::Raise(problem) => match self.take(problem) {
                 Value::Error(error) => Err(*error),
                 other => panic!("raise of {other:?}"),
             },
         }
+    }
+
+    /// The address `offset` bytes after a pointer, or the error for
+    /// `null_pointer`.
+    fn address(
+        &mut self,
+        address: &Operand,
+        offset: &Operand,
+        action: &str,
+        span: Span,
+    ) -> Result<usize, ErrorValue> {
+        let base = match self.take(address) {
+            Value::Pointer(address) => address,
+            other => panic!("address {other:?}"),
+        };
+        if base == 0 {
+            return Err(self.error(
+                "NullPointerError",
+                format!("cannot {action} null_pointer"),
+                span,
+            ));
+        }
+        let offset = self.int(offset) as i64;
+        Ok(base.wrapping_add_signed(offset as isize))
     }
 
     /// Runs a host primitive through the runtime's shared implementation.
@@ -1365,6 +1430,10 @@ impl<'m> Machine<'m> {
                 (HostType::Bytes, Value::Array(items)) => {
                     HostArg::Bytes(items.iter().map(|item| item.as_int() as u8).collect())
                 }
+                (HostType::Pointer, Value::Pointer(address)) => HostArg::Pointer(*address),
+                (HostType::CString, Value::CString(bytes)) => {
+                    HostArg::Pointer(bytes.as_ptr() as usize)
+                }
                 (ty, value) => panic!("host argument {value:?} for {ty:?}"),
             })
             .collect();
@@ -1379,6 +1448,11 @@ impl<'m> Machine<'m> {
             }
             Ok(HostValue::Stream(id)) => Ok(Value::Stream(StreamRef::adopt(id))),
             Ok(HostValue::Unsigned(value)) => Ok(Value::Int(value as i128)),
+            Ok(HostValue::Pointer(address)) => Ok(Value::Pointer(address)),
+            Ok(HostValue::CString(mut bytes)) => {
+                bytes.push(0);
+                Ok(Value::CString(bytes.into()))
+            }
             Ok(HostValue::Bytes(bytes)) => Ok(Value::Array(
                 bytes
                     .into_iter()

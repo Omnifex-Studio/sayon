@@ -27,10 +27,10 @@ block       = NEWLINE INDENT statement { statement } DEDENT ;
 
 statement   = function | declaration | if | while | for | try
             | "break" | "continue" | "return" [ expression ]
-            | type_decl | enum_decl | match
+            | type_decl | enum_decl | match | foreign | "unsafe" block
             | expression [ ( "=" | "+=" | "-=" | "*=" | "/=" | "%=" ) expression ] ;
 
-function    = [ "public" | "private" ] "function" NAME [ generics ]
+function    = [ "public" | "private" ] [ "unsafe" ] "function" NAME [ generics ]
               "(" [ param { "," param } [ "," ] ] ")" [ "->" type ] block ;
 generics    = "<" NAME { "," NAME } ">" ;
 param       = [ "own" | "update" ] NAME [ ":" type ] [ "=" expression ] ;
@@ -48,6 +48,9 @@ enum_decl   = [ "public" | "private" ] "enum" NAME [ generics ] NEWLINE INDENT v
 variant     = NAME [ "(" field { "," field } [ "," ] ")" ] ;
 match       = "match" expression NEWLINE INDENT arm { arm } DEDENT ;
 arm         = "case" pattern [ "if" expression ] block ;
+foreign     = "foreign" STRING NEWLINE INDENT signature { signature } DEDENT ;
+signature   = [ "public" | "private" ] "function" NAME
+              "(" [ NAME ":" type { "," NAME ":" type } ] [ [ "," ] "..." ] ")" [ "->" type ] ;
 pattern     = pattern_atom { "or" pattern_atom } ;
 pattern_atom = "_" | literal
             | NAME [ "(" pattern { "," pattern } ")" ]
@@ -72,7 +75,7 @@ arguments   = expression { "," expression } [ "," ]
             | NAME "=" expression { "," NAME "=" expression } [ "," ] ;    (* building a structure *)
 primary     = INTEGER | FLOAT | STRING | "true" | "false" | "nothing" | NAME
             | "(" expression ")" | collection | literal_function
-            | "try" unary | "import" "(" STRING ")" ;
+            | "try" unary | "unsafe" unary | "import" "(" STRING ")" ;
 literal_function = "function" "(" [ param { "," param } ] ")" [ "->" type ]
                    ( block | "return" [ expression ] | expression ) ;   (* a one-line body stays on the header's line *)
 collection  = "[" "]"
@@ -174,6 +177,8 @@ A moved-from place is empty, and destroying an empty place does nothing, so clea
 | function value | `{ ptr code, ptr environment }` | 16 |
 | `Shared<T>`, `Weak<T>` | pointer to a block: the `Shared` count, the `Weak` count plus one for all the `Shared` handles, the block's size, then the value at offset 24 | 8 |
 | `Cell<T>` | the value itself | as `T` |
+| `pointer` | `ptr` | 8 |
+| `c_string` | `ptr` to the text of a heap block: a word holding the block's size, the text, and a NUL byte | 8 |
 
 Union tags are assigned per member type across the whole program (the module's union member table), so a value of a larger union is a valid value of every smaller union holding the same member. Narrowing and widening therefore never copy or re-tag. Tag zero means empty.
 
@@ -212,6 +217,14 @@ A task is a fiber with a call stack of its own. An operation that waits (receivi
 In the interpreter a task is a frame stack of its own; the running task's stack is the machine's, and switching swaps them. A waiting operation leaves its frame at the operation and runs it again when resumed, which then finds what it waited for; the operations that act and then wait (a rendezvous send, sleeping, `pause`) are told how they were resumed so that they finish instead. In compiled programs a task is an operating-system fiber (on Windows, `CreateFiber` and `SwitchToFiber`), and a waiting runtime function loops around its wait on the task's own stack. A task's block holds the function value it runs, a buffer for its result, and its outcome, and is shared by its handle and the scheduler; a channel is a counted handle to a queue of messages, each in a buffer of whole words so that it can be destroyed in place.
 
 Cancellation sets a flag the task's next wait sees: the wait fails with the internal code `Cancelled`, which, like `Exit`, every `catch` and `try` handler passes on, so the task unwinds through its cleanup. When the main task's function returns or fails, the program cancels every task left, runs each until it has finished, destroys the tasks that never started with what they captured, reports the failures nobody joined, and only then ends; an `Exit` from a task decides the exit status.
+
+## C functions
+
+A compiled program declares each C function of its `foreign` blocks once, by its name, and calls it with the C types of its declaration: `call i32 (ptr, ptr, ...) @sprintf(...)` for a variadic one, which LLVM passes by the target's C convention (on Windows x64, a float in both its integer and its float register). A C string is passed as the address of its text, and a narrow integer with the extension C expects. The libraries of the blocks are linked by name, and `"c"`, the C runtime, is linked already; on Windows, `printf` and its kin come from `legacy_stdio_definitions`. After each call of a C runtime function the program calls `fflush(NULL)`, so that what C writes comes out in order with what the program prints.
+
+The interpreter loads a library with `LoadLibraryW` the first time one of its functions is called, and finds the function with `GetProcAddress`; `"c"` is `msvcrt.dll`, which has every C function, then `ucrtbase.dll`. A call goes through one routine for every signature: the arguments come to it as 64-bit words, an integer extended and a float as its bits, and it loads each of the first four into both its integer and its float register and copies the rest to the stack above the 32 bytes reserved for those four, then keeps both result registers; the declared result type picks one. A narrow integer result is extended from its own bits, which C leaves undefined above.
+
+`memory.read` and `memory.write` load and store with alignment 1, after checking for `null_pointer`. The checker allows them only the types that have the `RAW` trait: numbers and pointers.
 
 ## Typed JSON
 

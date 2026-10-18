@@ -104,12 +104,35 @@ fn system_libraries() -> &'static [&'static str] {
     }
 }
 
-/// Compiles LLVM IR and links it with the runtime into `output`.
+/// The libraries a program's `foreign` blocks name, as the linker knows
+/// them. The C runtime is linked already, but on Windows its `printf` and
+/// kin are in a library of their own.
+pub fn foreign_libraries(module: &Module) -> Vec<String> {
+    let mut libraries: Vec<String> = Vec::new();
+    for function in &module.foreign {
+        let library = if function.library == "c" {
+            if !cfg!(windows) {
+                continue;
+            }
+            "legacy_stdio_definitions".to_string()
+        } else {
+            function.library.clone()
+        };
+        if !libraries.contains(&library) {
+            libraries.push(library);
+        }
+    }
+    libraries
+}
+
+/// Compiles LLVM IR and links it with the runtime and `libraries` into
+/// `output`.
 pub fn link(
     toolchain: &Toolchain,
     ir_path: &Path,
     output: &Path,
     optimize: bool,
+    libraries: &[String],
 ) -> Result<(), String> {
     let mut command = Command::new(&toolchain.clang);
     command
@@ -123,6 +146,9 @@ pub fn link(
         command.arg("-fuse-ld=lld");
     }
     for library in system_libraries() {
+        command.arg(format!("-l{library}"));
+    }
+    for library in libraries {
         command.arg(format!("-l{library}"));
     }
     let result = command

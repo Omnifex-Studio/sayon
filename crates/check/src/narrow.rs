@@ -332,9 +332,9 @@ pub(crate) fn assigned_names(block: &ast::Block, out: &mut Vec<String>) {
                     assigned_names(block, out);
                 }
             }
-            ast::StmtKind::While { body, .. } | ast::StmtKind::For { body, .. } => {
-                assigned_names(body, out)
-            }
+            ast::StmtKind::While { body, .. }
+            | ast::StmtKind::For { body, .. }
+            | ast::StmtKind::Unsafe(body) => assigned_names(body, out),
             ast::StmtKind::Try {
                 body,
                 catch,

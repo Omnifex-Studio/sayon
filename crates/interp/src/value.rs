@@ -46,6 +46,11 @@ pub enum Value {
     Task(TaskHandle),
     /// A channel handle; cloning the value retains it.
     Channel(Rc<RefCell<ChannelState>>),
+    /// A raw address.
+    Pointer(usize),
+    /// A C string: its bytes and the NUL after them, which stay where they
+    /// are while the value lives, for C code to read.
+    CString(Rc<[u8]>),
 }
 
 /// What the scheduler and a task's handle know of the task.
@@ -384,6 +389,15 @@ pub fn display(value: &Value, out: &mut String, nested: bool, types: &[TypeDef])
         Value::Weak(_) => out.push_str("weak"),
         Value::Task(_) => out.push_str("task"),
         Value::Channel(_) => out.push_str("channel"),
+        Value::Pointer(address) => out.push_str(&sayon_runtime::text::pointer_text(*address)),
+        Value::CString(bytes) => {
+            let text = String::from_utf8_lossy(&bytes[..bytes.len() - 1]);
+            if nested {
+                quote(&text, out);
+            } else {
+                out.push_str(&text);
+            }
+        }
         // The machine shows a view's elements before displaying it.
         Value::View(view) => {
             let _ = write!(out, "view of {} elements", view.length);
@@ -408,6 +422,7 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::F32(x), Value::F32(y)) => x == y,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Nothing, Value::Nothing) => true,
+        (Value::Pointer(x), Value::Pointer(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => x == y,
         (Value::Array(x), Value::Array(y)) => {
             x.len() == y.len() && x.iter().zip(y).all(|(p, q)| values_equal(p, q))

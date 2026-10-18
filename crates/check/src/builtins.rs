@@ -32,6 +32,8 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
             "channel_receive" => return Some(PreludeItem::Builtin(Builtin::ChannelReceive)),
             "channel_close" => return Some(PreludeItem::Builtin(Builtin::ChannelClose)),
             "channel_select" => return Some(PreludeItem::Builtin(Builtin::ChannelSelect)),
+            "raw_read" => return Some(PreludeItem::Builtin(Builtin::RawRead)),
+            "raw_write" => return Some(PreludeItem::Builtin(Builtin::RawWrite)),
             _ => {}
         }
     }
@@ -59,14 +61,18 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
         "clone" => Builtin::Clone,
         "error" => Builtin::Error,
         "raise" => Builtin::Raise,
+        // A conversion, written like `integer32(x)`, that can fail.
+        "c_string" => Builtin::Host(sayon_runtime::host::Host::CString),
         "move" => return Some(PreludeItem::Move),
         _ => {
             if let Some(int) = int_type_by_name(name) {
                 return Some(PreludeItem::Conversion(Type::Int(int)));
             }
             return match name {
-                "float" | "float64" => Some(PreludeItem::Conversion(Type::Float(FloatType::F64))),
-                "float32" => Some(PreludeItem::Conversion(Type::Float(FloatType::F32))),
+                "float" | "float64" | "c_double" => {
+                    Some(PreludeItem::Conversion(Type::Float(FloatType::F64)))
+                }
+                "float32" | "c_float" => Some(PreludeItem::Conversion(Type::Float(FloatType::F32))),
                 _ => None,
             };
         }
@@ -81,7 +87,6 @@ pub fn planned(name: &str) -> Option<(&'static str, &'static str)> {
         "Shared" | "Weak" | "Cell" | "Mutex" | "Box" => ("explicit shared ownership", "M3"),
 
         "platform" => ("compile-time platform branches", "M4"),
-        "null_pointer" | "pointer" => ("foreign pointers", "M3"),
         _ => return None,
     })
 }

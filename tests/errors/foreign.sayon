@@ -1,0 +1,32 @@
+memory = import("standard/memory.sayon")
+
+foreign "c"
+    function strlen(text: c_string) -> c_size
+    function puts(text: string) -> c_int
+    function exit(code: boolean)
+    function getenv(name: c_string) -> c_string
+    function printf(format: c_string, ...) -> c_int
+
+name = c_string("text")
+length = strlen(name)
+measure = strlen
+raw = memory.read<integer>(null_pointer)
+reader = memory.read_text
+
+unsafe
+    print("nothing unsafe")
+
+unsafe
+    unsafe printf(name, "text", true)
+
+unsafe
+    word = memory.read<string>(null_pointer)
+
+copy = clone(name)
+same = name == c_string("text")
+
+function inner()
+    foreign "c"
+        function abs(value: c_int) -> c_int
+    unsafe function hidden()
+        return

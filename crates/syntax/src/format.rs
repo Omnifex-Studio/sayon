@@ -92,9 +92,10 @@ fn last_block(stmt: &Stmt) -> Option<&Block> {
         } => else_body
             .as_ref()
             .or_else(|| branches.last().map(|b| &b.body)),
-        StmtKind::While { body, .. } | StmtKind::For { body, .. } | StmtKind::Test { body, .. } => {
-            Some(body)
-        }
+        StmtKind::While { body, .. }
+        | StmtKind::For { body, .. }
+        | StmtKind::Test { body, .. }
+        | StmtKind::Unsafe(body) => Some(body),
         StmtKind::Function(function) => Some(&function.body),
         StmtKind::Try {
             body,
@@ -307,7 +308,7 @@ impl<'s> Printer<'s> {
         );
         let keeps_layout = matches!(
             stmt.kind,
-            StmtKind::Unavailable { .. } | StmtKind::TypeDecl { .. }
+            StmtKind::Unavailable { .. } | StmtKind::TypeDecl { .. } | StmtKind::Foreign { .. }
         ) || (simple
             && (text.contains('\n') || self.has_comment(stmt.span.start, stmt.span.end)))
             || contains_function_literal(stmt);
@@ -514,7 +515,12 @@ impl<'s> Printer<'s> {
                 let _ = writeln!(self.out, "{pad}test {name}");
                 self.block(body, name_span.end as usize, stmt.span.end as usize, depth);
             }
-            StmtKind::TypeDecl { .. } | StmtKind::Unavailable { .. } => {
+            StmtKind::Unsafe(body) => {
+                let _ = writeln!(self.out, "{pad}unsafe");
+                let header_end = stmt.span.start as usize + "unsafe".len();
+                self.block(body, header_end, stmt.span.end as usize, depth);
+            }
+            StmtKind::TypeDecl { .. } | StmtKind::Unavailable { .. } | StmtKind::Foreign { .. } => {
                 unreachable!("kept verbatim")
             }
         }
@@ -549,6 +555,9 @@ impl<'s> Printer<'s> {
 
     fn function_header(&self, function: &Function) -> String {
         let mut header = visibility(function.visibility).to_string();
+        if function.is_unsafe {
+            header.push_str("unsafe ");
+        }
         header.push_str("function");
         if let Some(name) = &function.name {
             let _ = write!(header, " {}", name.name);
@@ -741,6 +750,7 @@ impl<'s> Printer<'s> {
             }
             ExprKind::IsError(inner) => (format!("{} is error", self.expr(inner, 4)), 3),
             ExprKind::TryExpr(inner) => (format!("try {}", self.expr(inner, UNARY)), UNARY),
+            ExprKind::Unsafe(inner) => (format!("unsafe {}", self.expr(inner, UNARY)), UNARY),
             ExprKind::Import { path_span, .. } => (
                 format!("import({})", self.text(path_span.start, path_span.end)),
                 POSTFIX,
@@ -841,7 +851,9 @@ fn contains_function_literal(stmt: &Stmt) -> bool {
             ExprKind::Member { target, .. } => expr_has(target),
             ExprKind::Unary { operand, .. } => expr_has(operand),
             ExprKind::Binary { lhs, rhs, .. } => expr_has(lhs) || expr_has(rhs),
-            ExprKind::IsError(inner) | ExprKind::TryExpr(inner) => expr_has(inner),
+            ExprKind::IsError(inner) | ExprKind::TryExpr(inner) | ExprKind::Unsafe(inner) => {
+                expr_has(inner)
+            }
             _ => false,
         }
     }
@@ -1004,6 +1016,33 @@ fn stmt_print(stmt: &Stmt, source: &str, out: &mut String) {
             let _ = write!(out, "test {name:?}");
             block_print(body, source, out);
         }
+        StmtKind::Unsafe(body) => {
+            out.push_str("unsafe");
+            block_print(body, source, out);
+        }
+        StmtKind::Foreign {
+            library, functions, ..
+        } => {
+            let _ = write!(out, "foreign {library:?} ");
+            for function in functions {
+                let _ = write!(out, "{:?} {} (", function.visibility, function.name.name);
+                for param in &function.params {
+                    let _ = write!(out, "{} ", param.name.name);
+                    if let Some(ty) = &param.ty {
+                        out.push_str(&type_text(ty));
+                    }
+                    out.push(',');
+                }
+                if function.variadic {
+                    out.push_str("...");
+                }
+                out.push(')');
+                if let Some(ret) = &function.ret {
+                    out.push_str(&type_text(ret));
+                }
+                out.push(';');
+            }
+        }
         StmtKind::Unavailable { feature, .. } => {
             let _ = write!(out, "unavailable {feature}");
         }
@@ -1077,8 +1116,9 @@ fn function_print(function: &Function, source: &str, out: &mut String) {
         .unwrap_or("");
     let _ = write!(
         out,
-        "function {:?} {name} {} (",
+        "function {:?} {} {name} {} (",
         function.visibility,
+        function.is_unsafe,
         generic_list(&function.generics)
     );
     for param in &function.params {
@@ -1222,6 +1262,11 @@ fn expr_print(expr: &Expr, source: &str, out: &mut String) {
             e(inner, out);
             out.push(')');
         }
+        ExprKind::Unsafe(inner) => {
+            out.push_str("unsafe(");
+            e(inner, out);
+            out.push(')');
+        }
         ExprKind::Function(function) => function_print(function, source, out),
         ExprKind::Import { path, .. } => {
             let _ = write!(out, "import({path:?})");
@@ -1282,6 +1327,14 @@ mod tests {
         check(
             "# heading\n\n\n\nx = 1  # trailing\n# about y\ny = 2\n\n##\nblock\n  comment\n##\nfunction f()\n    # inside\n    return 1\n    # after the return\n\nprint(f())\n",
             "# heading\n\nx = 1  # trailing\n# about y\ny = 2\n\n##\nblock\n  comment\n##\nfunction f()\n    # inside\n    return 1\n    # after the return\n\nprint(f())\n",
+        );
+    }
+
+    #[test]
+    fn foreign_and_unsafe_code() {
+        check(
+            "foreign \"c\"\n    function abs(value: c_int) -> c_int\n    function printf(format: c_string, ...) -> c_int\nprivate  unsafe function  f( p:pointer )\n  return\nunsafe\n  x=abs( -1 )\ny = unsafe  abs(2)+1\n",
+            "foreign \"c\"\n    function abs(value: c_int) -> c_int\n    function printf(format: c_string, ...) -> c_int\nprivate unsafe function f(p: pointer)\n    return\nunsafe\n    x = abs(-1)\ny = unsafe abs(2) + 1\n",
         );
     }
 

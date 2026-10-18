@@ -77,6 +77,9 @@ impl Traits {
     pub const CLONE: Traits = Traits(128);
     /// Reading from and writing to JSON (`json.decode`, `json.to_json`).
     pub const JSON: Traits = Traits(256);
+    /// Reading from and writing to raw memory (`standard/foreign`'s `read`
+    /// and `write`): numbers and pointers.
+    pub const RAW: Traits = Traits(512);
 
     pub fn contains(self, other: Traits) -> bool {
         self.0 & other.0 == other.0
@@ -91,7 +94,7 @@ impl Traits {
     }
 
     fn each(self) -> impl Iterator<Item = Traits> {
-        (0..9)
+        (0..10)
             .map(|bit| Traits(1 << bit))
             .filter(move |t| self.contains(*t))
     }
@@ -107,6 +110,7 @@ impl Traits {
             Traits::NUMERIC => "numeric conversion",
             Traits::CLONE => "cloning",
             Traits::JSON => "JSON conversion",
+            Traits::RAW => "reading from memory",
             _ => "these operations",
         }
     }
@@ -374,7 +378,8 @@ impl Unifier {
                 | Type::Function(_)
                 | Type::View(..)
                 | Type::Wrapper(..)
-                | Type::Stream => false,
+                | Type::Stream
+                | Type::CString => false,
                 _ => true,
             },
             Traits::CLONE => match &ty {
@@ -389,8 +394,9 @@ impl Unifier {
                     return Ok(());
                 }
                 Type::Named(named) => return self.fields_support(named, &ty, one),
-                // An open file is closed once, so it has one owner.
-                Type::Stream => false,
+                // An open file is closed once, so it has one owner, and a
+                // C string's buffer is released once.
+                Type::Stream | Type::CString => false,
                 // A cell is cloned with its value; a shared handle is
                 // retained.
                 Type::Wrapper(Wrapper::Cell, inner) => {
@@ -434,6 +440,14 @@ impl Unifier {
                     return Ok(());
                 }
                 Type::Named(named) => return self.fields_support(named, &ty, one),
+                Type::Param(index) => {
+                    self.record_param_trait(*index, one);
+                    true
+                }
+                _ => false,
+            },
+            Traits::RAW => match &ty {
+                Type::Int(_) | Type::Float(_) | Type::Pointer => true,
                 Type::Param(index) => {
                     self.record_param_trait(*index, one);
                     true
@@ -648,24 +662,39 @@ fn check_literal_traits(literal: LiteralKind, traits: Traits, ty: &Type) -> Resu
     Ok(())
 }
 
+/// An integer type by name, including the C types of the target, whose
+/// sizes C leaves to each platform: `long` is 32 bits on Windows and 64
+/// elsewhere.
 pub fn int_type_by_name(name: &str) -> Option<IntType> {
+    let long = if cfg!(windows) {
+        IntType::I32
+    } else {
+        IntType::I64
+    };
+    let unsigned_long = if cfg!(windows) {
+        IntType::U32
+    } else {
+        IntType::U64
+    };
     Some(match name {
-        "integer" | "integer64" => IntType::I64,
-        "integer8" => IntType::I8,
-        "integer16" => IntType::I16,
-        "integer32" => IntType::I32,
-        "unsigned" | "unsigned64" => IntType::U64,
-        "unsigned8" | "byte" => IntType::U8,
-        "unsigned16" => IntType::U16,
-        "unsigned32" => IntType::U32,
+        "integer" | "integer64" | "c_longlong" | "c_ssize" => IntType::I64,
+        "integer8" | "c_char" => IntType::I8,
+        "integer16" | "c_short" => IntType::I16,
+        "integer32" | "c_int" => IntType::I32,
+        "unsigned" | "unsigned64" | "c_ulonglong" | "c_size" => IntType::U64,
+        "unsigned8" | "byte" | "c_uchar" => IntType::U8,
+        "unsigned16" | "c_ushort" => IntType::U16,
+        "unsigned32" | "c_uint" => IntType::U32,
+        "c_long" => long,
+        "c_ulong" => unsigned_long,
         _ => return None,
     })
 }
 
 pub fn float_type_by_name(name: &str) -> Option<FloatType> {
     match name {
-        "float" | "float64" => Some(FloatType::F64),
-        "float32" => Some(FloatType::F32),
+        "float" | "float64" | "c_double" => Some(FloatType::F64),
+        "float32" | "c_float" => Some(FloatType::F32),
         _ => None,
     }
 }

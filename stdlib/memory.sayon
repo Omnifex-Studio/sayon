@@ -1,0 +1,50 @@
+# Reading and writing the memory that C code shares with a program.
+#
+#     memory = import("standard/memory.sayon")
+#
+#     foreign "c"
+#         function malloc(size: c_size) -> pointer
+#         function free(address: pointer)
+#
+#     unsafe
+#         buffer = malloc(16)
+#         memory.write<integer32>(buffer, 42)
+#         print(memory.read<integer32>(buffer))     # 42
+#         free(buffer)
+#
+# The compiler cannot know what is at an address, so the functions here
+# that read or write one are unsafe, as calling a C function is: `unsafe`
+# marks where the program vouches that the memory holds what it reads and
+# has room for what it writes. Offsets count bytes. Reading or writing at
+# `null_pointer` fails with NullPointerError.
+
+# Where a C string's text is, for a C function that takes a `pointer`. The
+# address is valid while the C string lives.
+function address(text: c_string) -> pointer
+    return host_c_string_address(text)
+
+# The text of the C string at `address`, up to the NUL byte that ends it.
+# Fails with EncodingError when the bytes are not UTF-8.
+unsafe function read_text(address: pointer) -> string
+    return host_read_c_string(address)
+
+# The number or pointer stored `offset` bytes after `address`.
+unsafe function read<T>(address: pointer, offset = 0) -> T
+    return raw_read(address, offset)
+
+# Stores a number or pointer `offset` bytes after `address`.
+unsafe function write<T>(address: pointer, value: T, offset = 0)
+    raw_write(address, offset, value)
+
+# `count` bytes starting at `address`.
+unsafe function read_bytes(address: pointer, count: integer) -> Array<byte>
+    return host_read_bytes(address, count)
+
+# Stores `bytes` starting at `address`.
+unsafe function write_bytes(address: pointer, bytes: Array<byte>)
+    host_write_bytes(address, bytes)
+
+# The address `bytes` after `address`, or before it when `bytes` is
+# negative.
+function offset(address: pointer, bytes: integer) -> pointer
+    return host_pointer_offset(address, bytes)

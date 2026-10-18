@@ -8,7 +8,7 @@
 //! value moved out) does nothing.
 
 use crate::layout::SHARED_HEADER;
-use crate::layout::{Layouts, int_code, int_llvm, needs_drop};
+use crate::layout::{Layouts, c_llvm, c_param, int_code, int_llvm, needs_drop};
 use sayon_check::types::{FloatType, IntType, Type, Wrapper};
 use sayon_ir::*;
 use sayon_syntax::{SourceMap, Span};
@@ -297,6 +297,27 @@ impl<'m> Codegen<'m> {
         out.push_str(&self.constant_defs);
         out.push('\n');
         out.push_str(RUNTIME_DECLARATIONS);
+        // Each C function once, whichever declarations name it.
+        let mut declared = HashSet::new();
+        for function in &module.foreign {
+            if !declared.insert(function.name.as_str()) {
+                continue;
+            }
+            let mut params: Vec<String> = function.params.iter().map(c_param).collect();
+            if function.variadic {
+                params.push("...".to_string());
+            }
+            let _ = writeln!(
+                out,
+                "declare {} @{}({})",
+                c_llvm(&function.ret),
+                function.name,
+                params.join(", ")
+            );
+        }
+        if module.foreign.iter().any(|f| f.library == "c") && !declared.contains("fflush") {
+            out.push_str("declare i32 @fflush(ptr)\n");
+        }
         let mut intrinsics: Vec<&String> = self.intrinsics.iter().collect();
         intrinsics.sort();
         for declaration in intrinsics {
@@ -672,6 +693,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 self.cg.str_constant(text),
                 Type::String,
             ),
+            Constant::NullPointer => ("ptr".into(), "null".into(), Type::Pointer),
         }
     }
 
@@ -683,6 +705,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 Constant::Bool(_) => Type::Boolean,
                 Constant::Nothing => Type::Nothing,
                 Constant::Str(_) => Type::String,
+                Constant::NullPointer => Type::Pointer,
             },
             Operand::Copy(place) | Operand::Move(place) | Operand::Borrow { place, .. } => {
                 self.place_type(place)
@@ -1448,7 +1471,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 self.body
                     .line(format!("{result} = fcmp {predicate} {llvm} {a}, {b}"));
             }
-            Type::Boolean | Type::Nothing => {
+            Type::Boolean | Type::Nothing | Type::Pointer => {
                 let (llvm, a, _) = self.value(lhs);
                 let (_, b, _) = self.value(rhs);
                 let predicate = if op == CompareOp::NotEqual {
@@ -2231,7 +2254,124 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 self.body.line(format!("store ptr {value}, ptr {err}"));
                 Some("1".to_string())
             }
+            Op::CallForeign { function, args } => {
+                let declaration = &self.cg.module.foreign[function.0 as usize];
+                let (name, library, ret) = (
+                    declaration.name.clone(),
+                    declaration.library.clone(),
+                    declaration.ret.clone(),
+                );
+                let mut params: Vec<String> = declaration.params.iter().map(c_param).collect();
+                if declaration.variadic {
+                    params.push("...".to_string());
+                }
+                let mut values = Vec::new();
+                for (operand, ty) in args {
+                    let value = if *ty == Type::CString {
+                        let (slot, _) = self.pointer(operand);
+                        let text = self.body.tmp();
+                        self.body.line(format!("{text} = load ptr, ptr {slot}"));
+                        text
+                    } else {
+                        self.value(operand).1
+                    };
+                    values.push(format!("{} {value}", c_param(ty)));
+                }
+                let signature = format!("({})", params.join(", "));
+                let call = format!(
+                    "call {} {signature} @{name}({})",
+                    c_llvm(&ret),
+                    values.join(", ")
+                );
+                if ret == Type::Nothing {
+                    self.body.line(call);
+                    if let Some(place) = dest {
+                        let (target, _) = self.place_ptr(place);
+                        self.body.line(format!("store i8 0, ptr {target}"));
+                    }
+                } else {
+                    let result = self.body.tmp();
+                    self.body.line(format!("{result} = {call}"));
+                    if let Some(place) = dest {
+                        let (target, _) = self.place_ptr(place);
+                        self.body
+                            .line(format!("store {} {result}, ptr {target}", c_llvm(&ret)));
+                    }
+                }
+                // What C prints comes out in order with what the program
+                // prints.
+                if library == "c" {
+                    self.body.line("call i32 (ptr) @fflush(ptr null)");
+                }
+                self.finish_instruction();
+                Some("0".to_string())
+            }
+            Op::RawRead {
+                address,
+                offset,
+                ty,
+            } => {
+                let at = self.raw_address(address, offset, "read from", span, error);
+                let llvm = self.cg.llvm(ty);
+                let value = self.body.tmp();
+                self.body
+                    .line(format!("{value} = load {llvm}, ptr {at}, align 1"));
+                if let Some(place) = dest {
+                    let (target, _) = self.place_ptr(place);
+                    self.body
+                        .line(format!("store {llvm} {value}, ptr {target}"));
+                }
+                Some("0".to_string())
+            }
+            Op::RawWrite {
+                address,
+                offset,
+                value,
+                ty,
+            } => {
+                let at = self.raw_address(address, offset, "write to", span, error);
+                let llvm = self.cg.llvm(ty);
+                let (_, value, _) = self.value(value);
+                self.body
+                    .line(format!("store {llvm} {value}, ptr {at}, align 1"));
+                Some("0".to_string())
+            }
         }
+    }
+
+    /// The address `offset` bytes after a pointer; fails, branching to
+    /// `error`, for `null_pointer`.
+    fn raw_address(
+        &mut self,
+        address: &Operand,
+        offset: &Operand,
+        action: &str,
+        span: Span,
+        error: BlockId,
+    ) -> String {
+        let err = self.error_slot();
+        let (_, base, _) = self.value(address);
+        let (_, offset, _) = self.value(offset);
+        let null = self.body.tmp();
+        self.body.line(format!("{null} = icmp eq ptr {base}, null"));
+        let fail = self.body.label("null_pointer");
+        let ok = self.body.label("address_ok");
+        self.body
+            .line(format!("br i1 {null}, label %{fail}, label %{ok}"));
+        self.body.start(&fail);
+        let code = self.cg.c_string("NullPointerError");
+        let message = self.cg.c_string(&format!("cannot {action} null_pointer"));
+        let location = self.cg.location(span);
+        let status = self.body.tmp();
+        self.body.line(format!(
+            "{status} = call i32 @sayon_error_raise_text(ptr {err}, ptr {code}, ptr {message}, ptr {location})"
+        ));
+        self.body.line(format!("br label %b{}", error.0));
+        self.body.start(&ok);
+        let at = self.body.tmp();
+        self.body
+            .line(format!("{at} = getelementptr i8, ptr {base}, i64 {offset}"));
+        at
     }
 
     fn widen(&mut self, ty: IntType, value: &str) -> String {
@@ -2563,6 +2703,9 @@ declare void @sayon_weak_retain(ptr)
 declare void @sayon_weak_release(ptr)
 declare void @sayon_weak_clone(ptr, ptr)
 declare i32 @sayon_check_split(ptr, i64, i64, ptr)
+declare void @sayon_c_string_drop(ptr)
+declare void @sayon_builder_c_string(ptr, ptr, i1)
+declare void @sayon_builder_pointer(ptr, i64)
 declare void @sayon_task_spawn(ptr, i64, ptr, ptr)
 declare i32 @sayon_task_join(ptr, ptr, ptr, ptr)
 declare void @sayon_task_detach(ptr)

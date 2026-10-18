@@ -1,0 +1,7 @@
+foreign "c"
+    function strlen(own text: c_string) -> c_size
+    function abs(value: c_int = 1) -> c_int
+    function free(address)
+
+foreign "{name}"
+    function puts(text: c_string) -> c_int

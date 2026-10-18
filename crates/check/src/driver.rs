@@ -51,6 +51,10 @@ impl<'a> Checker<'a> {
                         self.types[id.0 as usize].span,
                         &self.types[id.0 as usize].name,
                     ),
+                    Item::Foreign(id) => (
+                        self.foreign[id.0 as usize].ast.name.span,
+                        &self.foreign[id.0 as usize].ast.name.name,
+                    ),
                 };
                 diagnostic = diagnostic.secondary(span, format!("`{name}` is part of the cycle"));
             }
@@ -265,6 +269,7 @@ impl<'a> Checker<'a> {
             .expect("signature");
         let module = self.functions[id.0 as usize].module;
         let mut cx = FnCtx::new(module, Some(id), signature.ret.clone(), false);
+        cx.unsafe_body = ast.is_unsafe;
         cx.generics = ast
             .generics
             .iter()

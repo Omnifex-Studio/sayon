@@ -182,15 +182,15 @@
     },
     "constant": {
       "name": "constant.language.sayon",
-      "match": "\\b(true|false|nothing)\\b"
+      "match": "\\b(true|false|nothing|null_pointer)\\b"
     },
     "builtin-type": {
       "name": "support.type.primitive.sayon",
-      "match": "\\b(integer|integer8|integer16|integer32|integer64|unsigned|unsigned8|unsigned16|unsigned32|unsigned64|byte|float|float32|float64|boolean|string)\\b"
+      "match": "\\b(integer|integer8|integer16|integer32|integer64|unsigned|unsigned8|unsigned16|unsigned32|unsigned64|byte|float|float32|float64|boolean|string|pointer|c_string|c_char|c_uchar|c_short|c_ushort|c_int|c_uint|c_long|c_ulong|c_longlong|c_ulonglong|c_size|c_ssize|c_float|c_double)\\b"
     },
     "builtin-function": {
       "name": "support.function.builtin.sayon",
-      "match": "\\b(print|length|bytelength|typeof|assert|range|tonumber|tostring|push|pop|haskey|readfile|writefile|clone|error|raise|move)\\b(?=\\s*\\()"
+      "match": "\\b(print|length|bytelength|typeof|assert|range|tonumber|tostring|push|pop|remove|swap|haskey|readfile|writefile|clone|share|cell|view|mutable_view|split_view|error|raise|move)\\b(?=\\s*\\()"
     },
     "type-name": {
       "name": "entity.name.type.sayon",

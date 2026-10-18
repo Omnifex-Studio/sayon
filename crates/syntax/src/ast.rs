@@ -89,6 +89,22 @@ pub struct Function {
     pub body: Block,
     /// Span of the header, from `function` to the end of the signature.
     pub header_span: Span,
+    /// `unsafe function`: its body is unsafe code, and it can only be called
+    /// from unsafe code.
+    pub is_unsafe: bool,
+}
+
+/// A C function declared in a `foreign` block: a signature without a body.
+#[derive(Clone, Debug)]
+pub struct ForeignFunction {
+    pub visibility: Visibility,
+    pub name: Ident,
+    pub params: Vec<Param>,
+    /// Written with `...` after the parameters: further arguments of any
+    /// C type follow them.
+    pub variadic: bool,
+    pub ret: Option<TypeExpr>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -213,6 +229,14 @@ pub enum StmtKind {
         name_span: Span,
         body: Block,
     },
+    /// `foreign "library"` followed by the C functions it declares.
+    Foreign {
+        library: String,
+        library_span: Span,
+        functions: Vec<ForeignFunction>,
+    },
+    /// `unsafe` followed by a block of unsafe code.
+    Unsafe(Block),
     /// Syntax recognised so it can be reported precisely, but not parsed further
     /// (for example `foreign` blocks before the systems milestone).
     Unavailable {
@@ -338,6 +362,8 @@ pub enum ExprKind {
     IsError(Box<Expr>),
     /// `try expression`
     TryExpr(Box<Expr>),
+    /// `unsafe expression`: unsafe code within one expression.
+    Unsafe(Box<Expr>),
     Function(Box<Function>),
     Import {
         path: String,

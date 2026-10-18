@@ -1022,6 +1022,9 @@ impl<'p> Analyzer<'p> {
                 let name = builtin.name().to_string();
                 self.args(args, &name, state);
             }
+            // C borrows its arguments for the call.
+            ExprKind::CallForeign { args, .. } => self.args(args, "the C function", state),
+            ExprKind::NullPointer => {}
             ExprKind::CallValue { callee, args } => self.call_value(callee, args, state),
             ExprKind::Closure { captures, .. } => self.captures(captures, span, state),
             // A named function has no environment of its own.

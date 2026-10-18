@@ -6,29 +6,21 @@ error[E_UNAVAILABLE]: async and await is not available yet
    |
    = note: this release does not implement async and await; it is scheduled for M8
 
-error[E_UNAVAILABLE]: unsafe blocks are not available yet
-  --> later_milestone.sayon:4:1
-   |
- 4 | unsafe
-   | ^^^^^^ planned for milestone M3
-   |
-   = note: this release does not implement unsafe blocks; it is scheduled for M3
-
 error[E_UNKNOWN_TYPE]: unknown type `List`
-  --> later_milestone.sayon:6:8
+  --> later_milestone.sayon:4:8
    |
- 6 | items: List<integer> = []
+ 4 | items: List<integer> = []
    |        ^^^^
    |
    = help: use Array<T>, which serves as a list
 
 error[E_UNKNOWN_TYPE]: unknown type `File`
-  --> later_milestone.sayon:7:6
+  --> later_milestone.sayon:5:6
    |
- 7 | log: File = nothing
+ 5 | log: File = nothing
    |      ^^^^
    |
    = help: `File` belongs to standard/io.sayon: write `io.File` after `io = import("standard/io.sayon")`
 
-4 errors found; nothing was run
+3 errors found; nothing was run
 run `sayon explain E_UNAVAILABLE` to learn more about an error

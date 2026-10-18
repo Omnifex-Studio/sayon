@@ -285,5 +285,6 @@ pub fn compile_native(compiled: &Compiled, output: &Path, release: bool) -> Resu
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
     }
-    sayon_codegen::link(&toolchain, &ir_path, output, release)
+    let libraries = sayon_codegen::foreign_libraries(&compiled.module);
+    sayon_codegen::link(&toolchain, &ir_path, output, release, &libraries)
 }

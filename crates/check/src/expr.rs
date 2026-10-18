@@ -4,7 +4,7 @@ use crate::builtins::{self, PreludeItem};
 use crate::checker::{self, Checker, Deferred, FAILURE, FnCtx, Item, Narrowing, OUTCOME};
 use crate::hir::{self, Arg, Builtin, ErrorField, ExprKind, Segment, Usage};
 use crate::infer::{Bounds, LiteralKind, Traits};
-use crate::types::{Type, Wrapper};
+use crate::types::{FloatType, IntType, Type, Wrapper};
 use sayon_syntax::ast::{self, BinaryOp, ParamMode, UnaryOp};
 use sayon_syntax::{Diagnostic, Span};
 
@@ -193,6 +193,12 @@ impl<'a> Checker<'a> {
                 expr(ExprKind::TryExpr(Box::new(value)), ty, span)
             }
             ast::ExprKind::IsError(inner) => self.check_is_error(cx, inner, span),
+            ast::ExprKind::Unsafe(inner) => {
+                cx.unsafe_blocks.push((span, false));
+                let value = self.check_expr(cx, inner, expected);
+                self.leave_unsafe(cx);
+                value
+            }
             ast::ExprKind::Function(function) => {
                 self.check_function_literal(cx, function, expected, span)
             }
@@ -330,6 +336,9 @@ impl<'a> Checker<'a> {
         }
         if name.name == "Outcome" {
             return self.type_as_value(OUTCOME, span);
+        }
+        if name.name == "null_pointer" {
+            return expr(ExprKind::NullPointer, Type::Pointer, span);
         }
         if let Some((known, id, variant)) = self.variant_for_name(cx, &name.name, expected) {
             return self.check_variant(cx, id, variant, known, name, None, expected, span);
@@ -969,6 +978,9 @@ impl<'a> Checker<'a> {
                     Some(Item::Function(id)) => {
                         self.call_function(cx, id, name, generic_args, args, span)
                     }
+                    Some(Item::Foreign(id)) => {
+                        self.call_foreign(cx, id, name, generic_args, args, span)
+                    }
                     Some(Item::Constant(_)) => {
                         let value = self.check_expr(cx, callee, None);
                         self.call_value(cx, value, args, span)
@@ -1034,6 +1046,9 @@ impl<'a> Checker<'a> {
         match self.item(cx.module, &name.name) {
             Some(Item::Function(id)) => {
                 return self.call_function(cx, id, name, generic_args, args, span);
+            }
+            Some(Item::Foreign(id)) => {
+                return self.call_foreign(cx, id, name, generic_args, args, span);
             }
             // A constant holding a function value can be called.
             Some(Item::Constant(_)) => {
@@ -1147,9 +1162,165 @@ impl<'a> Checker<'a> {
                 let ty = self.constant_type(id);
                 expr(ExprKind::Constant(id), ty, span)
             }
-            Item::Function(id) => self.function_value(id, span),
+            Item::Function(id) => {
+                if self.functions[id.0 as usize]
+                    .ast
+                    .is_some_and(|f| f.is_unsafe)
+                {
+                    let name = self.functions[id.0 as usize].name.clone();
+                    self.error(
+                        Diagnostic::error(
+                            "E_UNSAFE_VALUE",
+                            format!("the unsafe function `{name}` can only be called"),
+                        )
+                        .primary(span, "")
+                        .help("a function value can be called anywhere, so wrap the call in a function literal with an `unsafe` inside it"),
+                    );
+                }
+                self.function_value(id, span)
+            }
             Item::Type(id) => self.type_as_value(id, span),
+            Item::Foreign(id) => {
+                let name = self.foreign[id.0 as usize].ast.name.name.clone();
+                self.error(
+                    Diagnostic::error(
+                        "E_UNSAFE_VALUE",
+                        format!("the C function `{name}` can only be called"),
+                    )
+                    .primary(span, "")
+                    .help("wrap the call in a function literal with an `unsafe` inside it"),
+                );
+                expr(ExprKind::Nothing, Type::Unknown, span)
+            }
         }
+    }
+
+    /// A call of a C function declared in a `foreign` block.
+    fn call_foreign(
+        &mut self,
+        cx: &mut FnCtx,
+        id: hir::ForeignId,
+        name: &ast::Ident,
+        generic_args: &[ast::TypeExpr],
+        args: &[ast::Expr],
+        span: Span,
+    ) -> hir::Expr {
+        self.require_unsafe(cx, name.span, format!("`{}` is a C function", name.name));
+        if !generic_args.is_empty() {
+            self.error(
+                Diagnostic::error(
+                    "E_TYPE_ARGUMENTS",
+                    format!("the C function `{}` takes no type arguments", name.name),
+                )
+                .primary(name.span, ""),
+            );
+        }
+        let entry = &self.foreign[id.0 as usize];
+        let params = entry.params.clone();
+        let ret = entry.ret.clone();
+        let names: Vec<String> = entry
+            .ast
+            .params
+            .iter()
+            .map(|param| param.name.name.clone())
+            .collect();
+        let max = if entry.ast.variadic {
+            usize::MAX
+        } else {
+            params.len()
+        };
+        if !self.arity(name, args, params.len(), max, span) {
+            for arg in args {
+                self.check_expr(cx, arg, None);
+            }
+            return expr(ExprKind::Nothing, ret, span);
+        }
+        let mut checked = Vec::new();
+        for (index, arg) in args.iter().enumerate() {
+            let value = match params.get(index) {
+                Some(param) => {
+                    let context = format!("argument for `{}`", names[index]);
+                    self.check_expr_as(cx, arg, param, &context)
+                }
+                None => self.variadic_argument(cx, arg),
+            };
+            checked.push(Arg {
+                expr: value,
+                mode: ParamMode::Read,
+            });
+        }
+        expr(
+            ExprKind::CallForeign {
+                function: id,
+                args: checked,
+            },
+            ret,
+            span,
+        )
+    }
+
+    /// An argument after a variadic C function's parameters, as C passes
+    /// it: an integer narrower than `c_int` becomes a `c_int`, and a
+    /// `float32` a `float`. An integer literal is a `c_int`, as in C.
+    fn variadic_argument(&mut self, cx: &mut FnCtx, arg: &ast::Expr) -> hir::Expr {
+        let value = self.check_expr(cx, arg, None);
+        if let Type::Var(var) = self.unifier.shallow(&value.ty) {
+            let default = match self.unifier.bounds(var).literal {
+                Some(LiteralKind::Integer) => Some(Type::Int(IntType::I32)),
+                Some(LiteralKind::Unsigned) => Some(Type::Int(IntType::U32)),
+                Some(LiteralKind::Float) => Some(Type::FLOAT),
+                None => None,
+            };
+            if let Some(default) = default {
+                self.unify_at(&default, &value.ty, arg.span, "a variadic argument");
+            }
+        }
+        let ty = self.unifier.resolve(&value.ty);
+        let promoted = match &ty {
+            Type::Int(int) if int.bits() < 32 => Type::Int(IntType::I32),
+            Type::Float(FloatType::F32) => Type::FLOAT,
+            Type::Int(_) | Type::Float(_) | Type::Pointer | Type::CString | Type::Unknown => {
+                return value;
+            }
+            Type::Var(_) => {
+                self.error(
+                    Diagnostic::error(
+                        "E_FOREIGN_TYPE",
+                        "the C type of this argument is not known here",
+                    )
+                    .primary(arg.span, "")
+                    .help(
+                        "convert it to the type the C function expects, for example `c_int(count)`",
+                    ),
+                );
+                return value;
+            }
+            other => {
+                let help = match other {
+                    Type::String => "pass a `c_string`, made with `c_string(text)`",
+                    Type::Boolean => "C takes a boolean as a `c_int`, 0 or 1",
+                    _ => "C takes numbers, `pointer`, and `c_string`",
+                };
+                self.error(
+                    Diagnostic::error("E_FOREIGN_TYPE", format!("{other} cannot be passed to C"))
+                        .primary(arg.span, "")
+                        .help(help),
+                );
+                return value;
+            }
+        };
+        let span = value.span;
+        expr(
+            ExprKind::Builtin {
+                builtin: Builtin::Convert,
+                args: vec![Arg {
+                    expr: value,
+                    mode: ParamMode::Read,
+                }],
+            },
+            promoted,
+            span,
+        )
     }
 
     /// `Point(1.0, 2.0)`: structures need their field names.
@@ -1237,6 +1408,7 @@ impl<'a> Checker<'a> {
         args: &[ast::Expr],
         span: Span,
     ) -> hir::Expr {
+        self.unsafe_call(cx, id, name);
         let explicit: Vec<Type> = generic_args
             .iter()
             .map(|g| self.resolve_type(cx.module, g, &cx.generics))
@@ -1264,6 +1436,20 @@ impl<'a> Checker<'a> {
             ret,
             span,
         )
+    }
+
+    /// Requires unsafe code around a call of an `unsafe function`.
+    pub(crate) fn unsafe_call(&mut self, cx: &mut FnCtx, id: hir::FuncId, name: &ast::Ident) {
+        if self.functions[id.0 as usize]
+            .ast
+            .is_some_and(|f| f.is_unsafe)
+        {
+            self.require_unsafe(
+                cx,
+                name.span,
+                format!("`{}` is an unsafe function", name.name),
+            );
+        }
     }
 
     /// `value.name(args)`: a call of the method `name` of the value's type,
@@ -1295,6 +1481,7 @@ impl<'a> Checker<'a> {
                 .help("remove `private` from its definition to export it"),
             );
         }
+        self.unsafe_call(cx, id, name);
         let explicit: Vec<Type> = generic_args
             .iter()
             .map(|g| self.resolve_type(cx.module, g, &cx.generics))
@@ -1519,6 +1706,8 @@ impl<'a> Checker<'a> {
             | Builtin::SplitView
             | Builtin::ChannelSend => (2, 2),
             Builtin::TaskYield => (0, 0),
+            Builtin::RawRead => (2, 2),
+            Builtin::RawWrite => (3, 3),
             Builtin::Host(host) => (host.params().len(), host.params().len()),
             _ => (1, 1),
         };
@@ -1751,6 +1940,23 @@ impl<'a> Checker<'a> {
                 (vec![owned], ty)
             }
             Builtin::TaskYield => (Vec::new(), Type::Nothing),
+            Builtin::RawRead | Builtin::RawWrite => {
+                let address = self.check_expr_as(cx, &args[0], &Type::Pointer, "an address");
+                let offset = self.check_expr_as(cx, &args[1], &Type::INTEGER, "an offset in bytes");
+                let context = "memory holds numbers and pointers";
+                if builtin == Builtin::RawRead {
+                    let ty = expected.cloned().unwrap_or_else(|| self.fresh_var(span));
+                    self.require_traits(&ty, Traits::RAW, span, context);
+                    (vec![read(address), read(offset)], ty)
+                } else {
+                    let value = self.check_expr(cx, &args[2], None);
+                    self.require_traits(&value.ty, Traits::RAW, args[2].span, context);
+                    (
+                        vec![read(address), read(offset), read(value)],
+                        Type::Nothing,
+                    )
+                }
+            }
             Builtin::TaskSleep => {
                 let duration = self.check_expr_as(cx, &args[0], &Type::INTEGER, "nanoseconds");
                 (vec![read(duration)], Type::Nothing)
@@ -1946,12 +2152,12 @@ impl<'a> Checker<'a> {
             }
             Builtin::Clone => {
                 let value = self.check_expr(cx, &args[0], None);
-                self.require_traits(
-                    &value.ty,
-                    Traits::CLONE,
-                    args[0].span,
-                    "an open file has one owner; pass it with `update` instead",
-                );
+                let context = match self.unifier.resolve(&value.ty) {
+                    Type::CString => "a C string has one owner; make another with `c_string(text)`",
+                    Type::Wrapper(Wrapper::Task, _) => "a task has one owner, which joins it",
+                    _ => "an open file has one owner; pass it with `update` instead",
+                };
+                self.require_traits(&value.ty, Traits::CLONE, args[0].span, context);
                 // Cloning a view copies the elements it shows into an array.
                 let ty = match self.unifier.resolve(&value.ty) {
                     Type::View(element, _) => Type::array(*element),
@@ -2025,8 +2231,10 @@ pub(crate) fn host_type(ty: sayon_runtime::host::HostType) -> Type {
         HostType::StringArray => Type::array(Type::String),
         HostType::OptionalString => Type::union([Type::String, Type::Nothing]),
         HostType::Stream => Type::Stream,
-        HostType::Unsigned => Type::Int(crate::types::IntType::U64),
-        HostType::Bytes => Type::array(Type::Int(crate::types::IntType::U8)),
+        HostType::Unsigned => Type::Int(IntType::U64),
+        HostType::Bytes => Type::array(Type::Int(IntType::U8)),
+        HostType::Pointer => Type::Pointer,
+        HostType::CString => Type::CString,
     }
 }
 

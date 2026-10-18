@@ -151,6 +151,7 @@ Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`) evaluates its target once. In
 | `A or B` | A value of one of the member types |
 | `Range` | The result of `range(...)` |
 | `Error` | A recoverable error value |
+| `pointer`, `c_string` | A raw address, and an owned copy of text, for C code; see [C functions and unsafe code](#c-functions-and-unsafe-code) |
 | `Outcome<T>` | The result of a `try` expression: `success(value)` or `failure(problem)` |
 | `function(A, B) -> R` | A function value taking `A` and `B` and returning `R`; parameters may be marked `own` or `update` |
 | structures | Declared with `type`: named fields |
@@ -284,7 +285,7 @@ float(7)           # 7.0
 integer8(300)      # ConversionError: 300 does not fit in integer8
 ```
 
-Converting a float to an integer rejects infinity and NaN. Converting a float to `float32` rejects finite values too large for it. `tonumber(text)` parses text to `integer or float`, and `tostring(value)` produces display text.
+The C types, such as `c_int` and `c_size`, convert the same way. Converting a float to an integer rejects infinity and NaN. Converting a float to `float32` rejects finite values too large for it. `tonumber(text)` parses text to `integer or float`, and `tostring(value)` produces display text.
 
 ## Control flow
 
@@ -654,6 +655,50 @@ Error codes raised by the language and its built-in functions:
 | `AssertionError` | a failed `assert` |
 | `IOError`, `EncodingError` | file and output failures, and files that are not UTF-8 |
 
+## C functions and unsafe code
+
+A `foreign` block declares functions of a C library, which the program can then call:
+
+```sayon
+foreign "c"
+    function strlen(text: c_string) -> c_size
+    function malloc(size: c_size) -> pointer
+    function free(address: pointer)
+    function sprintf(buffer: pointer, format: c_string, ...) -> c_int
+
+name = c_string("Sayon")
+print(unsafe strlen(name))       # 5
+```
+
+- `"c"` names the target's C runtime; another name is one of the system's libraries, such as `"kernel32"` or `"m"`, which a compiled program is linked with. A declaration gives each parameter its C type, and `...` after them takes further arguments.
+- C functions take integers, floats, `pointer`, and `c_string`, and give integers, floats, `pointer`, or nothing (`E_FOREIGN_TYPE`). The integer types include the target's C types `c_char`, `c_short`, `c_ushort`, `c_int`, `c_uint`, `c_long`, `c_ulong`, `c_longlong`, `c_ulonglong`, `c_size`, and `c_ssize`, each the integer type of its size: `c_long` is `integer32` on Windows and `integer64` elsewhere. `c_float` and `c_double` are `float32` and `float`.
+- Arguments after the parameters of a variadic function go as C passes them: an integer narrower than `c_int` becomes a `c_int`, a `float32` becomes a `float`, and an integer literal is a `c_int`.
+- `c_string(text)` copies text into a buffer that ends with a NUL byte, for C to read; it fails with `ValueError` when the text holds a NUL character, which C would take for its end. The C string owns its buffer, and C reads it during a call that takes it. It shows as its text, and cannot be cloned or compared. Text that C gives back is a `pointer`, which `memory.read_text` reads.
+- A `pointer` is a raw address. `null_pointer` points nowhere; pointers can be compared, and one shows as `pointer` or `null_pointer`, never as its address.
+
+The compiler cannot check what C code does, so calling a C function is unsafe code: the call needs `unsafe` before it, or an `unsafe` block around it (`E_UNSAFE`). `unsafe` marks the code the program vouches for, and nothing else changes inside it: types, ownership, and every other check still apply.
+
+```sayon
+memory = import("standard/memory.sayon")
+
+unsafe
+    buffer = malloc(64)
+    if buffer == null_pointer
+        error("out of memory")
+    sprintf(buffer, c_string("%d items"), 3)
+    print(memory.read_text(buffer))   # 3 items
+    free(buffer)
+```
+
+- `unsafe` before an expression covers one operand, like `try`: `unsafe strlen(name) + 1` adds 1 to the result of the call. An `unsafe` block is a block with variables of its own, like the body of an `if`.
+- An `unsafe function` is one whose callers vouch for how they call it: its body is unsafe code, and every call of it needs unsafe code. A function that makes its C calls correct for every argument needs no marking, and its callers need no `unsafe`; that is how a library wraps C code safely. An unsafe function is declared at the top level of a file (`E_UNSAFE_POSITION`).
+- A function literal written in unsafe code is unsafe code too. A C function or an unsafe function cannot be used as a value (`E_UNSAFE_VALUE`), since a function value can be called anywhere.
+- `W_UNUSED_UNSAFE` warns of an `unsafe` that nothing inside needs, or one inside unsafe code already.
+
+`standard/memory.sayon` reads and writes the memory C code shares with the program. `read<T>(address, offset)` and `write(address, value, offset)` read and store a number or a pointer `offset` bytes after an address; `read_bytes` and `write_bytes` copy bytes; `read_text` reads the C string at an address; `offset(address, bytes)` is another address; `address(text)` is where a C string's text is. The functions that touch memory are unsafe, and fail with `NullPointerError` at `null_pointer`.
+
+Compiled programs call C functions on every target. The interpreter calls them on Windows x64 so far, loading each library and finding each function the first time the program calls one; elsewhere it reports `ForeignError`, and a program built with `sayon build` calls them. Passing Sayon functions to C as callbacks, and C structures by value, are still to come.
+
 ## Built-in functions
 
 | Function | Description |
@@ -681,6 +726,7 @@ Error codes raised by the language and its built-in functions:
 | `writefile(path, text)` | Replaces a file's content |
 | `error(message)` | Raises a `UserError` |
 | `raise(problem)` | Raises an existing `Error` |
+| `c_string(text)` | A copy of text for C code; see [C functions and unsafe code](#c-functions-and-unsafe-code) |
 
 ## Standard library
 
@@ -696,6 +742,7 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 | `standard/threads.sayon` | `spawn`, `join`, `detach`, `pause`, `new_channel`, `send`, `receive`, `receive_result` (a `ReceiveResult<T>`), `close`, `select`; see [Tasks and channels](#tasks-and-channels) |
 | `standard/time.sayon` | `Duration` (`nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `add`, `subtract`, `scale`, `in_seconds`, `in_milliseconds`, `describe`), the monotonic clock (`start`, `elapsed`, `between`, `sleep`), and UTC dates (`DateTime`, `now`, `unix_seconds`, `from_unix`, `to_unix`, `shift`, `difference`, `weekday`, `is_leap_year`, `days_in_month`, `format` and `parse` for ISO 8601) |
 | `standard/collections.sayon` | `sort` and `sort_by` (stable), `reverse`; `Set<T>` with `new_set`, `set_add`, `set_contains`, `set_remove`, `set_size`, `set_values` (as methods: `set.add(value)`); `Queue<T>` with `new_queue`, `queue_add`, `queue_take`, `queue_size` |
+| `standard/memory.sayon` | `read`, `write`, `read_bytes`, `write_bytes`, `read_text`, `offset`, `address`; see [C functions and unsafe code](#c-functions-and-unsafe-code) |
 | `standard/math.sayon` | `PI`, `E`, `TAU`, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `log`, `log10`, `log2`, `pow`, `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`, `clamp`, `random` |
 
 ```sayon

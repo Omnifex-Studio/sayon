@@ -4,6 +4,7 @@
 //! compiles, so moves, borrows, checked arithmetic, and cleanup behave the
 //! same way in both execution modes.
 
+mod foreign;
 mod machine;
 pub mod value;
 

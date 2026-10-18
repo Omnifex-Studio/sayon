@@ -1,0 +1,19 @@
+5 42 7
+65 1.4142135623730951
+Sayon ["in a list"] c_string
+null_pointer pointer
+HELLO, C
+false pointer
+28
+3.5
+true
+23 7|Sayon|2.50|A|-3|1.250
+[55, 124, 83]
+7|BCyon|2.50|A|-3|1.250
+BC
+-1234
+4
+true
+ValueError the text holds a NUL character at byte 1, which C would take for its end
+NullPointerError cannot read from null_pointer
+cannot read text from null_pointer

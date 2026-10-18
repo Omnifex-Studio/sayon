@@ -138,6 +138,10 @@ pub enum Type {
     /// An open file, `HostStream` in the standard library's code: a counted
     /// reference to the runtime's stream, closed when the last is dropped.
     Stream,
+    /// A raw address for C code: `pointer`, which `null_pointer` is one of.
+    Pointer,
+    /// An owned NUL-terminated copy of a string for C code: `c_string`.
+    CString,
     /// `Shared<T>`, `Weak<T>`, or `Cell<T>`.
     Wrapper(Wrapper, Box<Type>),
     /// A type parameter of a generic function.
@@ -271,7 +275,12 @@ impl Type {
     /// treated as owned.
     pub fn is_copy(&self) -> bool {
         match self {
-            Type::Int(_) | Type::Float(_) | Type::Boolean | Type::Nothing | Type::Range => true,
+            Type::Int(_)
+            | Type::Float(_)
+            | Type::Boolean
+            | Type::Nothing
+            | Type::Range
+            | Type::Pointer => true,
             Type::Union(members) => members.iter().all(Type::is_copy),
             Type::Named(named) => named.copy && named.args.iter().all(Type::is_copy),
             // A read-only view is copied; a mutable one is exclusive.
@@ -364,6 +373,8 @@ impl fmt::Display for Type {
             Type::Nothing => f.write_str("nothing"),
             Type::Range => f.write_str("Range"),
             Type::Stream => f.write_str("HostStream"),
+            Type::Pointer => f.write_str("pointer"),
+            Type::CString => f.write_str("c_string"),
             Type::Error => f.write_str("Error"),
             Type::Array(element) => write!(f, "Array<{element}>"),
             Type::Dict(key, value) => write!(f, "Dict<{key}, {value}>"),
@@ -552,6 +563,8 @@ pub fn non_key_part(types: &[TypeDef], ty: &Type) -> Option<Type> {
             | Type::Wrapper(..)
             | Type::Error
             | Type::Stream
+            | Type::Pointer
+            | Type::CString
             | Type::Range => Some(ty.clone()),
         }
     }

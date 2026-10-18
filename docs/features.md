@@ -50,7 +50,9 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Grapheme clusters (Unicode 17.0), UTF-8 bytes of strings and strings from bytes | experimental | M2 |
 | `Shared<T>`, `Weak<T>`, `Cell<T>`: `share`, `cell`, `.value`, `.weak()`, `.upgrade()`, `.get()`, `.set()`, `.replace()` | experimental | M3 |
 | `Mutex<T>` and sharing between threads | planned | M3, with threads |
-| `foreign` declarations, `unsafe`, pointers, C interoperability | planned | M3 |
+| C functions: `foreign` blocks, variadic calls, the target's C types, `pointer` and `null_pointer`, `c_string`; `unsafe` blocks, expressions, and functions; `standard/memory` | experimental | M3 |
+| C functions in the interpreter on Linux and macOS | planned | with each platform's validation |
+| C callbacks (Sayon functions with their context passed to C), C structures by value | planned | M3 |
 | Tasks (fibers) and channels: `standard/threads` `spawn`, `join`, `detach`, `pause`, bounded and rendezvous channels, `receive_result`, `select`; cancellation with cleanup, shutdown of tasks at the end of `main`, deadlock detection; native on Windows | experimental | M3 |
 | Native tasks on Linux and macOS | planned | with each platform's validation |
 | Compile-time `platform` branches | planned | M4 |

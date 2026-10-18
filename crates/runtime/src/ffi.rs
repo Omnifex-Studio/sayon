@@ -1493,6 +1493,65 @@ pub unsafe extern "C" fn sayon_stream_clone(src: *const i64, dst: *mut i64) {
 
 // ----- program lifecycle ----------------------------------------------------------------------------
 
+/// The bytes of a word before a C string's text: the size of its block.
+const C_STRING_HEADER: usize = 8;
+
+/// A new C string holding `bytes` and a NUL: the address of its text,
+/// which follows a word holding the size of the whole block.
+fn c_string_buffer(bytes: &[u8]) -> *mut u8 {
+    let size = C_STRING_HEADER + bytes.len() + 1;
+    // SAFETY: the block is `size` bytes, enough for the header, the bytes,
+    // and the NUL.
+    unsafe {
+        let block = sayon_alloc(size as i64);
+        *(block as *mut u64) = size as u64;
+        let text = block.add(C_STRING_HEADER);
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), text, bytes.len());
+        *text.add(bytes.len()) = 0;
+        text
+    }
+}
+
+/// Releases the C string in a slot, unless the slot is empty.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_c_string_drop(slot: *mut *mut u8) {
+    // SAFETY: a non-null text pointer came from `c_string_buffer`.
+    unsafe {
+        let text = *slot;
+        if text.is_null() {
+            return;
+        }
+        let block = text.sub(C_STRING_HEADER);
+        let size = *(block as *const u64);
+        sayon_free(block, size as i64);
+        *slot = std::ptr::null_mut();
+    }
+}
+
+/// Shows a C string's text, quoted inside a collection like a string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_builder_c_string(
+    b: *mut Builder,
+    slot: *const *const u8,
+    quoted: bool,
+) {
+    // SAFETY: the slot holds the text of a live C string.
+    unsafe {
+        let text = String::from_utf8_lossy(CStr::from_ptr(*slot as *const c_char).to_bytes());
+        if quoted {
+            text::quote(&text, &mut (*b).0);
+        } else {
+            (*b).0.push_str(&text);
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sayon_builder_pointer(b: *mut Builder, address: usize) {
+    // SAFETY: `b` is a live builder.
+    unsafe { (*b).0.push_str(&text::pointer_text(address)) }
+}
+
 #[unsafe(no_mangle)]
 pub extern "C" fn sayon_runtime_finish() {
     crate::streams::flush_all();
@@ -1562,6 +1621,10 @@ pub unsafe extern "C" fn sayon_host_call(
                     HostArg::Strings(elements)
                 }
                 HostType::Stream => HostArg::Stream(*(pointer as *const i64)),
+                // A C string is its buffer's address.
+                HostType::Pointer | HostType::CString => {
+                    HostArg::Pointer(*(pointer as *const usize))
+                }
                 HostType::Bytes => {
                     let array = &*(pointer as *const SayonArray);
                     let bytes = if array.len == 0 {
@@ -1611,6 +1674,8 @@ pub unsafe extern "C" fn sayon_host_call(
                 *(out as *mut i64) = id;
             }
             Ok(HostValue::Unsigned(value)) => *(out as *mut u64) = value,
+            Ok(HostValue::Pointer(address)) => *(out as *mut usize) = address,
+            Ok(HostValue::CString(bytes)) => *(out as *mut *mut u8) = c_string_buffer(&bytes),
             Ok(HostValue::Bytes(bytes)) => {
                 let array = out as *mut SayonArray;
                 *array = SayonArray {

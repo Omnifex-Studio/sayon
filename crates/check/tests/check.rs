@@ -241,7 +241,31 @@ fn errors_and_try() {
 #[test]
 fn unavailable_features_name_their_milestone() {
     fails("async function work()\n    return 1\n", "E_UNAVAILABLE");
-    fails("unsafe\n    x = 1\n", "E_UNAVAILABLE");
+}
+
+#[test]
+fn foreign_calls_need_unsafe_code() {
+    let declarations = "foreign \"c\"\n    function abs(value: c_int) -> c_int\n";
+    fails(&format!("{declarations}x = abs(1)\n"), "E_UNSAFE");
+    ok(&format!("{declarations}x = unsafe abs(1)\n"));
+    ok(&format!(
+        "{declarations}unsafe\n    x = abs(1)\n    print(x)\n"
+    ));
+    fails(&format!("{declarations}f = abs\n"), "E_UNSAFE_VALUE");
+    fails(
+        "foreign \"c\"\n    function puts(text: string) -> c_int\n",
+        "E_FOREIGN_TYPE",
+    );
+    ok("unsafe function zero() -> integer\n    return 0\n\nprint(unsafe zero())\n");
+    fails(
+        "unsafe function zero() -> integer\n    return 0\n\nprint(zero())\n",
+        "E_UNSAFE",
+    );
+    // A function literal in unsafe code is unsafe code.
+    ok(&format!(
+        "{declarations}unsafe\n    f = function() -> c_int\n        return abs(-1)\n    print(f())\n"
+    ));
+    ok("p = null_pointer\nprint(p == null_pointer)\n");
 }
 
 #[test]

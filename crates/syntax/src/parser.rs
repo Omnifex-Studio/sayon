@@ -414,8 +414,16 @@ impl<'t> Parser<'t> {
             TokenKind::Keyword(Keyword::Type) => self.parse_type_decl(Visibility::Default)?,
             TokenKind::Keyword(Keyword::Enum) => self.parse_enum_decl(Visibility::Default)?,
             TokenKind::Keyword(Keyword::Match) => self.parse_match()?,
-            TokenKind::Keyword(Keyword::Foreign) => self.unavailable("foreign declarations", "M3"),
-            TokenKind::Keyword(Keyword::Unsafe) => self.unavailable("unsafe blocks", "M3"),
+            TokenKind::Keyword(Keyword::Foreign) => self.parse_foreign()?,
+            TokenKind::Keyword(Keyword::Unsafe) if self.peek_at(1).line_start => {
+                self.advance();
+                StmtKind::Unsafe(self.parse_block("`unsafe`"))
+            }
+            TokenKind::Keyword(Keyword::Unsafe)
+                if self.peek_at(1).is_keyword(Keyword::Function) =>
+            {
+                StmtKind::Function(Box::new(self.parse_function(Visibility::Default, true)?))
+            }
             TokenKind::Keyword(Keyword::Async) | TokenKind::Keyword(Keyword::Await) => {
                 self.unavailable("async and await", "M8")
             }
@@ -479,9 +487,9 @@ impl<'t> Parser<'t> {
     fn parse_item_after_visibility(&mut self, visibility: Visibility) -> Result<StmtKind> {
         let token = self.peek();
         match &token.kind {
-            TokenKind::Keyword(Keyword::Function) => Ok(StmtKind::Function(Box::new(
-                self.parse_function(visibility, true)?,
-            ))),
+            TokenKind::Keyword(Keyword::Function) | TokenKind::Keyword(Keyword::Unsafe) => Ok(
+                StmtKind::Function(Box::new(self.parse_function(visibility, true)?)),
+            ),
             TokenKind::Keyword(Keyword::Constant) | TokenKind::Keyword(Keyword::Variable) => {
                 Ok(StmtKind::Declare(self.parse_declaration(visibility)?))
             }
@@ -726,7 +734,13 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_function(&mut self, visibility: Visibility, named: bool) -> Result<Function> {
-        let start = self.expect_keyword(Keyword::Function)?;
+        let unsafe_span = if named && self.check_keyword(Keyword::Unsafe) {
+            Some(self.advance().span)
+        } else {
+            None
+        };
+        let function_span = self.expect_keyword(Keyword::Function)?;
+        let start = unsafe_span.unwrap_or(function_span);
         let name = if named {
             Some(self.expect_ident("a function name")?)
         } else {
@@ -764,6 +778,142 @@ impl<'t> Parser<'t> {
             ret,
             body,
             header_span,
+            is_unsafe: unsafe_span.is_some(),
+        })
+    }
+
+    /// `foreign "library"` and the indented signatures of its C functions.
+    fn parse_foreign(&mut self) -> Result<StmtKind> {
+        self.expect_keyword(Keyword::Foreign)?;
+        let token = self.peek();
+        let library_span = token.span;
+        let library = match &token.kind {
+            TokenKind::String(parts)
+                if parts.iter().all(|p| matches!(p, StringPart::Text { .. })) =>
+            {
+                let text = parts
+                    .iter()
+                    .map(|part| match part {
+                        StringPart::Text { text, .. } => text.as_str(),
+                        StringPart::Interpolation { .. } => "",
+                    })
+                    .collect::<String>();
+                self.advance();
+                text
+            }
+            _ => {
+                self.error_expected("the library's name as plain text, such as \"c\"");
+                self.skip_indented_lines();
+                return Err(());
+            }
+        };
+        let header_indent = self.line_indent;
+        let first = self.peek();
+        if !first.line_start || first.indent <= header_indent || first.kind == TokenKind::EndOfFile
+        {
+            self.error_expected("indented function signatures on the following lines");
+            return Err(());
+        }
+        let item_indent = first.indent;
+        let mut functions = Vec::new();
+        while !self.at_eof() && self.peek().indent > header_indent {
+            let start = self.pos;
+            self.line_indent = item_indent;
+            if self.peek().indent != item_indent {
+                self.report(
+                    Diagnostic::error(
+                        "E_UNEXPECTED_INDENT",
+                        "the signatures of a `foreign` block must line up",
+                    )
+                    .primary(self.peek().span, ""),
+                );
+                self.recover(start);
+                continue;
+            }
+            self.line_head = self.pos;
+            if let Ok(function) = self.parse_foreign_function() {
+                functions.push(function);
+            }
+            self.finish_statement(start);
+        }
+        self.line_indent = header_indent;
+        Ok(StmtKind::Foreign {
+            library,
+            library_span,
+            functions,
+        })
+    }
+
+    fn parse_foreign_function(&mut self) -> Result<ForeignFunction> {
+        let start = self.peek().span;
+        let visibility = if self.eat_keyword(Keyword::Public) {
+            Visibility::Public
+        } else if self.eat_keyword(Keyword::Private) {
+            Visibility::Private
+        } else {
+            Visibility::Default
+        };
+        self.expect_keyword(Keyword::Function)?;
+        let name = self.expect_ident("a function name")?;
+        self.expect(&TokenKind::LeftParen, "`(`")?;
+        self.nesting += 1;
+        let mut params = Vec::new();
+        let mut variadic = false;
+        while !self.check(&TokenKind::RightParen) {
+            if self.check(&TokenKind::Ellipsis) {
+                self.advance();
+                variadic = true;
+                break;
+            }
+            let param = self.parse_param()?;
+            if let Some((_, span)) = param.mode {
+                self.report(
+                    Diagnostic::error(
+                        "E_FOREIGN_SIGNATURE",
+                        "a foreign function's parameters have no `own` or `update`",
+                    )
+                    .primary(span, "")
+                    .help("C receives each argument as a value; pass a pointer for C to change"),
+                );
+            }
+            if let Some(default) = &param.default {
+                self.report(
+                    Diagnostic::error(
+                        "E_FOREIGN_SIGNATURE",
+                        "a foreign function's parameters cannot have default values",
+                    )
+                    .primary(default.span, ""),
+                );
+            }
+            if param.ty.is_none() {
+                self.report(
+                    Diagnostic::error(
+                        "E_FOREIGN_SIGNATURE",
+                        format!("`{}` needs its C type", param.name.name),
+                    )
+                    .primary(param.name.span, "")
+                    .help("write the type, for example `size: c_size`"),
+                );
+            }
+            params.push(param);
+            if !self.eat(&TokenKind::Comma) {
+                break;
+            }
+        }
+        self.expect(&TokenKind::RightParen, "`)`")?;
+        self.nesting -= 1;
+        let ret = if self.eat(&TokenKind::Arrow) {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        Ok(ForeignFunction {
+            visibility,
+            name,
+            params,
+            variadic,
+            ret,
+            span: start.to(self.previous_span()),
         })
     }
 
@@ -1552,6 +1702,12 @@ impl<'t> Parser<'t> {
                 let span = span.to(operand.span);
                 return Ok(self.new_expr(ExprKind::TryExpr(Box::new(operand)), span));
             }
+            TokenKind::Keyword(Keyword::Unsafe) => {
+                self.advance();
+                let operand = self.parse_unary()?;
+                let span = span.to(operand.span);
+                return Ok(self.new_expr(ExprKind::Unsafe(Box::new(operand)), span));
+            }
             TokenKind::Keyword(Keyword::Import) => return self.parse_import(),
             _ => {
                 self.error_expected("an expression");
@@ -1784,6 +1940,7 @@ mod tests {
             ),
             ExprKind::IsError(inner) => format!("({} is error)", show(inner)),
             ExprKind::TryExpr(inner) => format!("(try {})", show(inner)),
+            ExprKind::Unsafe(inner) => format!("(unsafe {})", show(inner)),
             ExprKind::Function(_) => "function".into(),
             ExprKind::Import { path, .. } => format!("import({path})"),
             ExprKind::Error => "<error>".into(),
@@ -2129,14 +2286,54 @@ mod tests {
 
     #[test]
     fn unavailable_features_are_recorded() {
-        let module = parse_ok("foreign \"c\"\n    function free(address: pointer)\nx = 1\n");
+        let module = parse_ok("async\n    x = 1\nx = 1\n");
         assert!(matches!(
             module.stmts[0].kind,
             StmtKind::Unavailable {
-                milestone: "M3",
+                milestone: "M8",
                 ..
             }
         ));
         assert_eq!(module.stmts.len(), 2);
+    }
+
+    #[test]
+    fn foreign_blocks_declare_signatures() {
+        let module = parse_ok(
+            "foreign \"c\"\n    function free(address: pointer)\n    private function printf(format: c_string, ...) -> c_int\nx = 1\n",
+        );
+        assert_eq!(module.stmts.len(), 2);
+        let StmtKind::Foreign {
+            library, functions, ..
+        } = &module.stmts[0].kind
+        else {
+            panic!()
+        };
+        assert_eq!(library, "c");
+        assert_eq!(functions.len(), 2);
+        assert!(!functions[0].variadic && functions[0].ret.is_none());
+        assert!(functions[1].variadic);
+        assert_eq!(functions[1].visibility, Visibility::Private);
+        assert_eq!(functions[1].params.len(), 1);
+    }
+
+    #[test]
+    fn unsafe_blocks_expressions_and_functions() {
+        let module = parse_ok(
+            "unsafe\n    free(p)\nn = unsafe strlen(name) + 1\nunsafe function read(p: pointer) -> integer\n    return 0\nprivate unsafe function f()\n    return\n",
+        );
+        assert_eq!(module.stmts.len(), 4);
+        assert!(matches!(&module.stmts[0].kind, StmtKind::Unsafe(block) if block.stmts.len() == 1));
+        let StmtKind::Assign { value, .. } = &module.stmts[1].kind else {
+            panic!()
+        };
+        // `unsafe` covers one operand, like `try`.
+        assert!(
+            matches!(&value.kind, ExprKind::Binary { lhs, .. } if matches!(lhs.kind, ExprKind::Unsafe(_)))
+        );
+        assert!(matches!(&module.stmts[2].kind, StmtKind::Function(f) if f.is_unsafe));
+        assert!(
+            matches!(&module.stmts[3].kind, StmtKind::Function(f) if f.is_unsafe && f.visibility == Visibility::Private)
+        );
     }
 }

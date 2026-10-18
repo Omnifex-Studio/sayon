@@ -1,6 +1,6 @@
 //! Item collection, dependency ordering, and per-function type inference.
 
-use crate::hir::{self, ConstId, FuncId, LocalId, LocalKind};
+use crate::hir::{self, ConstId, ForeignId, FuncId, LocalId, LocalKind};
 use crate::infer::{Bounds, LiteralKind, Traits, Unifier, UnifyError};
 use crate::types::{
     FieldDef, NamedType, TyVar, Type, TypeDef, TypeDefKind, TypeId, VariantDef, Wrapper,
@@ -14,6 +14,8 @@ pub(crate) enum Item {
     Function(FuncId),
     Constant(ConstId),
     Type(TypeId),
+    /// A C function of a `foreign` block.
+    Foreign(ForeignId),
 }
 
 /// The source of a structure or enum declaration.
@@ -93,6 +95,16 @@ pub(crate) struct Signature {
     pub generic_count: u32,
     pub explicit_generics: u32,
     pub bounds: Vec<Bounds>,
+}
+
+/// A C function declared in a `foreign` block, with its signature once the
+/// types are resolved.
+pub(crate) struct ForeignEntry<'a> {
+    pub ast: &'a ast::ForeignFunction,
+    pub module: ModuleId,
+    pub library: String,
+    pub params: Vec<Type>,
+    pub ret: Type,
 }
 
 pub(crate) struct FunctionEntry<'a> {
@@ -179,6 +191,12 @@ pub(crate) struct FnCtx {
     /// For the body of a function literal: the variables it has captured
     /// from the function around it so far.
     pub captures: Option<Vec<CaptureSlot>>,
+    /// The `unsafe` blocks and expressions around the code being checked,
+    /// innermost last, with whether anything in each needed it.
+    pub unsafe_blocks: Vec<(Span, bool)>,
+    /// The body of an `unsafe function`, or of a function literal in unsafe
+    /// code, which is unsafe code throughout.
+    pub unsafe_body: bool,
 }
 
 /// A variable of an enclosing function that a function literal uses.
@@ -202,6 +220,8 @@ impl FnCtx {
             generics: HashMap::new(),
             is_script,
             captures: None,
+            unsafe_blocks: Vec::new(),
+            unsafe_body: false,
         }
     }
 
@@ -288,6 +308,7 @@ pub(crate) struct Checker<'a> {
     pub entry_module: ModuleId,
     pub functions: Vec<FunctionEntry<'a>>,
     pub constants: Vec<ConstantEntry<'a>>,
+    pub foreign: Vec<ForeignEntry<'a>>,
     pub types: Vec<TypeEntry<'a>>,
     /// The resolved definitions of `types`, indexed by `TypeId`.
     pub type_defs: Vec<TypeDef>,
@@ -340,6 +361,7 @@ impl<'a> Checker<'a> {
             entry_module: ModuleId(0),
             functions: Vec::new(),
             constants: Vec::new(),
+            foreign: Vec::new(),
             types: vec![TypeEntry {
                 module: PRELUDE,
                 name: "Outcome".to_string(),
@@ -411,6 +433,57 @@ impl<'a> Checker<'a> {
 
     pub fn error(&mut self, diagnostic: Diagnostic) {
         self.diagnostics.push(diagnostic);
+    }
+
+    /// Whether code checked in `cx` is unsafe code.
+    pub fn in_unsafe(&self, cx: &FnCtx) -> bool {
+        cx.unsafe_body || !cx.unsafe_blocks.is_empty()
+    }
+
+    /// Reports `what`, which only unsafe code can do, outside unsafe code;
+    /// in unsafe code, records that the `unsafe` around it was needed.
+    pub fn require_unsafe(&mut self, cx: &mut FnCtx, span: Span, what: String) {
+        if !self.in_unsafe(cx) {
+            self.error(
+                Diagnostic::error("E_UNSAFE", format!("{what}, so it needs unsafe code"))
+                    .primary(span, "")
+                    .help("write `unsafe` before the call, or put it in an `unsafe` block, once you have made sure the call is correct")
+                    .note("the compiler cannot check what C code and raw memory do; `unsafe` marks where that is your responsibility"),
+            );
+            return;
+        }
+        for block in &mut cx.unsafe_blocks {
+            block.1 = true;
+        }
+        // A function literal in unsafe code needs the code around it.
+        if cx.unsafe_blocks.is_empty() && cx.captures.is_some() {
+            for outer in self.enclosing.iter_mut().rev() {
+                for block in &mut outer.unsafe_blocks {
+                    block.1 = true;
+                }
+                if !outer.unsafe_blocks.is_empty() || outer.captures.is_none() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Ends the innermost `unsafe` block or expression, warning when it was
+    /// not needed.
+    pub fn leave_unsafe(&mut self, cx: &mut FnCtx) {
+        let (span, used) = cx.unsafe_blocks.pop().expect("unsafe code");
+        let message = if self.in_unsafe(cx) {
+            "this `unsafe` is inside unsafe code already"
+        } else if !used {
+            "nothing here needs `unsafe`"
+        } else {
+            return;
+        };
+        self.error(
+            Diagnostic::warning("W_UNUSED_UNSAFE", message)
+                .primary(span, "")
+                .help("remove `unsafe`, so that it marks only the code that needs it"),
+        );
     }
 
     pub fn unavailable(&mut self, span: Span, feature: &str, milestone: &str) {
@@ -536,6 +609,7 @@ impl<'a> Checker<'a> {
             Item::Function(id) => self.functions[id.0 as usize].module,
             Item::Constant(id) => self.constants[id.0 as usize].module,
             Item::Type(id) => self.types[id.0 as usize].module,
+            Item::Foreign(id) => self.foreign[id.0 as usize].module,
         }
     }
 
@@ -544,6 +618,7 @@ impl<'a> Checker<'a> {
             Item::Function(id) => self.functions[id.0 as usize].span,
             Item::Constant(id) => self.constants[id.0 as usize].span,
             Item::Type(id) => self.types[id.0 as usize].span,
+            Item::Foreign(id) => self.foreign[id.0 as usize].ast.name.span,
         }
     }
 
@@ -552,6 +627,7 @@ impl<'a> Checker<'a> {
             Item::Function(id) => self.functions[id.0 as usize].ast.map(|f| f.visibility),
             Item::Constant(id) => Some(self.constants[id.0 as usize].decl.visibility),
             Item::Type(id) => Some(self.types[id.0 as usize].visibility),
+            Item::Foreign(id) => Some(self.foreign[id.0 as usize].ast.visibility),
         };
         visibility == Some(ast::Visibility::Private)
     }
@@ -689,6 +765,23 @@ impl<'a> Checker<'a> {
                             generalized: false,
                             hir: None,
                         });
+                    }
+                }
+                StmtKind::Foreign {
+                    library, functions, ..
+                } => {
+                    for function in functions {
+                        let id = ForeignId(self.foreign.len() as u32);
+                        let name = &function.name;
+                        if self.define_item(module_id, &name.name, name.span, Item::Foreign(id)) {
+                            self.foreign.push(ForeignEntry {
+                                ast: function,
+                                module: module_id,
+                                library: library.clone(),
+                                params: Vec::new(),
+                                ret: Type::Unknown,
+                            });
+                        }
                     }
                 }
                 StmtKind::TypeDecl {
@@ -862,7 +955,7 @@ impl<'a> Checker<'a> {
                 Item::Constant(id) => {
                     collect_expr_names(&self.constants[id.0 as usize].decl.value, &mut names)
                 }
-                Item::Type(_) => {}
+                Item::Type(_) | Item::Foreign(_) => {}
             }
             for name in names {
                 if let Some(method) = name.strip_prefix('.') {
@@ -1043,6 +1136,8 @@ impl<'a> Checker<'a> {
                     "nothing" => Type::Nothing,
                     "Error" => Type::Error,
                     "Range" => Type::Range,
+                    "pointer" => Type::Pointer,
+                    "c_string" => Type::CString,
                     "HostStream" if self.modules[module.0 as usize].standard => Type::Stream,
                     "Array" => {
                         if !arity(self, 1) {
@@ -1211,6 +1306,91 @@ impl<'a> Checker<'a> {
 
     pub fn type_def(&self, id: TypeId) -> &TypeDef {
         &self.type_defs[id.0 as usize]
+    }
+
+    /// Resolves the signatures of the C functions of `foreign` blocks, which
+    /// can only hold the types C has.
+    pub fn resolve_foreign(&mut self) {
+        for index in 0..self.foreign.len() {
+            let ast = self.foreign[index].ast;
+            let module = self.foreign[index].module;
+            let mut params = Vec::new();
+            for param in &ast.params {
+                let Some(annotation) = &param.ty else {
+                    params.push(Type::Unknown);
+                    continue;
+                };
+                let ty = self.resolve_type(module, annotation, &HashMap::new());
+                if !matches!(
+                    ty,
+                    Type::Int(_) | Type::Float(_) | Type::Pointer | Type::CString | Type::Unknown
+                ) {
+                    let help = match ty {
+                        Type::String => "take a `c_string`, made with `c_string(text)`",
+                        Type::Boolean => "C takes a boolean as a `c_int`, 0 or 1",
+                        _ => {
+                            "C takes numbers, `pointer`, and `c_string`; pass anything else by its address"
+                        }
+                    };
+                    self.error(
+                        Diagnostic::error(
+                            "E_FOREIGN_TYPE",
+                            format!("a C function cannot take {ty}"),
+                        )
+                        .primary(annotation.span, "")
+                        .help(help),
+                    );
+                }
+                params.push(ty);
+            }
+            let ret = match &ast.ret {
+                Some(annotation) => {
+                    let ty = self.resolve_type(module, annotation, &HashMap::new());
+                    if !matches!(
+                        ty,
+                        Type::Int(_)
+                            | Type::Float(_)
+                            | Type::Pointer
+                            | Type::Nothing
+                            | Type::Unknown
+                    ) {
+                        let help = match ty {
+                            Type::String | Type::CString => {
+                                "C gives text as a `pointer`; declare the result as `pointer` and read it with `memory.read_text` of standard/memory"
+                            }
+                            _ => "C gives numbers and `pointer`",
+                        };
+                        self.error(
+                            Diagnostic::error(
+                                "E_FOREIGN_TYPE",
+                                format!("a C function cannot give {ty}"),
+                            )
+                            .primary(annotation.span, "")
+                            .help(help),
+                        );
+                    }
+                    ty
+                }
+                None => Type::Nothing,
+            };
+            self.foreign[index].params = params;
+            self.foreign[index].ret = ret;
+        }
+    }
+
+    /// The C functions, for the checked program.
+    pub fn foreign_functions(&self) -> Vec<hir::ForeignFunction> {
+        self.foreign
+            .iter()
+            .map(|entry| hir::ForeignFunction {
+                name: entry.ast.name.name.clone(),
+                library: entry.library.clone(),
+                params: entry.params.clone(),
+                variadic: entry.ast.variadic,
+                ret: entry.ret.clone(),
+                span: entry.ast.name.span,
+            })
+            .collect()
     }
 
     /// Resolves the field types of every declared structure and enum, decides
@@ -2218,7 +2398,18 @@ impl<'a> Checker<'a> {
                     );
                 }
             }
-            Float(_) | Boolean(_) | String(_) | Nothing | Local { .. } | Constant(_) => {}
+            Float(_)
+            | Boolean(_)
+            | String(_)
+            | Nothing
+            | NullPointer
+            | Local { .. }
+            | Constant(_) => {}
+            CallForeign { args, .. } => {
+                for arg in args {
+                    self.finalize_expr(&mut arg.expr);
+                }
+            }
             Call {
                 type_args, args, ..
             } => {
@@ -2447,6 +2638,7 @@ fn collect_stmt_names(stmt: &ast::Stmt, names: &mut Vec<String>) {
             }
         }
         StmtKind::Function(function) => collect_function_names(function, names),
+        StmtKind::Unsafe(body) => collect_block_names(body, names),
         StmtKind::Match { scrutinee, arms } => {
             collect_expr_names(scrutinee, names);
             for arm in arms {
@@ -2510,7 +2702,7 @@ pub(crate) fn collect_expr_names(expr: &ast::Expr, names: &mut Vec<String>) {
             collect_expr_names(lhs, names);
             collect_expr_names(rhs, names);
         }
-        IsError(inner) | TryExpr(inner) => collect_expr_names(inner, names),
+        IsError(inner) | TryExpr(inner) | Unsafe(inner) => collect_expr_names(inner, names),
         Function(function) => collect_function_names(function, names),
         Integer { .. } | Float(_) | Boolean(_) | Nothing | Import { .. } | Error => {}
     }

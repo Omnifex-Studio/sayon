@@ -77,6 +77,7 @@ pub fn check_program(modules: &[ModuleSource], entry: usize, span: Span) -> Chec
         }
     }
     checker.resolve_type_defs();
+    checker.resolve_foreign();
     let order = checker.dependency_order();
     let mut init_order = Vec::new();
     for component in &order {
@@ -111,6 +112,7 @@ pub fn check_program(modules: &[ModuleSource], entry: usize, span: Span) -> Chec
         })
         .collect();
     let json = checker.json_support();
+    let foreign = checker.foreign_functions();
     let mut program = hir::Program {
         functions,
         constants,
@@ -119,6 +121,7 @@ pub fn check_program(modules: &[ModuleSource], entry: usize, span: Span) -> Chec
         tests,
         types: std::mem::take(&mut checker.type_defs),
         json,
+        foreign,
     };
 
     let components = checker.scc_order.clone();

@@ -388,6 +388,36 @@ A shared value is changed, borrowed for changes, or taken out of its handle. Eve
 
 A constant would hold a `Shared`, `Weak`, or `Cell` value. A constant is one value for the whole program and never changes; make the shared value in `main` or a function and pass it where it is needed.
 
+## Unsafe code and C functions
+
+### E_UNSAFE
+
+A C function of a `foreign` block, or an `unsafe function` such as `memory.read`, is called outside unsafe code. The compiler cannot check what C code does or what is at an address, so such calls go where the program vouches for them: write `unsafe` before the call, as in `length = unsafe strlen(name)`, or put the code in an `unsafe` block. A function literal inside unsafe code is unsafe code too.
+
+### E_UNSAFE_VALUE
+
+A C function or an `unsafe function` is used as a value. A function value can be called anywhere, so it would take the call out of unsafe code; write a function literal whose body calls it in an `unsafe` block instead.
+
+### E_UNSAFE_POSITION
+
+An `unsafe function` is declared inside another function. Declare it at the top level of a file, where every call of it is checked, or use an `unsafe` block in the function.
+
+### W_UNUSED_UNSAFE
+
+An `unsafe` block or expression holds nothing that needs unsafe code, or is inside unsafe code already. Remove it, so that `unsafe` marks only what the program vouches for.
+
+### E_FOREIGN_TYPE
+
+A C function's parameter, result, or variadic argument has a type C does not have. C functions take integers (including the C types `c_int`, `c_size`, and the rest), floats, `pointer`, and `c_string`, and give integers, floats, `pointer`, or nothing. Text goes to C as a `c_string`, made with `c_string(text)`, and comes back as a `pointer`, read with `memory.read_text` of `standard/memory`; a boolean is a `c_int`. The C type of a variadic argument must be known where it is passed: an integer literal is a `c_int`, and another value can be converted, as in `c_long(count)`.
+
+### E_FOREIGN_SIGNATURE
+
+A signature in a `foreign` block has a parameter without its type, with a default value, or with `own` or `update`. C takes each argument as a plain value of its declared type; to let C change something, pass a pointer to it.
+
+### E_FOREIGN_POSITION
+
+A `foreign` block is inside a function or another block. Declare C functions at the top level of a file.
+
 ## Modules and projects
 
 ### E_IMPORT_NOT_FOUND
@@ -521,6 +551,14 @@ A task waited for something no task could ever provide: every task was waiting, 
 ### DecodeError
 
 JSON did not fit the type `json.decode` or `json.from_json` was reading it into: a value of the wrong kind, a structure field that is missing, a name that is not a variant of the enum, or an integer with a fraction or outside its type's range. The message starts with the path to the place in the JSON value, such as `$.points[2].x`, and says what was expected and what was found.
+
+### ForeignError
+
+A C function could not be called: the library its `foreign` block names could not be loaded, or it has no function of that name. Compiled programs report this when they are linked instead. The interpreter calls C functions on Windows x64 so far; elsewhere, build the program with `sayon build`.
+
+### NullPointerError
+
+`memory.read`, `memory.write`, `memory.read_text`, or another function of `standard/memory` was given `null_pointer`. A C function that returns a pointer often returns `null_pointer` when it fails; check for it first, as in `if buffer == null_pointer`.
 
 ### RangeError
 

@@ -3,6 +3,16 @@
 
 use std::fmt::Write as _;
 
+/// How `print` and `tostring` show a `pointer`: without its address, which
+/// is the process's own business.
+pub fn pointer_text(address: usize) -> String {
+    if address == 0 {
+        "null_pointer".to_string()
+    } else {
+        "pointer".to_string()
+    }
+}
+
 pub fn format_f64(value: f64) -> String {
     if value.is_nan() {
         return "nan".to_string();

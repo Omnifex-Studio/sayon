@@ -322,6 +322,7 @@ impl<'m> Codegen<'m> {
             Type::String => body.line("call void @sayon_str_drop(ptr %p)"),
             Type::Error => body.line("call void @sayon_error_drop(ptr %p)"),
             Type::Stream => body.line("call void @sayon_stream_drop(ptr %p)"),
+            Type::CString => body.line("call void @sayon_c_string_drop(ptr %p)"),
             Type::Wrapper(Wrapper::Shared, inner) => {
                 let drop = if needs_drop(inner) {
                     self.helper(Helper::Drop, inner)
@@ -567,11 +568,15 @@ impl<'m> Codegen<'m> {
             Type::Float(FloatType::F64) => scalar(body, "double", "fcmp oeq"),
             Type::Float(FloatType::F32) => scalar(body, "float", "fcmp oeq"),
             Type::Boolean => scalar(body, "i1", "icmp eq"),
+            Type::Pointer => scalar(body, "ptr", "icmp eq"),
             Type::Nothing | Type::Unknown => body.line("ret i1 true"),
-            // Function values, views, streams, and handles are never compared.
-            Type::Function(_) | Type::View(..) | Type::Stream | Type::Wrapper(..) => {
-                body.line("ret i1 false")
-            }
+            // Function values, views, streams, C strings, and handles are
+            // never compared.
+            Type::Function(_)
+            | Type::View(..)
+            | Type::Stream
+            | Type::CString
+            | Type::Wrapper(..) => body.line("ret i1 false"),
             Type::String => {
                 let result = body.tmp();
                 body.line(format!(
@@ -773,6 +778,16 @@ impl<'m> Codegen<'m> {
             Type::Nothing | Type::Unknown => self.text(body, "nothing"),
             Type::Function(_) => self.text(body, "function"),
             Type::Stream => self.text(body, "stream"),
+            Type::Pointer => {
+                let address = body.tmp();
+                body.line(format!("{address} = load i64, ptr %value"));
+                body.line(format!(
+                    "call void @sayon_builder_pointer(ptr %builder, i64 {address})"
+                ));
+            }
+            Type::CString => {
+                body.line("call void @sayon_builder_c_string(ptr %builder, ptr %value, i1 %nested)")
+            }
             // A shared value and a cell show their value.
             Type::Wrapper(Wrapper::Shared, inner) => {
                 let display = self.helper(Helper::Display, inner);

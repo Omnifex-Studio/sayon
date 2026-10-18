@@ -1,7 +1,5 @@
 async function work()
     return 1
 
-unsafe
-    print("raw")
 items: List<integer> = []
 log: File = nothing

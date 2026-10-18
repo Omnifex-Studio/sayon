@@ -60,7 +60,7 @@ impl Layouts {
             Type::String => "%sayon.str".to_string(),
             Type::Array(_) => "%sayon.array".to_string(),
             Type::Range => "%sayon.range".to_string(),
-            Type::Dict(..) | Type::Error => "ptr".to_string(),
+            Type::Dict(..) | Type::Error | Type::Pointer | Type::CString => "ptr".to_string(),
             Type::Stream => "i64".to_string(),
             // A cell is laid out like its value.
             Type::Wrapper(Wrapper::Cell, inner) => self.llvm(inner),
@@ -131,7 +131,7 @@ impl Layouts {
             Type::Float(FloatType::F32) => 4,
             Type::Boolean | Type::Nothing | Type::Unknown => 1,
             Type::String | Type::Array(_) | Type::Range => 24,
-            Type::Dict(..) | Type::Error | Type::Stream => 8,
+            Type::Dict(..) | Type::Error | Type::Stream | Type::Pointer | Type::CString => 8,
             Type::Wrapper(Wrapper::Cell, inner) => self.size_of(inner),
             Type::Wrapper(..) => 8,
             Type::Function(_) | Type::View(..) => 16,
@@ -189,6 +189,30 @@ impl Layouts {
     }
 }
 
+/// The LLVM type a C function takes or gives a value of type `ty` as: a C
+/// string is the address of its text.
+pub fn c_llvm(ty: &Type) -> &'static str {
+    match ty {
+        Type::Int(int) => int_llvm(*int),
+        Type::Float(FloatType::F64) => "double",
+        Type::Float(FloatType::F32) => "float",
+        Type::Pointer | Type::CString => "ptr",
+        Type::Nothing => "void",
+        _ => "i64",
+    }
+}
+
+/// A C parameter's type with the extension C expects for a narrow integer.
+pub fn c_param(ty: &Type) -> String {
+    match ty {
+        Type::Int(int) if int.bits() < 32 => {
+            let extension = if int.signed() { "signext" } else { "zeroext" };
+            format!("{} {extension}", int_llvm(*int))
+        }
+        other => c_llvm(other).to_string(),
+    }
+}
+
 pub fn int_llvm(int: IntType) -> &'static str {
     match int.bits() {
         8 => "i8",
@@ -222,6 +246,7 @@ pub fn needs_drop(ty: &Type) -> bool {
         | Type::Error
         | Type::Function(_)
         | Type::Stream
+        | Type::CString
         | Type::Wrapper(Wrapper::Shared | Wrapper::Weak | Wrapper::Task | Wrapper::Channel, _) => {
             true
         }

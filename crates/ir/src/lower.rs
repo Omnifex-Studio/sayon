@@ -107,6 +107,7 @@ fn lower_program(program: &hir::Program, include_tests: bool) -> LowerOutput {
         union_members: lowerer.union_members,
         tests,
         types: lowerer.types,
+        foreign: program.foreign.clone(),
     };
     LowerOutput {
         module,
@@ -1948,6 +1949,24 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 Rvalue::Use(Operand::Const(Constant::Str(text.clone()))),
             ),
             H::Nothing => self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing))),
+            H::NullPointer => self.assign(dest, Rvalue::Use(Operand::Const(Constant::NullPointer))),
+            H::CallForeign { function, args } => {
+                let args = args
+                    .iter()
+                    .map(|arg| {
+                        let ty = self.ty(&arg.expr.ty);
+                        (self.operand(&arg.expr, Want::Read), ty)
+                    })
+                    .collect();
+                self.op(
+                    Op::CallForeign {
+                        function: *function,
+                        args,
+                    },
+                    Some(dest),
+                    span,
+                );
+            }
             H::Index { target, index } if self.ty(&target.ty) == Type::String => {
                 let text = self.operand(target, Want::Read);
                 let index = self.operand(index, Want::Owned);
@@ -2700,6 +2719,36 @@ impl<'l, 'p> FnLower<'l, 'p> {
             Builtin::TaskSleep => {
                 let nanoseconds = self.operand(&args[0].expr, Want::Read);
                 self.op(Op::Sleep { nanoseconds }, None, span);
+                self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing)));
+            }
+            Builtin::RawRead => {
+                let address = self.operand(&args[0].expr, Want::Read);
+                let offset = self.operand(&args[1].expr, Want::Read);
+                self.op(
+                    Op::RawRead {
+                        address,
+                        offset,
+                        ty: ty.clone(),
+                    },
+                    Some(dest),
+                    span,
+                );
+            }
+            Builtin::RawWrite => {
+                let value_ty = self.ty(&args[2].expr.ty);
+                let address = self.operand(&args[0].expr, Want::Read);
+                let offset = self.operand(&args[1].expr, Want::Read);
+                let value = self.operand(&args[2].expr, Want::Read);
+                self.op(
+                    Op::RawWrite {
+                        address,
+                        offset,
+                        value,
+                        ty: value_ty,
+                    },
+                    None,
+                    span,
+                );
                 self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing)));
             }
             Builtin::ChannelNew => {

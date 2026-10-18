@@ -16,6 +16,9 @@ pub struct LocalId(pub u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ConstId(pub u32);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ForeignId(pub u32);
+
 #[derive(Debug)]
 pub struct Program {
     pub functions: Vec<Function>,
@@ -30,6 +33,22 @@ pub struct Program {
     /// What typed JSON conversion uses, when the program imports
     /// `standard/json`.
     pub json: Option<JsonSupport>,
+    /// The C functions of `foreign` blocks, indexed by `ForeignId`.
+    pub foreign: Vec<ForeignFunction>,
+}
+
+/// A C function declared in a `foreign` block.
+#[derive(Debug, Clone)]
+pub struct ForeignFunction {
+    /// The C symbol, which is the name it was declared with.
+    pub name: String,
+    /// The library named after `foreign`; `"c"` is the C runtime.
+    pub library: String,
+    pub params: Vec<Type>,
+    /// Takes further arguments after `params`.
+    pub variadic: bool,
+    pub ret: Type,
+    pub span: Span,
 }
 
 /// `standard/json`'s `Json` type and the functions the generated readers
@@ -386,6 +405,12 @@ pub enum Builtin {
     /// `channel_select(channels)`: the position of a channel with a message
     /// or closed, waiting until one is.
     ChannelSelect,
+    /// `raw_read(address, offset)` in `standard/foreign`: the number or
+    /// pointer of the expression's type stored `offset` bytes after the
+    /// address.
+    RawRead,
+    /// `raw_write(address, offset, value)` in `standard/foreign`.
+    RawWrite,
     HasKey,
     ReadFile,
     WriteFile,
@@ -433,6 +458,8 @@ impl Builtin {
             Builtin::ChannelReceive => "channel_receive",
             Builtin::ChannelClose => "channel_close",
             Builtin::ChannelSelect => "channel_select",
+            Builtin::RawRead => "raw_read",
+            Builtin::RawWrite => "raw_write",
             Builtin::View => "view",
             Builtin::MutableView => "mutable_view",
             Builtin::HasKey => "haskey",
@@ -481,6 +508,14 @@ pub enum ExprKind {
         builtin: Builtin,
         args: Vec<Arg>,
     },
+    /// Calls a C function. The arguments past its parameters, for a
+    /// variadic function, already have the types C promotes them to.
+    CallForeign {
+        function: ForeignId,
+        args: Vec<Arg>,
+    },
+    /// `null_pointer`.
+    NullPointer,
     Binary {
         op: BinaryOp,
         lhs: Box<Expr>,
@@ -585,9 +620,9 @@ impl Expr {
     /// The expressions this one is made of, in evaluation order.
     pub fn children(&self) -> Vec<&Expr> {
         match &self.kind {
-            ExprKind::Call { args, .. } | ExprKind::Builtin { args, .. } => {
-                args.iter().map(|arg| &arg.expr).collect()
-            }
+            ExprKind::Call { args, .. }
+            | ExprKind::Builtin { args, .. }
+            | ExprKind::CallForeign { args, .. } => args.iter().map(|arg| &arg.expr).collect(),
             ExprKind::CallValue { callee, args } => std::iter::once(&**callee)
                 .chain(args.iter().map(|arg| &arg.expr))
                 .collect(),
@@ -623,6 +658,7 @@ impl Expr {
             | ExprKind::Boolean(_)
             | ExprKind::String(_)
             | ExprKind::Nothing
+            | ExprKind::NullPointer
             | ExprKind::Local { .. }
             | ExprKind::Constant(_)
             | ExprKind::FunctionRef { .. } => Vec::new(),
@@ -719,7 +755,9 @@ pub fn visit_stmt_mut(stmt: &mut Stmt, f: &mut dyn FnMut(&mut Expr)) {
 pub fn visit_expr_mut(expr: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
     f(expr);
     match &mut expr.kind {
-        ExprKind::Call { args, .. } | ExprKind::Builtin { args, .. } => {
+        ExprKind::Call { args, .. }
+        | ExprKind::Builtin { args, .. }
+        | ExprKind::CallForeign { args, .. } => {
             for arg in args {
                 visit_expr_mut(&mut arg.expr, f);
             }
@@ -775,6 +813,7 @@ pub fn visit_expr_mut(expr: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
         | ExprKind::Boolean(_)
         | ExprKind::String(_)
         | ExprKind::Nothing
+        | ExprKind::NullPointer
         | ExprKind::Local { .. }
         | ExprKind::Constant(_)
         | ExprKind::FunctionRef { .. } => {}

@@ -51,7 +51,11 @@ pub struct Module {
     /// Declared structures and enums, indexed by `TypeId`, followed by the
     /// environment structures of closures.
     pub types: Vec<TypeDef>,
+    /// The C functions of `foreign` blocks, indexed by `ForeignId`.
+    pub foreign: Vec<ForeignFunction>,
 }
+
+pub use sayon_check::hir::{ForeignFunction, ForeignId};
 
 impl Module {
     pub fn function(&self, id: FunctionId) -> &Function {
@@ -206,6 +210,8 @@ pub enum Constant {
     Nothing,
     /// Static string data; values made from it are not heap allocations.
     Str(String),
+    /// `null_pointer`.
+    NullPointer,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -538,6 +544,29 @@ pub enum Op {
     Fail(Operand),
     /// Always fails with the given Error value.
     Raise(Operand),
+    /// Calls a C function with arguments of the given types, which past its
+    /// parameters are the variadic arguments. A C string is passed as its
+    /// text's address. Fails only when the interpreter cannot find the
+    /// function.
+    CallForeign {
+        function: ForeignId,
+        args: Vec<(Operand, Type)>,
+    },
+    /// The number or pointer of type `ty` stored `offset` bytes after
+    /// `address`; fails for `null_pointer`.
+    RawRead {
+        address: Operand,
+        offset: Operand,
+        ty: Type,
+    },
+    /// Stores `value`, of type `ty`, `offset` bytes after `address`; fails
+    /// for `null_pointer`.
+    RawWrite {
+        address: Operand,
+        offset: Operand,
+        value: Operand,
+        ty: Type,
+    },
     /// Calls a host primitive. For a `string or nothing` result, `tags` holds
     /// the program-wide tags of `string` and `nothing`.
     Host {

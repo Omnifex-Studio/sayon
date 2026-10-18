@@ -35,6 +35,16 @@ impl<'a> Checker<'a> {
             );
             return None;
         }
+        if self.functions[id.0 as usize]
+            .ast
+            .is_some_and(|f| f.is_unsafe)
+        {
+            self.require_unsafe(
+                cx,
+                span,
+                format!("the `next` of `{type_name}` is an unsafe function"),
+            );
+        }
         self.unify_at(&params[0], &iterable.ty, span, "iterator");
         let element = match self.unifier.resolve(&ret) {
             Type::Union(members) if members.contains(&Type::Nothing) => {
@@ -317,6 +327,17 @@ impl<'a> Checker<'a> {
                 let Some(name) = &function.name else {
                     return None;
                 };
+                if function.is_unsafe {
+                    self.error(
+                        Diagnostic::error(
+                            "E_UNSAFE_POSITION",
+                            "an unsafe function is declared at the top level of a file",
+                        )
+                        .primary(function.header_span, "")
+                        .help("declare it at the top level, or use an `unsafe` block inside this function"),
+                    );
+                    return None;
+                }
                 if !function.generics.is_empty() {
                     self.error(
                         Diagnostic::error(
@@ -407,6 +428,23 @@ impl<'a> Checker<'a> {
             }
             ast::StmtKind::Unavailable { feature, milestone } => {
                 self.unavailable(span, feature, milestone);
+                return None;
+            }
+            ast::StmtKind::Unsafe(body) => {
+                cx.unsafe_blocks.push((span, false));
+                let block = self.check_block(cx, body);
+                self.leave_unsafe(cx);
+                StmtKind::Block(block)
+            }
+            ast::StmtKind::Foreign { library_span, .. } => {
+                self.error(
+                    Diagnostic::error(
+                        "E_FOREIGN_POSITION",
+                        "`foreign` blocks belong at the top level of a file",
+                    )
+                    .primary(*library_span, "")
+                    .help("move the block out of the code it is in"),
+                );
                 return None;
             }
         };
@@ -557,6 +595,7 @@ impl<'a> Checker<'a> {
                 Item::Function(_) => "function",
                 Item::Constant(_) => "constant",
                 Item::Type(_) => "type",
+                Item::Foreign(_) => "C function",
             };
             self.error(
                 Diagnostic::error(

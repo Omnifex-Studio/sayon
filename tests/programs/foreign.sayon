@@ -1,0 +1,96 @@
+# C functions, C strings, and raw memory.
+memory = import("standard/memory.sayon")
+
+foreign "c"
+    function strlen(text: c_string) -> c_size
+    function abs(value: c_int) -> c_int
+    function labs(value: c_long) -> c_long
+    function toupper(character: c_int) -> c_int
+    function sqrt(value: c_double) -> c_double
+    function calloc(count: c_size, size: c_size) -> pointer
+    function malloc(size: c_size) -> pointer
+    function free(address: pointer)
+    function memset(address: pointer, value: c_int, count: c_size) -> pointer
+    function memcpy(target: pointer, source: pointer, count: c_size) -> pointer
+    function sprintf(buffer: pointer, format: c_string, ...) -> c_int
+    function strtol(text: c_string, end: pointer, base: c_int) -> c_long
+
+foreign "kernel32"
+    function GetCurrentProcessId() -> c_uint
+
+# A safe function made of unsafe parts: it vouches for its C calls once,
+# and its callers need no `unsafe`.
+function upper(text: string) -> string
+    source = c_string(text)
+    count = integer(unsafe strlen(source))
+    result = ""
+    unsafe
+        buffer = calloc(c_size(count + 1), 1)
+        if buffer == null_pointer
+            error("out of memory")
+        for index in range(count)
+            byte: unsigned8 = memory.read(memory.address(source), index)
+            memory.write(buffer, unsigned8(toupper(c_int(byte))), index)
+        result = memory.read_text(buffer)
+        free(buffer)
+    return result
+
+# An unsafe function: its body is unsafe code, and calling it needs some.
+unsafe function fill(buffer: pointer, count: integer, value: integer32)
+    for index in range(count)
+        memory.write(buffer, value, index * 4)
+
+name = c_string("Sayon")
+print(unsafe strlen(name), unsafe abs(-42), unsafe labs(-7))
+print(unsafe toupper(97), unsafe sqrt(2.0))
+print(name, [c_string("in a list")], typeof(name))
+print(null_pointer, typeof(null_pointer))
+print(upper("hello, C"))
+
+unsafe
+    buffer = malloc(64)
+    print(buffer == null_pointer, tostring(buffer))
+    memset(buffer, 0, 64)
+    fill(buffer, 4, 7)
+    total = 0
+    for index in range(4)
+        value: integer32 = memory.read(buffer, index * 4)
+        total += value
+    print(total)
+    memory.write(buffer, 3.5, 16)
+    print(memory.read<float>(buffer, 16))
+    memory.write(buffer, buffer, 24)
+    print(memory.read<pointer>(buffer, 24) == buffer)
+    small: integer8 = -3
+    single: float32 = 1.25
+    format = c_string("%d|%s|%.2f|%c|%d|%.3f")
+    count = sprintf(buffer, format, 7, name, 2.5, 65, small, single)
+    print(count, memory.read_text(buffer))
+    print(memory.read_bytes(buffer, 3))
+    memory.write_bytes(memory.offset(buffer, 2), [66, 67])
+    print(memory.read_text(buffer))
+    copy = malloc(8)
+    memcpy(copy, memory.offset(buffer, 2), 2)
+    memory.write<unsigned8>(copy, 0, 2)
+    print(memory.read_text(copy))
+    free(copy)
+    free(buffer)
+    print(strtol(c_string("  -1234xyz"), null_pointer, 10))
+
+# Function literals in unsafe code are unsafe code too.
+unsafe
+    measure = function(text: string) -> integer
+        return integer(strlen(c_string(text)))
+    print(measure("four"))
+
+print(unsafe GetCurrentProcessId() > 0)
+
+outcome = try c_string("a\0b")
+if outcome is error
+    print(outcome.code, outcome.message)
+missing = try unsafe memory.read<integer>(null_pointer)
+if missing is error
+    print(missing.code, missing.message)
+nowhere = try unsafe memory.read_text(null_pointer)
+if nowhere is error
+    print(nowhere.message)
