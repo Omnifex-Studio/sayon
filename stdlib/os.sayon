@@ -21,6 +21,24 @@ function platform() -> string
 function current_directory() -> string
     return host_current_directory()
 
+# What a program run by `run` did: its exit status (-1 when it was stopped
+# without one), and what it wrote to its standard output and error.
+type Completed = [status: integer, output: string, errors: string]
+
+# Runs a program and waits for it to finish. `program` is a path, or a name
+# found on the system's search path; the arguments are passed exactly as
+# they are, without a shell, so no character in them has a special meaning.
+# The program reads empty standard input and runs in `directory`, or in the
+# current directory when it is "". Fails with IOError when it cannot be
+# started, and with EncodingError when its output is not UTF-8.
+function run(program: string, arguments: Array<string>, directory = "") -> Completed
+    results = host_run(program, arguments, directory)
+    status = tonumber(results[0])
+    code = -1
+    if typeof(status) == "integer"
+        code = status
+    return Completed(status = code, output = clone(results[1]), errors = clone(results[2]))
+
 # Ends the program with an exit status from 0 (success) to 255. The program
 # ends in order: `finally` blocks run and values are cleaned up on the way
 # out, though `catch` and `try` do not stop it. Fails with ValueError for a

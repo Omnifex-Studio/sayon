@@ -1,0 +1,29 @@
+# Running other programs
+os = import("standard/os.sayon")
+strings = import("standard/strings.sayon")
+filesystem = import("standard/filesystem.sayon")
+
+# A command line for the platform's command interpreter.
+function shell(own command: string, directory = "") -> os.Completed
+    if os.platform() == "windows"
+        return os.run("cmd", ["/c", command], directory)
+    return os.run("sh", ["-c", command], directory)
+
+greeting = shell("echo hello")
+print(greeting.status, strings.trim(greeting.output), greeting.errors == "")
+failing = shell("exit 3")
+print(failing.status)
+
+folder = "processes_dir.tmp"
+if not filesystem.exists(folder)
+    filesystem.create_directory(folder)
+here = "pwd"
+if os.platform() == "windows"
+    here = "cd"
+inside = shell(here, folder)
+print(strings.ends_with(strings.trim(inside.output), folder))
+filesystem.remove(folder)
+
+missing = try os.run("sayon-no-such-program", [])
+if missing is error
+    print(missing.code)

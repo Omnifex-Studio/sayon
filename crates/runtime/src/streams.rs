@@ -1,12 +1,13 @@
-//! Open files, for `standard/io`'s `File`.
+//! Open files and standard input, for `standard/io`'s `File`.
 //!
 //! A stream is a number naming an entry of a process-wide table, so that the
 //! interpreter and compiled programs share one implementation. Each value
-//! holding the number is a reference: cloning a stream adds one, dropping it
-//! removes one, and the file is closed when none are left. `close` closes
-//! the file at once and reports what writing the rest of it failed with; the
-//! references that remain then refer to a closed stream. Numbers are never
-//! reused, so a stale reference can never reach a different file.
+//! holding the number is a reference: `share` adds one (for a file's line
+//! iterator), dropping a value removes one, and the file is closed when none
+//! are left. `close` closes the file at once and reports what writing the
+//! rest of it failed with; the references that remain then refer to a closed
+//! stream. Numbers are never reused, so a stale reference can never reach a
+//! different file.
 
 use crate::host::{HostError, io_error};
 use std::collections::HashMap;
@@ -17,6 +18,9 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 enum Handle {
     Reader(BufReader<File>),
     Writer(BufWriter<File>),
+    /// Standard input, read through the process's own buffer, which
+    /// `io.read_line` shares.
+    Input,
     Closed,
 }
 
@@ -42,10 +46,14 @@ fn closed(path: &str) -> HostError {
     ("IOError", format!("\"{path}\" is closed"))
 }
 
+fn unpositioned(path: &str) -> HostError {
+    ("IOError", format!("{path} has no positions to move to"))
+}
+
 /// Runs `f` on the open reader of a stream.
 fn reader<T>(
     id: i64,
-    f: impl FnOnce(&mut BufReader<File>, &str) -> Result<T, HostError>,
+    f: impl FnOnce(&mut dyn BufRead, &str) -> Result<T, HostError>,
 ) -> Result<T, HostError> {
     let mut table = table();
     let entry = table
@@ -54,6 +62,11 @@ fn reader<T>(
         .ok_or(("IOError", "the file is closed".to_string()))?;
     match &mut entry.handle {
         Handle::Reader(reader) => f(reader, &entry.path),
+        Handle::Input => {
+            // What the program wrote shows before it waits for input.
+            let _ = std::io::stdout().flush();
+            f(&mut std::io::stdin().lock(), &entry.path)
+        }
         Handle::Writer(_) => Err((
             "IOError",
             format!("\"{}\" was opened for writing, not reading", entry.path),
@@ -74,12 +87,32 @@ fn writer<T>(
         .ok_or(("IOError", "the file is closed".to_string()))?;
     match &mut entry.handle {
         Handle::Writer(writer) => f(writer, &entry.path),
-        Handle::Reader(_) => Err((
+        Handle::Reader(_) | Handle::Input => Err((
             "IOError",
             format!("\"{}\" was opened for reading, not writing", entry.path),
         )),
         Handle::Closed => Err(closed(&entry.path)),
     }
+}
+
+fn insert(handle: Handle, path: &str) -> i64 {
+    let mut table = table();
+    table.last += 1;
+    let id = table.last;
+    table.entries.insert(
+        id,
+        Entry {
+            handle,
+            path: path.to_string(),
+            references: 1,
+        },
+    );
+    id
+}
+
+/// A stream reading standard input.
+pub fn standard_input() -> i64 {
+    insert(Handle::Input, "standard input")
 }
 
 /// Opens a file: `"r"` to read, `"w"` to write from the start (creating or
@@ -108,18 +141,7 @@ pub fn open(path: &str, mode: &str) -> Result<i64, HostError> {
             ));
         }
     };
-    let mut table = table();
-    table.last += 1;
-    let id = table.last;
-    table.entries.insert(
-        id,
-        Entry {
-            handle,
-            path: path.to_string(),
-            references: 1,
-        },
-    );
-    Ok(id)
+    Ok(insert(handle, path))
 }
 
 /// Adds a reference to a stream, for a clone of a value holding it.
@@ -255,6 +277,7 @@ pub fn position(id: i64) -> Result<i64, HostError> {
     let result = match &mut entry.handle {
         Handle::Reader(reader) => reader.stream_position(),
         Handle::Writer(writer) => writer.stream_position(),
+        Handle::Input => return Err(unpositioned(&path)),
         Handle::Closed => return Err(closed(&path)),
     };
     result
@@ -280,6 +303,7 @@ pub fn seek(id: i64, position: i64) -> Result<(), HostError> {
     let result = match &mut entry.handle {
         Handle::Reader(reader) => reader.seek(target),
         Handle::Writer(writer) => writer.seek(target),
+        Handle::Input => return Err(unpositioned(&path)),
         Handle::Closed => return Err(closed(&path)),
     };
     result
@@ -302,7 +326,7 @@ pub fn close(id: i64) -> Result<(), HostError> {
             .into_inner()
             .map(drop)
             .map_err(|e| io_error("write", &path, e.error())),
-        Handle::Reader(_) => Ok(()),
+        Handle::Reader(_) | Handle::Input => Ok(()),
         Handle::Closed => Err(("IOError", format!("\"{path}\" is already closed"))),
     }
 }
@@ -319,8 +343,14 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
             ("IOError", "the file is closed".to_string())
         });
     };
-    let reader = match &mut source.handle {
+    let mut input;
+    let reader: &mut dyn Read = match &mut source.handle {
         Handle::Reader(reader) => reader,
+        Handle::Input => {
+            let _ = std::io::stdout().flush();
+            input = std::io::stdin().lock();
+            &mut input
+        }
         Handle::Writer(_) => {
             return Err((
                 "IOError",
@@ -331,7 +361,7 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
     };
     let writer = match &mut target.handle {
         Handle::Writer(writer) => writer,
-        Handle::Reader(_) => {
+        Handle::Reader(_) | Handle::Input => {
             return Err((
                 "IOError",
                 format!("\"{}\" was opened for reading, not writing", target.path),

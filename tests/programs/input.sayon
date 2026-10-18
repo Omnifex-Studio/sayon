@@ -1,0 +1,15 @@
+# Standard input read as a file
+io = import("standard/io.sayon")
+
+print(io.read_line())
+input = io.input()
+print(input.read_line())
+count = 0
+for line in input.lines()
+    count += 1
+    print("{count}: [{line}]")
+print(input.read_line())
+moved = try input.seek(0)
+if moved is error
+    print(moved.message)
+input.close()

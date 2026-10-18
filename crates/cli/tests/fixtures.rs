@@ -9,8 +9,9 @@
 //! Set `SAYON_BLESS=1` to write the current behavior as the expectation, then
 //! review the changes before committing them.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 fn tests_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -46,16 +47,29 @@ struct Outcome {
 }
 
 fn sayon(dir: &Path, args: &[&str]) -> Outcome {
-    sayon_with_env(dir, args, &[])
+    sayon_with_env(dir, args, &[], None)
 }
 
-fn sayon_with_env(dir: &Path, args: &[&str], env: &[(&str, &str)]) -> Outcome {
+/// Runs sayon with `input` as its standard input (empty without it).
+fn sayon_with_env(dir: &Path, args: &[&str], env: &[(&str, &str)], input: Option<&str>) -> Outcome {
     let mut command = Command::new(env!("CARGO_BIN_EXE_sayon"));
-    command.args(args).current_dir(dir).env_remove("NO_COLOR");
+    command
+        .args(args)
+        .current_dir(dir)
+        .env_remove("NO_COLOR")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     for (key, value) in env {
         command.env(key, value);
     }
-    let output = command.output().expect("run sayon");
+    let mut child = command.spawn().expect("run sayon");
+    let mut stdin = child.stdin.take().expect("standard input");
+    if let Some(input) = input {
+        stdin.write_all(input.as_bytes()).expect("write input");
+    }
+    drop(stdin);
+    let output = child.wait_with_output().expect("run sayon");
     Outcome {
         stdout: String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
         stderr: String::from_utf8_lossy(&output.stderr).replace("\r\n", "\n"),
@@ -92,7 +106,14 @@ fn programs_produce_their_recorded_output() {
     let mut failures = Vec::new();
     for source in sources(&dir) {
         let name = source.file_name().unwrap().to_string_lossy().to_string();
-        let outcome = sayon(&dir, &["run", "--color", "never", &name]);
+        // A program's `.stdin` file, when it has one, is its input.
+        let input = read_expectation(&source.with_extension("stdin"));
+        let outcome = sayon_with_env(
+            &dir,
+            &["run", "--color", "never", &name],
+            &[],
+            input.as_deref(),
+        );
         compare(
             &mut failures,
             &name,
@@ -146,6 +167,7 @@ fn native_programs_match_the_interpreter() {
             &dir,
             &["run", "--native", "--color", "never", &name],
             &[("SAYON_DEBUG_ALLOC", "1")],
+            read_expectation(&source.with_extension("stdin")).as_deref(),
         );
         const REPORT: &str = "sayon: allocations live at exit: ";
         let mut stderr_lines: Vec<&str> = outcome.stderr.lines().collect();

@@ -87,7 +87,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `standard/math`: functions, constants, `random` | experimental | M1 |
 | `standard/io` files: `io.open`, buffered reading and writing, `file.lines()` with a line limit, bytes, `seek`, `position`, checked `close`, `io.copy` | experimental | M2 |
 | `os.exit` (in order: `finally` blocks and cleanup run), `filesystem.walk`, `filesystem.is_link` | experimental | M2 |
-| Standard input and output as files, other encodings, process spawning | planned | M2 to M3 |
+| Standard input as a file (`io.input`), running programs and capturing their output (`os.run`) | experimental | M2 |
+| Standard output and error as files, other text encodings, streaming to and from running programs, environments for them | planned | M3 |
 | `standard/json`: `Json` values, parse with positions in errors, compact and pretty encoding, exact number text, duplicate-field and depth limits | experimental | M2 |
 | `standard/json` typed decoding and encoding into structures | planned | M2 to M3 |
 | `standard/collections`: stable sorting, `Set`, `Queue`; `remove` and `swap` built-ins | experimental | M2 |

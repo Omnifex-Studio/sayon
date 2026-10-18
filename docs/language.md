@@ -640,8 +640,8 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 
 | Module | Functions |
 |---|---|
-| `standard/io.sayon` | `read_file`, `write_file`, `append_file`, `read_lines`, `read_file_bytes`, `write_file_bytes`, `read_line` (standard input; `nothing` at the end), `write` (no newline), `write_error`; `open` for a `File` with the methods `read_line`, `lines`, `read`, `read_bytes`, `write`, `write_line`, `write_bytes`, `flush`, `position`, `seek`, `close`; `copy` |
-| `standard/os.sayon` | `arguments` (the words after `--` with `sayon run`), `environment`, `platform`, `current_directory`, `exit` |
+| `standard/io.sayon` | `read_file`, `write_file`, `append_file`, `read_lines`, `read_file_bytes`, `write_file_bytes`, `read_line` (standard input; `nothing` at the end), `write` (no newline), `write_error`; `open` for a `File`, and `input` for standard input as one, with the methods `read_line`, `lines`, `read`, `read_bytes`, `write`, `write_line`, `write_bytes`, `flush`, `position`, `seek`, `close`; `copy` |
+| `standard/os.sayon` | `arguments` (the words after `--` with `sayon run`), `environment`, `platform`, `current_directory`, `exit`, `run` (a `Completed` with `status`, `output`, and `errors`) |
 | `standard/filesystem.sayon` | `exists`, `is_file`, `is_directory`, `is_link`, `list` (sorted names), `walk` (everything below a directory), `size`, `create_directory`, `remove`, `rename`, `copy`, `join`, `name`, `parent`, `extension` |
 | `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters`, `code` (a character's Unicode code), `character` (the character with a code), `graphemes`, `grapheme_count`, `bytes`, `byte_view`, `from_bytes` (strict UTF-8), `from_bytes_lossy` |
 | `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer` |
@@ -661,6 +661,8 @@ while true
 ```
 
 String positions count Unicode characters. File and directory failures raise `IOError`; text that is not UTF-8 raises `EncodingError`. `math.random()` is not suitable for security.
+
+`os.run(program, arguments, directory)` runs another program and waits for it, returning its exit status and what it wrote to standard output and error. The arguments are passed exactly as given, with no shell in between, so no character in them has a special meaning; the program reads empty input. Running something through a shell is explicit, as with `os.run("sh", ["-c", "ls | wc -l"])`. A program that cannot be started raises `IOError`.
 
 `os.exit(status)` ends the program with a status from 0 to 255 (another status raises `ValueError`). It ends it in order: `finally` blocks run and values are cleaned up on the way out, so open files are written, but `catch` and `try` do not stop it. In a test, it fails the test.
 
@@ -689,6 +691,7 @@ file.close()
 - While a loop over `file.lines()` runs, the file is borrowed: closing it, or reading or writing it another way, is `E_BORROW_CONFLICT`.
 - A file has one owner, so `clone(file)` is an error, as is cloning anything holding a file; a generic function that clones values of its type parameter cannot be given one. Lines kept from `file.lines()` after the file is closed raise `IOError`.
 - `io.copy(source, target)` copies the rest of one file to another 64 KiB at a time and returns the number of bytes.
+- `io.input()` is standard input as a file, read with the same methods and sharing what is read with `io.read_line()`; it cannot `seek`.
 
 ### JSON
 

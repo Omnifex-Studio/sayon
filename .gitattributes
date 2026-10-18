@@ -3,3 +3,4 @@
 *.png binary
 *.ico binary
 *.zip binary
+*.stdin -text

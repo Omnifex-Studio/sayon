@@ -1186,7 +1186,15 @@ impl<'m> Machine<'m> {
                     self.error("IOError", format!("could not write output: {error}"), span)
                 });
             }
-            Host::WriteError | Host::ReadLine => {
+            // What the program printed shows before it waits for input or
+            // another program writes.
+            Host::WriteError
+            | Host::ReadLine
+            | Host::Run
+            | Host::StreamReadLine
+            | Host::StreamRead
+            | Host::StreamReadBytes
+            | Host::StreamCopy => {
                 let _ = self.out.flush();
             }
             _ => {}

@@ -49,6 +49,12 @@ function write(text: string)
 function write_error(text: string)
     host_write_error(text + "\n")
 
+# Standard input as a file, to read with `read_line`, `lines`, `read`, and
+# `read_bytes`, sharing what it has read with `io.read_line`. It cannot
+# `seek`, and closing it only stops this file from reading.
+function input() -> File
+    return File(stream = host_standard_input(), path = "standard input", line_limit = LINE_LIMIT)
+
 # ----- open files -----------------------------------------------------------------
 
 # The longest line, in bytes, that a file's `read_line` and `lines` accept

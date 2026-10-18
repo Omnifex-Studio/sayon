@@ -124,6 +124,8 @@ hosts! {
     Exit = "exit"(Integer) -> Nothing;
     Walk = "walk"(String) -> StringArray;
     IsLink = "is_link"(String) -> Boolean;
+    StandardInput = "standard_input"() -> Stream;
+    Run = "run"(String, StringArray, String) -> StringArray;
     Graphemes = "graphemes"(String) -> StringArray;
     GraphemeCount = "grapheme_count"(String) -> Integer;
     Bytes = "bytes"(String) -> Bytes;
@@ -318,6 +320,38 @@ fn walk_entries(
     Ok(found)
 }
 
+/// Runs a program with an argument vector, without a shell, and waits for
+/// it: its status, standard output, and standard error, as three strings.
+/// Its standard input is empty.
+fn run(program: &str, arguments: &HostArg, directory: &str) -> Result<HostValue, HostError> {
+    let HostArg::Strings(arguments) = arguments else {
+        panic!("run expects strings, found {arguments:?}")
+    };
+    let _ = std::io::stdout().flush();
+    let mut command = std::process::Command::new(program);
+    command.args(arguments).stdin(std::process::Stdio::null());
+    if !directory.is_empty() {
+        command.current_dir(directory);
+    }
+    let output = command
+        .output()
+        .map_err(|error| io_error("run", program, &error))?;
+    let text = |bytes: Vec<u8>, what: &str| {
+        String::from_utf8(bytes).map_err(|_| {
+            (
+                "EncodingError",
+                format!("the {what} of \"{program}\" is not valid UTF-8"),
+            )
+        })
+    };
+    let status = output.status.code().map_or(-1, i64::from);
+    Ok(HostValue::Strings(vec![
+        status.to_string(),
+        text(output.stdout, "output")?,
+        text(output.stderr, "error output")?,
+    ]))
+}
+
 /// Runs a primitive. Output primitives write to the process's standard
 /// streams; the interpreter routes `Write` through its own output instead so
 /// it stays ordered with `print`.
@@ -415,6 +449,8 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
                 .map(|()| V::Nothing)
                 .map_err(|e| io_error("write", path, &e))
         }
+        Host::StandardInput => Ok(V::Stream(crate::streams::standard_input())),
+        Host::Run => run(string(args, 0), &args[1], string(args, 2)),
         Host::Graphemes => Ok(V::Strings(
             crate::graphemes::clusters(string(args, 0))
                 .into_iter()
