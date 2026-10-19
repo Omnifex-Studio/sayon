@@ -967,13 +967,14 @@ fn stmt_print(stmt: &Stmt, source: &str, out: &mut String) {
         }
         StmtKind::TypeDecl {
             visibility,
+            foreign,
             name,
             generics,
             fields,
         } => {
             let _ = write!(
                 out,
-                "type {visibility:?} {} {} ",
+                "type {visibility:?} {foreign} {} {} ",
                 name.name,
                 generic_list(generics)
             );

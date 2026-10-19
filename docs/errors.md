@@ -420,7 +420,7 @@ An `unsafe` block or expression holds nothing that needs unsafe code, or is insi
 
 ### E_FOREIGN_TYPE
 
-A C function's parameter, result, or variadic argument has a type C does not have. C functions take integers (including the C types `c_int`, `c_size`, and the rest), floats, `pointer`, and `c_string`, and give integers, floats, `pointer`, or nothing. Text goes to C as a `c_string`, made with `c_string(text)`, and comes back as a `pointer`, read with `memory.read_text` of `standard/memory`; a boolean is a `c_int`. The C type of a variadic argument must be known where it is passed: an integer literal is a `c_int`, and another value can be converted, as in `c_long(count)`.
+A C function's parameter, result, or variadic argument, or a field of a `foreign type`, has a type C does not have. C functions take integers (including the C types `c_int`, `c_size`, and the rest), floats, `pointer`, `c_string`, and structures declared with `foreign type`, and give integers, floats, `pointer`, `foreign type` structures, or nothing; a variadic one takes a structure by its address. A `foreign type` holds numbers, `pointer`, and other `foreign type` structures, and has no type parameters. Text goes to C as a `c_string`, made with `c_string(text)`, and comes back as a `pointer`, read with `memory.read_text` of `standard/memory`; a boolean is a `c_int`. The C type of a variadic argument must be known where it is passed: an integer literal is a `c_int`, and another value can be converted, as in `c_long(count)`.
 
 ### E_FOREIGN_SIGNATURE
 

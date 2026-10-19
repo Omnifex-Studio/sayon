@@ -673,7 +673,7 @@ print(unsafe strlen(name))       # 5
 ```
 
 - `"c"` names the target's C runtime; another name is one of the system's libraries, such as `"kernel32"` or `"m"`, which a compiled program is linked with. A declaration gives each parameter its C type, and `...` after them takes further arguments.
-- C functions take integers, floats, `pointer`, and `c_string`, and give integers, floats, `pointer`, or nothing (`E_FOREIGN_TYPE`). The integer types include the target's C types `c_char`, `c_short`, `c_ushort`, `c_int`, `c_uint`, `c_long`, `c_ulong`, `c_longlong`, `c_ulonglong`, `c_size`, and `c_ssize`, each the integer type of its size: `c_long` is `integer32` on Windows and `integer64` elsewhere. `c_float` and `c_double` are `float32` and `float`.
+- C functions take integers, floats, `pointer`, `c_string`, and C structures, and give integers, floats, `pointer`, C structures, or nothing (`E_FOREIGN_TYPE`). The integer types include the target's C types `c_char`, `c_short`, `c_ushort`, `c_int`, `c_uint`, `c_long`, `c_ulong`, `c_longlong`, `c_ulonglong`, `c_size`, and `c_ssize`, each the integer type of its size: `c_long` is `integer32` on Windows and `integer64` elsewhere. `c_float` and `c_double` are `float32` and `float`.
 - Arguments after the parameters of a variadic function go as C passes them: an integer narrower than `c_int` becomes a `c_int`, a `float32` becomes a `float`, and an integer literal is a `c_int`.
 - `c_string(text)` copies text into a buffer that ends with a NUL byte, for C to read; it fails with `ValueError` when the text holds a NUL character, which C would take for its end. The C string owns its buffer, and C reads it during a call that takes it. It shows as its text, and cannot be cloned or compared. Text that C gives back is a `pointer`, which `memory.read_text` reads.
 - A `pointer` is a raw address. `null_pointer` points nowhere; pointers can be compared, and one shows as `pointer` or `null_pointer`, never as its address.
@@ -697,9 +697,34 @@ unsafe
 - A function literal written in unsafe code is unsafe code too. A C function or an unsafe function cannot be used as a value (`E_UNSAFE_VALUE`), since a function value can be called anywhere.
 - `W_UNUSED_UNSAFE` warns of an `unsafe` that nothing inside needs, or one inside unsafe code already.
 
-`standard/memory.sayon` reads and writes the memory C code shares with the program. `read<T>(address, offset)` and `write(address, value, offset)` read and store a number or a pointer `offset` bytes after an address; `read_bytes` and `write_bytes` copy bytes; `read_text` reads the C string at an address; `offset(address, bytes)` is another address; `address(text)` is where a C string's text is. The functions that touch memory are unsafe, and fail with `NullPointerError` at `null_pointer`.
+`standard/memory.sayon` reads and writes the memory C code shares with the program. `read<T>(address, offset)` and `write(address, value, offset)` read and store a number, a pointer, or a C structure `offset` bytes after an address; `size<T>()` is how many bytes one takes; `read_bytes` and `write_bytes` copy bytes; `read_text` reads the C string at an address; `offset(address, bytes)` is another address; `address(text)` is where a C string's text is. The functions that touch memory are unsafe, and fail with `NullPointerError` at `null_pointer`.
 
-Compiled programs call C functions on every target. The interpreter calls them on Windows x64 so far, loading each library and finding each function the first time the program calls one; elsewhere it reports `ForeignError`, and a program built with `sayon build` calls them. Passing Sayon functions to C as callbacks, and C structures by value, are still to come.
+### C structures
+
+`foreign type` declares a structure laid out as C lays it out, which C functions take and give by value and which `standard/memory` reads and writes:
+
+```sayon
+memory = import("standard/memory.sayon")
+
+foreign type Point = [x: c_int, y: c_int]
+foreign type Rectangle = [left: c_int, top: c_int, right: c_int, bottom: c_int]
+
+foreign "user32"
+    function PtInRect(rectangle: pointer, point: Point) -> c_int
+
+unsafe
+    area = malloc(c_size(memory.size<Rectangle>()))
+    memory.write(area, Rectangle(left = 0, top = 0, right = 10, bottom = 5))
+    print(PtInRect(area, Point(x = 3, y = 4)))     # 1
+    free(area)
+```
+
+- Its fields are numbers, `pointer`, and other `foreign type` structures, in C's order: each at the next multiple of its alignment, and the whole a multiple of the largest (`E_FOREIGN_TYPE` for anything else, and for type parameters). Text is a `pointer` to its bytes, a boolean a `c_int`, and a structure that points to another of its type does so with a `pointer`.
+- Otherwise it is an ordinary structure: built, read, changed, compared, and shown as any other, and copied, since every field is.
+- A variadic C function takes a structure by its address, as a `pointer`.
+- Structures go to C and come back as the target's C convention passes them; compiled programs pass them on Windows x64 so far, and report `ForeignError` elsewhere.
+
+Compiled programs call C functions on every target. The interpreter calls them on Windows x64 so far, loading each library and finding each function the first time the program calls one; elsewhere it reports `ForeignError`, and a program built with `sayon build` calls them. Passing Sayon functions to C as callbacks is still to come.
 
 ## Built-in functions
 
@@ -745,7 +770,7 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 | `standard/network.sayon` | `connect` for a `Connection` (`read_line`, `lines`, `read`, `read_bytes`, `write`, `write_line`, `write_bytes`, `flush`, `finish_sending`, `set_timeout`, `local_address`, `peer_address`, `close`), `listen` for a `Listener` (`accept`, `address`, `set_timeout`, `close`), `bind` for a `DatagramSocket` (`send`, `receive`, `address`, `set_timeout`, `close`), `resolve`, `address_text`; HTTP: `get`, `post`, `request`, and `Response` (`text`, `header`, `succeeded`); see [Networking](#networking) |
 | `standard/time.sayon` | `Duration` (`nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `add`, `subtract`, `scale`, `in_seconds`, `in_milliseconds`, `describe`), the monotonic clock (`start`, `elapsed`, `between`, `sleep`), `deadline` for a `Deadline` (`remaining`, `passed`, `wait`), `ticker` for a `Ticker` (`wait`), and UTC dates (`DateTime`, `now`, `unix_seconds`, `from_unix`, `to_unix`, `shift`, `difference`, `weekday`, `is_leap_year`, `days_in_month`, `format` and `parse` for ISO 8601), time zones (`zone` for a `Zone` with `at`, `moment`, `offset`; `ZonedTime` with `format`, `moment`; `local_zone`, `zones_version`) |
 | `standard/collections.sayon` | `sort` and `sort_by` (stable), `reverse`; `Set<T>` with `new_set`, `set_add`, `set_contains`, `set_remove`, `set_size`, `set_values` (as methods: `set.add(value)`); `Queue<T>` with `new_queue`, `queue_add`, `queue_take`, `queue_size` |
-| `standard/memory.sayon` | `read`, `write`, `read_bytes`, `write_bytes`, `read_text`, `offset`, `address`; see [C functions and unsafe code](#c-functions-and-unsafe-code) |
+| `standard/memory.sayon` | `read`, `write`, `size`, `read_bytes`, `write_bytes`, `read_text`, `offset`, `address`; see [C functions and unsafe code](#c-functions-and-unsafe-code) |
 | `standard/math.sayon` | `PI`, `E`, `TAU`, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `log`, `log10`, `log2`, `pow`, `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`, `clamp`, `random` |
 
 ```sayon

@@ -1096,6 +1096,9 @@ impl<'a> Checker<'a> {
                 return expr(ExprKind::Nothing, Type::Unknown, span);
             }
         }
+        if name.name == "raw_size" && self.modules[cx.module.0 as usize].standard {
+            return self.raw_size(cx, generic_args, args, span);
+        }
         if !generic_args.is_empty() {
             self.error(
                 Diagnostic::error(
@@ -1262,6 +1265,23 @@ impl<'a> Checker<'a> {
     /// An argument after a variadic C function's parameters, as C passes
     /// it: an integer narrower than `c_int` becomes a `c_int`, and a
     /// `float32` a `float`. An integer literal is a `c_int`, as in C.
+    /// `raw_size<T>()` in `standard/memory`: the size of a C type.
+    fn raw_size(
+        &mut self,
+        cx: &mut FnCtx,
+        generic_args: &[ast::TypeExpr],
+        args: &[ast::Expr],
+        span: Span,
+    ) -> hir::Expr {
+        assert!(
+            generic_args.len() == 1 && args.is_empty(),
+            "raw_size takes one type argument"
+        );
+        let ty = self.resolve_type(cx.module, &generic_args[0], &cx.generics);
+        self.require_traits(&ty, Traits::RAW, span, "C types have a size in memory");
+        expr(ExprKind::SizeOf(ty), Type::INTEGER, span)
+    }
+
     fn variadic_argument(&mut self, cx: &mut FnCtx, arg: &ast::Expr) -> hir::Expr {
         let value = self.check_expr(cx, arg, None);
         if let Type::Var(var) = self.unifier.shallow(&value.ty) {
@@ -1299,6 +1319,9 @@ impl<'a> Checker<'a> {
                 let help = match other {
                     Type::String => "pass a `c_string`, made with `c_string(text)`",
                     Type::Boolean => "C takes a boolean as a `c_int`, 0 or 1",
+                    Type::Named(_) => {
+                        "a variadic C function takes a structure by its address: a `pointer`"
+                    }
                     _ => "C takes numbers, `pointer`, and `c_string`",
                 };
                 self.error(

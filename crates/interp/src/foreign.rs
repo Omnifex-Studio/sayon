@@ -8,9 +8,14 @@
 //! serves every signature, variadic ones included (where Windows x64 wants a
 //! float in both). The result comes back from both the integer and the float
 //! result register, and the caller keeps the one the signature names.
+//!
+//! A structure goes as Windows x64 passes it: one of 1, 2, 4, or 8 bytes in
+//! its position's register, as an integer, and any other by the address of
+//! a copy. One given back in more bytes is written where the address passed
+//! before the arguments points.
 
 use crate::value::Value;
-use sayon_check::types::{FloatType, Type};
+use sayon_check::types::{FloatType, Type, TypeDef, c_layout, c_size_align, win64_in_register};
 use sayon_ir::ForeignFunction;
 use std::collections::HashMap;
 
@@ -38,9 +43,40 @@ impl Foreign {
         index: u32,
         function: &ForeignFunction,
         args: &[(Value, Type)],
+        types: &[TypeDef],
     ) -> Result<Value, ForeignError> {
         let address = self.function(index, function)?;
-        let mut slots: Vec<u64> = args.iter().map(|(value, ty)| slot(value, ty)).collect();
+        // The copies of structures C takes or gives by address, which live
+        // through the call.
+        let mut copies: Vec<Vec<u64>> = Vec::new();
+        let mut slots = Vec::new();
+        let given_back = match &function.ret {
+            Type::Named(_) => {
+                let (size, _) = c_size_align(types, &function.ret);
+                (!win64_in_register(size)).then(|| {
+                    copies.push(vec![0; size.div_ceil(8) as usize]);
+                    slots.push(copies[copies.len() - 1].as_ptr() as u64);
+                    copies.len() - 1
+                })
+            }
+            _ => None,
+        };
+        for (value, ty) in args {
+            let Type::Named(_) = ty else {
+                slots.push(slot(value, ty));
+                continue;
+            };
+            let (size, _) = c_size_align(types, ty);
+            let mut copy = vec![0u64; size.div_ceil(8).max(1) as usize];
+            // SAFETY: the copy has room for the structure.
+            unsafe { write(copy.as_mut_ptr() as usize, value, ty, types) };
+            if win64_in_register(size) {
+                slots.push(copy[0]);
+            } else {
+                slots.push(copy.as_ptr() as u64);
+                copies.push(copy);
+            }
+        }
         // The first four positions are always loaded.
         while slots.len() < 4 {
             slots.push(0);
@@ -54,7 +90,16 @@ impl Foreign {
             // SAFETY: `fflush(NULL)` flushes every output stream.
             unsafe { platform::call(flush, &[0, 0, 0, 0]) };
         }
-        Ok(result(&function.ret, integer, float))
+        let value = match (&function.ret, given_back) {
+            // SAFETY: C wrote the structure into the copy.
+            (ty, Some(copy)) => unsafe { read(copies[copy].as_ptr() as usize, ty, types) },
+            // SAFETY: the integer holds the structure's bytes.
+            (ty @ Type::Named(_), None) => unsafe {
+                read(&integer as *const u64 as usize, ty, types)
+            },
+            (ty, None) => result(ty, integer, float),
+        };
+        Ok(value)
     }
 
     fn function(&mut self, index: u32, function: &ForeignFunction) -> Result<usize, ForeignError> {
@@ -130,16 +175,24 @@ fn result(ty: &Type, integer: u64, float: u64) -> Value {
     }
 }
 
-/// Reads a number or pointer of type `ty` at `address`.
+/// Reads a number, pointer, or C structure of type `ty` at `address`.
 ///
 /// # Safety
 /// The memory must hold that many readable bytes.
-pub unsafe fn read(address: usize, ty: &Type) -> Value {
+pub unsafe fn read(address: usize, ty: &Type, types: &[TypeDef]) -> Value {
     use sayon_check::types::IntType;
     let p = address as *const u8;
     // SAFETY: the caller vouches for the memory; reads need no alignment.
     unsafe {
         match ty {
+            Type::Named(named) => {
+                let fields = c_layout(types, named)
+                    .fields
+                    .iter()
+                    .map(|(offset, field)| read(address + *offset as usize, field, types))
+                    .collect();
+                Value::Record(named.id, fields)
+            }
             Type::Int(int) => Value::Int(match int {
                 IntType::I8 => (p as *const i8).read_unaligned() as i128,
                 IntType::I16 => (p as *const i16).read_unaligned() as i128,
@@ -158,16 +211,22 @@ pub unsafe fn read(address: usize, ty: &Type) -> Value {
     }
 }
 
-/// Stores a number or pointer at `address`.
+/// Stores a number, pointer, or C structure at `address`.
 ///
 /// # Safety
 /// The memory must have room for the value.
-pub unsafe fn write(address: usize, value: &Value, ty: &Type) {
+pub unsafe fn write(address: usize, value: &Value, ty: &Type, types: &[TypeDef]) {
     use sayon_check::types::IntType;
     let p = address as *mut u8;
     // SAFETY: the caller vouches for the memory; writes need no alignment.
     unsafe {
         match (ty, value) {
+            (Type::Named(named), Value::Record(_, fields)) => {
+                let layout = c_layout(types, named);
+                for ((offset, field_ty), field) in layout.fields.iter().zip(fields) {
+                    write(address + *offset as usize, field, field_ty, types);
+                }
+            }
             (Type::Int(int), Value::Int(number)) => match int {
                 IntType::I8 | IntType::U8 => p.write_unaligned(*number as u8),
                 IntType::I16 | IntType::U16 => (p as *mut u16).write_unaligned(*number as u16),

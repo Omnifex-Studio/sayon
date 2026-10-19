@@ -474,6 +474,8 @@ pub struct TypeDef {
     pub kind: TypeDefKind,
     /// Whether values are Copy when the type arguments are.
     pub copy: bool,
+    /// A structure declared with `foreign type`, laid out as C lays it out.
+    pub foreign: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -531,6 +533,57 @@ pub fn structure_fields(types: &[TypeDef], named: &NamedType) -> Vec<Type> {
         .iter()
         .map(|field| field.ty.substitute(&named.args))
         .collect()
+}
+
+/// Where C puts the fields of a structure: each at the next multiple of its
+/// alignment, in order, and the whole rounded up to the largest alignment.
+pub struct CLayout {
+    pub fields: Vec<(u64, Type)>,
+    pub size: u64,
+    pub align: u64,
+}
+
+/// The C layout of a structure declared with `foreign type`.
+pub fn c_layout(types: &[TypeDef], named: &NamedType) -> CLayout {
+    let mut fields = Vec::new();
+    let mut offset = 0;
+    let mut align = 1;
+    for field in structure_fields(types, named) {
+        let (size, field_align) = c_size_align(types, &field);
+        offset = u64::next_multiple_of(offset, field_align);
+        fields.push((offset, field));
+        offset += size;
+        align = align.max(field_align);
+    }
+    CLayout {
+        fields,
+        size: u64::next_multiple_of(offset, align),
+        align,
+    }
+}
+
+/// Whether Windows x64 passes and returns a structure of this size in a
+/// register, as an integer of its size; any other goes by its address.
+pub fn win64_in_register(size: u64) -> bool {
+    matches!(size, 1 | 2 | 4 | 8)
+}
+
+/// The size and alignment C gives a value of a type C functions take: a
+/// number, a pointer, or a `foreign type` structure. Pointers are 64 bits,
+/// as on every target so far.
+pub fn c_size_align(types: &[TypeDef], ty: &Type) -> (u64, u64) {
+    match ty {
+        Type::Int(int) => {
+            let bytes = int.bits() as u64 / 8;
+            (bytes, bytes)
+        }
+        Type::Float(FloatType::F32) => (4, 4),
+        Type::Named(named) => {
+            let layout = c_layout(types, named);
+            (layout.size, layout.align)
+        }
+        _ => (8, 8),
+    }
 }
 
 /// The part of a type that keeps its values from being dictionary keys, if

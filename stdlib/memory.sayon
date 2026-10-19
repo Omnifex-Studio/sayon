@@ -28,11 +28,12 @@ function address(text: c_string) -> pointer
 unsafe function read_text(address: pointer) -> string
     return host_read_c_string(address)
 
-# The number or pointer stored `offset` bytes after `address`.
+# The number, pointer, or C structure (a `foreign type`) stored `offset`
+# bytes after `address`.
 unsafe function read<T>(address: pointer, offset = 0) -> T
     return raw_read(address, offset)
 
-# Stores a number or pointer `offset` bytes after `address`.
+# Stores a number, pointer, or C structure `offset` bytes after `address`.
 unsafe function write<T>(address: pointer, value: T, offset = 0)
     raw_write(address, offset, value)
 
@@ -48,3 +49,9 @@ unsafe function write_bytes(address: pointer, bytes: Array<byte>)
 # negative.
 function offset(address: pointer, bytes: integer) -> pointer
     return host_pointer_offset(address, bytes)
+
+# The bytes a value of type `T` takes in memory: a number, a pointer, or a
+# C structure, as C lays it out. An array of them in C memory has one
+# every `size<T>()` bytes.
+function size<T>() -> integer
+    return raw_size<T>()

@@ -1394,7 +1394,7 @@ impl<'m> Machine<'m> {
                 let _ = self.output().flush();
                 let declaration = &self.module.foreign[function.0 as usize];
                 self.foreign
-                    .call(function.0, declaration, &values)
+                    .call(function.0, declaration, &values, &self.module.types)
                     .map_err(|message| self.error("ForeignError", message, span))
             }
             Op::RawRead {
@@ -1404,7 +1404,7 @@ impl<'m> Machine<'m> {
             } => {
                 let address = self.address(address, offset, "read from", span)?;
                 // SAFETY: unsafe code vouched for the memory.
-                Ok(unsafe { crate::foreign::read(address, ty) })
+                Ok(unsafe { crate::foreign::read(address, ty, &self.module.types) })
             }
             Op::RawWrite {
                 address,
@@ -1416,7 +1416,7 @@ impl<'m> Machine<'m> {
                 let source = self.source(value);
                 let value = self.with_source(&source, Value::clone);
                 // SAFETY: unsafe code vouched for the memory.
-                unsafe { crate::foreign::write(address, &value, ty) };
+                unsafe { crate::foreign::write(address, &value, ty, &self.module.types) };
                 Ok(Value::Nothing)
             }
             Op::Raise(problem) => match self.take(problem) {

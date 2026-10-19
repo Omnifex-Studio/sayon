@@ -1,0 +1,17 @@
+# C structures that C cannot hold, take, or give
+memory = import("standard/memory.sayon")
+
+type Plain = [x: c_int]
+foreign type Labelled = [name: string, ready: boolean, plain: Plain, items: Array<c_int>]
+foreign type Box<T> = [value: T]
+foreign type Inner = [x: c_int]
+foreign type Loop = [inner: Inner, again: Loop]
+
+foreign "c"
+    function takes_plain(value: Plain) -> c_int
+    function gives_plain() -> Plain
+    function printf(format: c_string, ...) -> c_int
+
+unsafe
+    printf(c_string("%d"), Inner(x = 1))
+    print(memory.size<string>())

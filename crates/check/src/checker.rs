@@ -21,6 +21,8 @@ pub(crate) enum Item {
 /// The source of a structure or enum declaration.
 pub(crate) enum TypeSource<'a> {
     Structure(&'a [ast::Field]),
+    /// A structure declared with `foreign type`.
+    Foreign(&'a [ast::Field]),
     Enum(&'a [ast::Variant]),
     /// The prelude's `Outcome<T>`: `success(value: T)` or `failure(problem: Error)`.
     Outcome,
@@ -794,6 +796,7 @@ impl<'a> Checker<'a> {
                 }
                 StmtKind::TypeDecl {
                     visibility,
+                    foreign,
                     name,
                     generics,
                     fields,
@@ -802,7 +805,11 @@ impl<'a> Checker<'a> {
                     name,
                     *visibility,
                     generics,
-                    TypeSource::Structure(fields),
+                    if *foreign {
+                        TypeSource::Foreign(fields)
+                    } else {
+                        TypeSource::Structure(fields)
+                    },
                 ),
                 StmtKind::EnumDecl {
                     visibility,
@@ -1330,15 +1337,15 @@ impl<'a> Checker<'a> {
                     continue;
                 };
                 let ty = self.resolve_type(module, annotation, &HashMap::new());
-                if !matches!(
-                    ty,
-                    Type::Int(_) | Type::Float(_) | Type::Pointer | Type::CString | Type::Unknown
-                ) {
+                if !self.is_c_value(&ty) && !matches!(ty, Type::CString | Type::Unknown) {
                     let help = match ty {
                         Type::String => "take a `c_string`, made with `c_string(text)`",
                         Type::Boolean => "C takes a boolean as a `c_int`, 0 or 1",
+                        Type::Named(_) => {
+                            "C takes structures declared with `foreign type`; pass anything else by its address"
+                        }
                         _ => {
-                            "C takes numbers, `pointer`, and `c_string`; pass anything else by its address"
+                            "C takes numbers, `pointer`, `c_string`, and `foreign type` structures; pass anything else by its address"
                         }
                     };
                     self.error(
@@ -1355,19 +1362,12 @@ impl<'a> Checker<'a> {
             let ret = match &ast.ret {
                 Some(annotation) => {
                     let ty = self.resolve_type(module, annotation, &HashMap::new());
-                    if !matches!(
-                        ty,
-                        Type::Int(_)
-                            | Type::Float(_)
-                            | Type::Pointer
-                            | Type::Nothing
-                            | Type::Unknown
-                    ) {
+                    if !self.is_c_value(&ty) && !matches!(ty, Type::Nothing | Type::Unknown) {
                         let help = match ty {
                             Type::String | Type::CString => {
                                 "C gives text as a `pointer`; declare the result as `pointer` and read it with `memory.read_text` of standard/memory"
                             }
-                            _ => "C gives numbers and `pointer`",
+                            _ => "C gives numbers, `pointer`, and `foreign type` structures",
                         };
                         self.error(
                             Diagnostic::error(
@@ -1414,6 +1414,7 @@ impl<'a> Checker<'a> {
                 generics: entry.generics.len() as u32,
                 kind: TypeDefKind::Structure(Vec::new()),
                 copy: true,
+                foreign: matches!(entry.source, TypeSource::Foreign(_)),
             })
             .collect();
         for index in 0..self.types.len() {
@@ -1442,7 +1443,7 @@ impl<'a> Checker<'a> {
                         }],
                     },
                 ]),
-                TypeSource::Structure(fields) => {
+                TypeSource::Structure(fields) | TypeSource::Foreign(fields) => {
                     if fields.is_empty() {
                         let span = entry.span;
                         self.error(
@@ -1522,6 +1523,10 @@ impl<'a> Checker<'a> {
         self.unifier.enum_types = (0..self.type_defs.len() as u32)
             .filter(|&index| self.type_defs[index as usize].is_enum())
             .collect();
+        self.unifier.foreign_types = (0..self.type_defs.len() as u32)
+            .filter(|&index| self.type_defs[index as usize].foreign)
+            .collect();
+        self.check_foreign_types();
         self.unifier.json_type =
             self.json_module()
                 .and_then(|module| match self.item(module, "Json") {
@@ -1547,17 +1552,79 @@ impl<'a> Checker<'a> {
                 } else {
                     String::new()
                 };
+                let help = if self.type_defs[index].foreign {
+                    "point to another with a `pointer` field, as C does".to_string()
+                } else {
+                    format!(
+                        "store nested values in a collection, for example a field `children: Array<{name}>`"
+                    )
+                };
                 self.error(
                     Diagnostic::error(
                         "E_RECURSIVE_TYPE",
                         format!("`{name}` contains itself{through}, so it would have no size"),
                     )
                     .primary(span, "")
-                    .help(format!(
-                        "store nested values in a collection, for example a field `children: Array<{name}>`"
-                    )),
+                    .help(help),
                 );
             }
+        }
+    }
+
+    /// A `foreign type` holds only what C structures hold, and has no type
+    /// parameters, so that it has one C layout.
+    fn check_foreign_types(&mut self) {
+        for index in 0..self.types.len() {
+            let TypeSource::Foreign(fields) = self.types[index].source else {
+                continue;
+            };
+            if !self.types[index].generics.is_empty() {
+                let span = self.types[index].span;
+                self.error(
+                    Diagnostic::error(
+                        "E_FOREIGN_TYPE",
+                        "a C structure cannot have type parameters",
+                    )
+                    .primary(span, "")
+                    .help("declare a `foreign type` for each C structure, with the C types of its fields"),
+                );
+            }
+            let defined = self.type_defs[index].fields().to_vec();
+            for (field, def) in fields.iter().zip(defined) {
+                if self.is_c_value(&def.ty) || matches!(def.ty, Type::Unknown) {
+                    continue;
+                }
+                let help = match def.ty {
+                    Type::Boolean => "C keeps a boolean as a number, such as a `c_int` of 0 or 1",
+                    Type::String | Type::CString => {
+                        "C keeps text as the address of its bytes: a `pointer`"
+                    }
+                    Type::Named(_) => {
+                        "a C structure holds other C structures, declared with `foreign type`"
+                    }
+                    _ => {
+                        "a C structure holds numbers, `pointer`, and other `foreign type` structures"
+                    }
+                };
+                self.error(
+                    Diagnostic::error(
+                        "E_FOREIGN_TYPE",
+                        format!("a C structure cannot hold {}", def.ty),
+                    )
+                    .primary(field.ty.span, "")
+                    .help(help),
+                );
+            }
+        }
+    }
+
+    /// Whether C can hold a value of the type: a number, a pointer, or a
+    /// `foreign type` structure.
+    pub(crate) fn is_c_value(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Int(_) | Type::Float(_) | Type::Pointer => true,
+            Type::Named(named) => self.type_defs[named.id.0 as usize].foreign,
+            _ => false,
         }
     }
 
@@ -2438,6 +2505,7 @@ impl<'a> Checker<'a> {
             | NullPointer
             | Local { .. }
             | Constant(_) => {}
+            SizeOf(ty) => *ty = self.finalize_type(ty),
             CallForeign { args, .. } => {
                 for arg in args {
                     self.finalize_expr(&mut arg.expr);

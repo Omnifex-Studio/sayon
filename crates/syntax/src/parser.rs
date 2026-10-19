@@ -411,9 +411,15 @@ impl<'t> Parser<'t> {
                 }
             }
             TokenKind::Keyword(Keyword::Try) if self.peek_at(1).line_start => self.parse_try()?,
-            TokenKind::Keyword(Keyword::Type) => self.parse_type_decl(Visibility::Default)?,
+            TokenKind::Keyword(Keyword::Type) => {
+                self.parse_type_decl(Visibility::Default, false)?
+            }
             TokenKind::Keyword(Keyword::Enum) => self.parse_enum_decl(Visibility::Default)?,
             TokenKind::Keyword(Keyword::Match) => self.parse_match()?,
+            TokenKind::Keyword(Keyword::Foreign) if self.peek_at(1).is_keyword(Keyword::Type) => {
+                self.advance();
+                self.parse_type_decl(Visibility::Default, true)?
+            }
             TokenKind::Keyword(Keyword::Foreign) => self.parse_foreign()?,
             TokenKind::Keyword(Keyword::Unsafe) if self.peek_at(1).line_start => {
                 self.advance();
@@ -493,7 +499,11 @@ impl<'t> Parser<'t> {
             TokenKind::Keyword(Keyword::Constant) | TokenKind::Keyword(Keyword::Variable) => {
                 Ok(StmtKind::Declare(self.parse_declaration(visibility)?))
             }
-            TokenKind::Keyword(Keyword::Type) => self.parse_type_decl(visibility),
+            TokenKind::Keyword(Keyword::Type) => self.parse_type_decl(visibility, false),
+            TokenKind::Keyword(Keyword::Foreign) if self.peek_at(1).is_keyword(Keyword::Type) => {
+                self.advance();
+                self.parse_type_decl(visibility, true)
+            }
             TokenKind::Keyword(Keyword::Enum) => self.parse_enum_decl(visibility),
             _ => {
                 self.error_expected("`function`, `constant`, `variable`, `type` or `enum`");
@@ -1011,7 +1021,7 @@ impl<'t> Parser<'t> {
         Ok(fields)
     }
 
-    fn parse_type_decl(&mut self, visibility: Visibility) -> Result<StmtKind> {
+    fn parse_type_decl(&mut self, visibility: Visibility, foreign: bool) -> Result<StmtKind> {
         self.expect_keyword(Keyword::Type)?;
         let name = self.expect_ident("a type name")?;
         let generics = self.parse_generic_params()?;
@@ -1022,6 +1032,7 @@ impl<'t> Parser<'t> {
         self.nesting -= 1;
         Ok(StmtKind::TypeDecl {
             visibility,
+            foreign,
             name,
             generics,
             fields,

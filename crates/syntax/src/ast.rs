@@ -207,8 +207,11 @@ pub enum StmtKind {
         catch: Option<CatchClause>,
         finally: Option<Block>,
     },
+    /// `type Name = [fields]`, or with `foreign` first, a structure laid
+    /// out as C lays it out, which C functions take and give.
     TypeDecl {
         visibility: Visibility,
+        foreign: bool,
         name: Ident,
         generics: Vec<Ident>,
         fields: Vec<Field>,

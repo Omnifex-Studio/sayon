@@ -28,11 +28,13 @@
 //! receives a pointer to the environment structure before its arguments.
 
 use sayon_check::types::{
-    FloatType, IntType, NamedType, Type, TypeDef, Wrapper, structure_fields, variant_fields,
+    FloatType, IntType, NamedType, Type, TypeDef, Wrapper, c_size_align, structure_fields,
+    variant_fields, win64_in_register,
 };
 
 /// The bytes before the value in a shared value's block.
 pub const SHARED_HEADER: u64 = sayon_runtime::ffi::SHARED_HEADER as u64;
+use sayon_ir::ForeignFunction;
 use std::collections::HashMap;
 
 #[derive(Default)]
@@ -202,6 +204,71 @@ pub fn c_llvm(ty: &Type) -> &'static str {
     }
 }
 
+/// How a C function takes or gives a value, as Windows x64 passes it.
+pub enum CPass {
+    /// As the LLVM value of its C type.
+    Value,
+    /// A structure of 1, 2, 4, or 8 bytes, in a register as an integer of
+    /// this many bits.
+    Register(u64),
+    /// A structure by the address of a copy, or for a result, of where C
+    /// writes it.
+    Address,
+}
+
+pub fn c_pass(types: &[TypeDef], ty: &Type) -> CPass {
+    match ty {
+        Type::Named(_) => {
+            let (size, _) = c_size_align(types, ty);
+            if win64_in_register(size) {
+                CPass::Register(size * 8)
+            } else {
+                CPass::Address
+            }
+        }
+        _ => CPass::Value,
+    }
+}
+
+/// The LLVM signature of a C function: its result type, and its parameter
+/// types with their attributes, a result written by address first.
+pub fn c_signature(types: &[TypeDef], function: &ForeignFunction) -> (String, Vec<String>) {
+    let mut params = Vec::new();
+    let ret = match c_pass(types, &function.ret) {
+        CPass::Value => c_llvm(&function.ret).to_string(),
+        CPass::Register(bits) => format!("i{bits}"),
+        CPass::Address => {
+            params.push(c_result_address(types, &function.ret));
+            "void".to_string()
+        }
+    };
+    for param in &function.params {
+        params.push(match c_pass(types, param) {
+            CPass::Value => c_param(param),
+            CPass::Register(bits) => format!("i{bits}"),
+            CPass::Address => "ptr".to_string(),
+        });
+    }
+    if function.variadic {
+        params.push("...".to_string());
+    }
+    (ret, params)
+}
+
+/// The hidden parameter where C writes a structure it gives back.
+pub fn c_result_address(types: &[TypeDef], ty: &Type) -> String {
+    let (size, align) = c_size_align(types, ty);
+    format!("ptr sret([{size} x i8]) align {align}")
+}
+
+/// Whether a C function takes or gives a structure, which compiled programs
+/// pass only as Windows x64 does so far.
+pub fn passes_structures(function: &ForeignFunction) -> bool {
+    std::iter::once(&function.ret)
+        .chain(&function.params)
+        .any(|ty| matches!(ty, Type::Named(_)))
+}
+
 /// A C parameter's type with the extension C expects for a narrow integer.
 pub fn c_param(ty: &Type) -> String {
     match ty {
@@ -308,6 +375,7 @@ mod tests {
                     field("small", Type::Int(IntType::I16)),
                 ]),
                 copy: true,
+                foreign: false,
             },
             TypeDef {
                 name: "Shape".into(),
@@ -323,6 +391,7 @@ mod tests {
                     },
                 ]),
                 copy: false,
+                foreign: false,
             },
         ];
         let mut layouts = Layouts::new(types);

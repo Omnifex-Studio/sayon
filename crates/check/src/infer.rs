@@ -211,6 +211,8 @@ pub struct Unifier {
     pub param_traits: HashMap<u32, Traits>,
     /// The declared types that are enums.
     pub enum_types: HashSet<u32>,
+    /// The declared types that are C structures (`foreign type`).
+    pub foreign_types: HashSet<u32>,
     /// `standard/json`'s `Json`, which stands for any JSON value.
     pub json_type: Option<u32>,
 }
@@ -457,6 +459,7 @@ impl Unifier {
             },
             Traits::RAW => match &ty {
                 Type::Int(_) | Type::Float(_) | Type::Pointer => true,
+                Type::Named(named) => self.foreign_types.contains(&named.id.0),
                 Type::Param(index) => {
                     self.record_param_trait(*index, one);
                     true

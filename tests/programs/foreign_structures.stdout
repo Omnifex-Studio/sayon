@@ -1,0 +1,9 @@
+Quotient(quotient = 3, remainder = 2)
+LongQuotient(quotient = -1285714285, remainder = -5)
+5.0
+Rectangle(left = 0, top = 0, right = 10, bottom = 5)
+1 0
+8 16 24
+Sample(flag = 2, value = 0.5, corner = Point(x = 1, y = -1)) -1
+0.5
+Point(x = 1, y = 2) Point(x = 5, y = 2) true

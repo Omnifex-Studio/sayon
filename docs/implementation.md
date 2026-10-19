@@ -234,7 +234,9 @@ A compiled program declares each C function of its `foreign` blocks once, by its
 
 The interpreter loads a library with `LoadLibraryW` the first time one of its functions is called, and finds the function with `GetProcAddress`; `"c"` is `msvcrt.dll`, which has every C function, then `ucrtbase.dll`. A call goes through one routine for every signature: the arguments come to it as 64-bit words, an integer extended and a float as its bits, and it loads each of the first four into both its integer and its float register and copies the rest to the stack above the 32 bytes reserved for those four, then keeps both result registers; the declared result type picks one. A narrow integer result is extended from its own bits, which C leaves undefined above.
 
-`memory.read` and `memory.write` load and store with alignment 1, after checking for `null_pointer`. The checker allows them only the types that have the `RAW` trait: numbers and pointers.
+`memory.read` and `memory.write` load and store with alignment 1, after checking for `null_pointer`. The checker allows them only the types that have the `RAW` trait: numbers, pointers, and `foreign type` structures.
+
+A `foreign type` has the layout `sayon_check::types::c_layout` gives it, which both execution modes use: fields in order, each at the next multiple of its alignment, the size rounded up to the largest. It is the layout compiled programs give every structure of those field types, so a C structure is an ordinary LLVM structure. Windows x64 passes a structure of 1, 2, 4, or 8 bytes in its argument's register, as an integer of that size, and any other by the address of a copy the caller makes; it gives back one of those sizes in `RAX`, and any other through an address passed before the arguments, which LLVM's `sret` places. Compiled programs follow that, loading and storing the integer at the structure's address; the interpreter writes each structure into a buffer of words and passes the first word or the buffer's address. Other targets' conventions are still to come, so compiled programs there raise `ForeignError` instead of calling a C function that takes or gives a structure.
 
 ## Sockets
 

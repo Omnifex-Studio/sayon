@@ -1,0 +1,88 @@
+error[E_FOREIGN_TYPE]: a C structure cannot hold string
+  --> foreign_structures.sayon:5:32
+   |
+ 5 | foreign type Labelled = [name: string, ready: boolean, plain: Plain, items: Array<c_int>]
+   |                                ^^^^^^
+   |
+   = help: C keeps text as the address of its bytes: a `pointer`
+
+error[E_FOREIGN_TYPE]: a C structure cannot hold boolean
+  --> foreign_structures.sayon:5:47
+   |
+ 5 | foreign type Labelled = [name: string, ready: boolean, plain: Plain, items: Array<c_int>]
+   |                                               ^^^^^^^
+   |
+   = help: C keeps a boolean as a number, such as a `c_int` of 0 or 1
+
+error[E_FOREIGN_TYPE]: a C structure cannot hold Plain
+  --> foreign_structures.sayon:5:63
+   |
+ 5 | foreign type Labelled = [name: string, ready: boolean, plain: Plain, items: Array<c_int>]
+   |                                                               ^^^^^
+   |
+   = help: a C structure holds other C structures, declared with `foreign type`
+
+error[E_FOREIGN_TYPE]: a C structure cannot hold Array<integer32>
+  --> foreign_structures.sayon:5:77
+   |
+ 5 | foreign type Labelled = [name: string, ready: boolean, plain: Plain, items: Array<c_int>]
+   |                                                                             ^^^^^^^^^^^^
+   |
+   = help: a C structure holds numbers, `pointer`, and other `foreign type` structures
+
+error[E_FOREIGN_TYPE]: a C structure cannot have type parameters
+  --> foreign_structures.sayon:6:14
+   |
+ 6 | foreign type Box<T> = [value: T]
+   |              ^^^
+   |
+   = help: declare a `foreign type` for each C structure, with the C types of its fields
+
+error[E_FOREIGN_TYPE]: a C structure cannot hold T
+  --> foreign_structures.sayon:6:31
+   |
+ 6 | foreign type Box<T> = [value: T]
+   |                               ^
+   |
+   = help: a C structure holds numbers, `pointer`, and other `foreign type` structures
+
+error[E_RECURSIVE_TYPE]: `Loop` contains itself, so it would have no size
+  --> foreign_structures.sayon:8:14
+   |
+ 8 | foreign type Loop = [inner: Inner, again: Loop]
+   |              ^^^^
+   |
+   = help: point to another with a `pointer` field, as C does
+
+error[E_FOREIGN_TYPE]: a C function cannot take Plain
+   --> foreign_structures.sayon:11:33
+    |
+ 11 |     function takes_plain(value: Plain) -> c_int
+    |                                 ^^^^^
+    |
+    = help: C takes structures declared with `foreign type`; pass anything else by its address
+
+error[E_FOREIGN_TYPE]: a C function cannot give Plain
+   --> foreign_structures.sayon:12:31
+    |
+ 12 |     function gives_plain() -> Plain
+    |                               ^^^^^
+    |
+    = help: C gives numbers, `pointer`, and `foreign type` structures
+
+error[E_FOREIGN_TYPE]: Inner cannot be passed to C
+   --> foreign_structures.sayon:16:28
+    |
+ 16 |     printf(c_string("%d"), Inner(x = 1))
+    |                            ^^^^^^^^^^^^
+    |
+    = help: a variadic C function takes a structure by its address: a `pointer`
+
+error[E_UNSUPPORTED_OPERATION]: string does not support reading from memory
+   --> foreign_structures.sayon:17:11
+    |
+ 17 |     print(memory.size<string>())
+    |           ^^^^^^^^^^^^^^^^^^^^^ explicit type argument
+
+11 errors found; nothing was run
+run `sayon explain E_FOREIGN_TYPE` to learn more about an error

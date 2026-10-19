@@ -540,6 +540,9 @@ pub enum ExprKind {
     },
     /// `null_pointer`.
     NullPointer,
+    /// `raw_size<T>()` in `standard/memory`: the bytes a value of a C type
+    /// takes, once the type is known.
+    SizeOf(Type),
     Binary {
         op: BinaryOp,
         lhs: Box<Expr>,
@@ -683,6 +686,7 @@ impl Expr {
             | ExprKind::String(_)
             | ExprKind::Nothing
             | ExprKind::NullPointer
+            | ExprKind::SizeOf(_)
             | ExprKind::Local { .. }
             | ExprKind::Constant(_)
             | ExprKind::FunctionRef { .. } => Vec::new(),
@@ -838,6 +842,7 @@ pub fn visit_expr_mut(expr: &mut Expr, f: &mut dyn FnMut(&mut Expr)) {
         | ExprKind::String(_)
         | ExprKind::Nothing
         | ExprKind::NullPointer
+        | ExprKind::SizeOf(_)
         | ExprKind::Local { .. }
         | ExprKind::Constant(_)
         | ExprKind::FunctionRef { .. } => {}
