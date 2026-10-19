@@ -28,4 +28,6 @@ DeadlockError every task is waiting, so none can go on
 sent 2
 unsent ["c", "d"] ChannelClosedError
 124750
+on time 0
+late 1
 cleanup runs on cancel

@@ -121,10 +121,57 @@ function elapsed(since: Instant) -> Duration
 function between(earlier: Instant, later: Instant) -> Duration
     return Duration(nanoseconds = later.nanoseconds - earlier.nanoseconds)
 
-# Waits for at least a duration. The program does nothing else meanwhile.
+# Waits for at least a duration, letting other tasks run.
 function sleep(duration: Duration)
     if duration.nanoseconds > 0
         task_sleep(duration.nanoseconds)
+
+# ----- deadlines and tickers ---------------------------------------------------
+
+# A moment of the monotonic clock that work is to be done by.
+type Deadline = [at: Instant]
+
+# The moment a duration from now.
+function deadline(after: Duration) -> Deadline
+    return Deadline(at = Instant(nanoseconds = host_monotonic() + after.nanoseconds))
+
+# The time left until the deadline; none once it has passed.
+function deadline_remaining(deadline: Deadline) -> Duration
+    left = deadline.at.nanoseconds - host_monotonic()
+    if left < 0
+        return Duration(nanoseconds = 0)
+    return Duration(nanoseconds = left)
+
+# Whether the deadline has passed.
+function deadline_passed(deadline: Deadline) -> boolean
+    return host_monotonic() >= deadline.at.nanoseconds
+
+# Waits until the deadline, letting other tasks run.
+function deadline_wait(deadline: Deadline)
+    sleep(deadline_remaining(deadline))
+
+# Beats at a steady interval, for work done every so often: the beats keep
+# to the interval however long the work between them takes.
+type Ticker = [next: integer, interval: Duration]
+
+# A ticker whose first beat is an interval from now. Fails with ValueError
+# for an interval that is not longer than zero.
+function ticker(interval: Duration) -> Ticker
+    if interval.nanoseconds <= 0
+        host_value_fail("a ticker needs an interval longer than zero")
+    return Ticker(next = host_monotonic() + interval.nanoseconds, interval = interval)
+
+# Waits for the next beat, letting other tasks run, and gives how many
+# beats have come: 1, or more when the work since the last beat took
+# longer than the interval and beats were missed.
+function ticker_wait(update ticker: Ticker) -> integer
+    reading = host_monotonic()
+    if reading < ticker.next
+        task_sleep(ticker.next - reading)
+        reading = host_monotonic()
+    beats = 1 + (reading - ticker.next) / ticker.interval.nanoseconds
+    ticker.next = ticker.next + beats * ticker.interval.nanoseconds
+    return beats
 
 # ----- the wall clock and dates ------------------------------------------------
 

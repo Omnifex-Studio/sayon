@@ -170,6 +170,7 @@ hosts! {
     FinishSending = "finish_sending"(Stream) -> Nothing;
     Resolve = "resolve"(String) -> StringArray;
     HttpFail = "http_fail"(String) -> Nothing;
+    ValueFail = "value_fail"(String) -> Nothing;
 }
 
 impl Host {
@@ -178,7 +179,7 @@ impl Host {
     pub fn always_fails(self) -> bool {
         matches!(
             self,
-            Host::ParseError | Host::JsonFail | Host::HttpFail | Host::Exit
+            Host::ParseError | Host::JsonFail | Host::HttpFail | Host::ValueFail | Host::Exit
         )
     }
 
@@ -568,6 +569,7 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
         Host::FinishSending => crate::streams::finish_sending(stream(args, 0)).map(|()| V::Nothing),
         Host::Resolve => crate::network::resolve(string(args, 0)).map(V::Strings),
         Host::HttpFail => Err(("HttpError", string(args, 0).to_string())),
+        Host::ValueFail => Err(("ValueError", string(args, 0).to_string())),
         Host::StandardOutput => Ok(V::Stream(crate::streams::standard_output())),
         Host::StandardError => Ok(V::Stream(crate::streams::standard_error())),
         Host::Start => {

@@ -13,3 +13,7 @@
 "18/10/2026" is not an ISO 8601 date
 true
 true true
+false true
+true 0
+true
+ValueError a ticker needs an interval longer than zero

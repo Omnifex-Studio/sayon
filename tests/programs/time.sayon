@@ -24,3 +24,18 @@ waited = time.elapsed(start)
 print(time.in_milliseconds(waited) >= 20)
 now = time.now()
 print(now.year >= 2026, time.unix_seconds() > 1_700_000_000)
+
+# Deadlines and tickers.
+distant = time.deadline(time.seconds(10))
+print(distant.passed(), time.in_milliseconds(distant.remaining()) <= 10_000)
+soon = time.deadline(time.milliseconds(20))
+soon.wait()
+print(soon.passed(), soon.remaining().nanoseconds)
+ticker = time.ticker(time.milliseconds(10))
+beats = 0
+for _ in range(3)
+    beats += ticker.wait()
+print(beats >= 3)
+bad_ticker = try time.ticker(time.seconds(0))
+if bad_ticker is error
+    print(bad_ticker.code, bad_ticker.message)

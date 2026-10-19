@@ -159,3 +159,25 @@ sum = 0
 for n in range(500)
     sum += threads.receive(queue)
 print(sum)
+
+# A timer is a channel that receives a message once a delay has passed, so
+# `select` can wait for a message or for too long.
+enum Event
+    arrived(text: string)
+    late
+
+events: Channel<Event> = threads.new_channel()
+early = threads.spawn(function()
+    time.sleep(time.milliseconds(5))
+    threads.send(events, arrived("on time"))
+)
+for delay in [500, 30]
+    timer = threads.after(time.milliseconds(delay), late)
+    threads.select([events, timer], function(own event: Event, position: integer)
+        match event
+            case arrived(text)
+                print(text, position)
+            case late
+                print("late", position)
+    )
+threads.join(early)

@@ -21,6 +21,8 @@
 # whose handle is dropped without a `join` is cancelled; `detach` lets it
 # run on instead. Waiting when no other task can run raises DeadlockError.
 
+time = import("standard/time.sayon")
+
 # What `receive_result` gives: a message, or the end of a closed channel.
 enum ReceiveResult<T>
     message(value: T)
@@ -89,6 +91,24 @@ function receive_result<T>(channel: Channel<T>) -> ReceiveResult<T>
             return closed
         raise(outcome)
     return message(outcome)
+
+# A channel that receives `message` once `delay` has passed: a timer, which
+# `select` waits for along with other channels, so that waiting for a
+# message can end when it takes too long.
+function after<T>(delay: time.Duration, own message: T) -> Channel<T>
+    timer: Channel<T> = new_channel(1)
+    # The message waits in a channel of its own until it is due.
+    holding: Channel<T> = new_channel(1)
+    send(holding, message)
+    detach(spawn(function()
+        time.sleep(delay)
+        match recoverable_send(timer, receive(holding))
+            case sent
+                return
+            case unsent(_, _)
+                return
+    ))
+    return timer
 
 # Closes a channel: no more messages can be sent, and receivers get the
 # ones already sent and then ChannelClosedError.
