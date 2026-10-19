@@ -1,0 +1,47 @@
+# Generic functions that call each other.
+io = import("standard/io.sayon")
+
+enum Tree<T>
+    leaf(value: T)
+    node(children: Array<Tree<T>>)
+
+function count_leaves<T>(tree: Tree<T>) -> integer
+    match tree
+        case leaf(_)
+            return 1
+        case node(children)
+            return count_all(children)
+
+function count_all<T>(trees: Array<Tree<T>>) -> integer
+    total = 0
+    for tree in trees
+        total += count_leaves(tree)
+    return total
+
+numbers: Tree<integer> = node([leaf(1), node([leaf(2), leaf(3)]), node([])])
+words: Tree<string> = node([leaf("a"), leaf("b")])
+print(count_leaves(numbers), count_leaves(words))
+
+# The functions of a cycle can give each other other type arguments.
+function describe<T>(value: T, depth: integer) -> string
+    if depth == 0
+        return "{value}"
+    return wrap([clone(value)], depth - 1)
+
+function wrap<U>(items: Array<U>, depth: integer) -> string
+    return "[" + describe(length(items), depth) + "]"
+
+print(describe("x", 0), describe("x", 2), describe(2.5, 1))
+
+# A function calling itself through another, with its own type.
+function even<T>(items: Array<T>, index: integer) -> boolean
+    if index == length(items)
+        return true
+    return odd(items, index + 1)
+
+function odd<T>(items: Array<T>, index: integer) -> boolean
+    if index == length(items)
+        return false
+    return even(items, index + 1)
+
+print(even([1, 2, 3, 4], 0), even(["x"], 0))

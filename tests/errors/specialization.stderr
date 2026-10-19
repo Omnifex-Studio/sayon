@@ -1,0 +1,10 @@
+error[E_SPECIALIZATION_LIMIT]: `nest` would be specialized without end
+  --> specialization.sayon:3:10
+   |
+ 3 | function nest<T>(own value: T, depth: integer) -> integer
+   |          ^^^^ each call gives it a larger type argument, past 32 levels
+   |
+   = help: give the calls the same type arguments the function has, or hold the growing part in an enum or a union
+
+1 error found; nothing was run
+run `sayon explain E_SPECIALIZATION_LIMIT` to learn more about an error

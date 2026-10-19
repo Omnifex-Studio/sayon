@@ -89,6 +89,11 @@ impl Traits {
         Traits(self.0 | other.0)
     }
 
+    /// The traits of `self` that `other` does not have.
+    pub fn difference(self, other: Traits) -> Traits {
+        Traits(self.0 & !other.0)
+    }
+
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -552,11 +557,13 @@ impl Unifier {
             (Type::Unknown, _) | (_, Type::Unknown) => Ok(()),
             (Type::Var(x), _) => self.bind(*x, b.clone()),
             (_, Type::Var(y)) => self.bind(*y, a.clone()),
-            (Type::Array(x), Type::Array(y)) => self.unify(x, y).map_err(|_| self.mismatch(&a, &b)),
+            (Type::Array(x), Type::Array(y)) => {
+                self.unify(x, y).map_err(|e| self.within(e, &a, &b))
+            }
             (Type::Dict(k1, v1), Type::Dict(k2, v2)) => self
                 .unify(k1, k2)
                 .and_then(|_| self.unify(v1, v2))
-                .map_err(|_| self.mismatch(&a, &b)),
+                .map_err(|e| self.within(e, &a, &b)),
             (Type::Union(xs), Type::Union(ys)) => {
                 if xs.len() != ys.len() {
                     return Err(self.mismatch(&a, &b));
@@ -564,7 +571,7 @@ impl Unifier {
                 // Members are sorted; unresolved members sort together, so a
                 // pairwise match handles the common `T or nothing` shapes.
                 for (x, y) in xs.iter().zip(ys) {
-                    self.unify(x, y).map_err(|_| self.mismatch(&a, &b))?;
+                    self.unify(x, y).map_err(|e| self.within(e, &a, &b))?;
                 }
                 Ok(())
             }
@@ -575,20 +582,20 @@ impl Unifier {
                     return Err(self.mismatch(&a, &b));
                 }
                 for ((_, p), (_, q)) in x.params.iter().zip(&y.params) {
-                    self.unify(p, q).map_err(|_| self.mismatch(&a, &b))?;
+                    self.unify(p, q).map_err(|e| self.within(e, &a, &b))?;
                 }
                 self.unify(&x.ret, &y.ret)
-                    .map_err(|_| self.mismatch(&a, &b))
+                    .map_err(|e| self.within(e, &a, &b))
             }
             (Type::Wrapper(k, x), Type::Wrapper(j, y)) if k == j => {
-                self.unify(x, y).map_err(|_| self.mismatch(&a, &b))
+                self.unify(x, y).map_err(|e| self.within(e, &a, &b))
             }
             (Type::View(x, m), Type::View(y, n)) if m == n => {
-                self.unify(x, y).map_err(|_| self.mismatch(&a, &b))
+                self.unify(x, y).map_err(|e| self.within(e, &a, &b))
             }
             (Type::Named(x), Type::Named(y)) if x.id == y.id => {
                 for (p, q) in x.args.iter().zip(&y.args) {
-                    self.unify(p, q).map_err(|_| self.mismatch(&a, &b))?;
+                    self.unify(p, q).map_err(|e| self.within(e, &a, &b))?;
                 }
                 Ok(())
             }
@@ -599,6 +606,17 @@ impl Unifier {
 
     fn mismatch(&self, a: &Type, b: &Type) -> UnifyError {
         UnifyError::Mismatch(self.resolve_for_display(a), self.resolve_for_display(b))
+    }
+
+    /// The error for types `a` and `b` that failed to unify in a part: a
+    /// part lacking an operation, such as a structure that cannot be cloned
+    /// inside an array, is reported as such, and anything else as a
+    /// mismatch of the whole types.
+    fn within(&self, error: UnifyError, a: &Type, b: &Type) -> UnifyError {
+        match error {
+            UnifyError::Unsupported { .. } => error,
+            _ => self.mismatch(a, b),
+        }
     }
 
     /// Applies literal defaults to an unresolved variable. Returns false when

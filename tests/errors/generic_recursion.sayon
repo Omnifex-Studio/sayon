@@ -1,0 +1,25 @@
+io = import("standard/io.sayon")
+
+# A generic function in a cycle needs its types written.
+function ping<T>(value: T, n)
+    if n > 0
+        pong(value, n - 1)
+
+function pong(value, n)
+    ping(value, n)
+
+# What one function of a cycle requires of its type argument, the others
+# require too: `second` clones its items, so `first` can only take items
+# that can be cloned.
+function first<T>(items: Array<T>, count: integer) -> Array<T>
+    if count == 0
+        return []
+    return second(items, count - 1)
+
+function second<T>(items: Array<T>, count: integer) -> Array<T>
+    if count == 0
+        return clone(items)
+    return first(items, count - 1)
+
+files: Array<io.File> = []
+copied = first(files, 2)

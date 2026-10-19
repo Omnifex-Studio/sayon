@@ -318,6 +318,12 @@ pub(crate) struct Checker<'a> {
     pub deferred: Vec<Deferred>,
     /// Functions in the component currently being inferred.
     pub current_component: Vec<FuncId>,
+    /// The function of that component whose body is being checked.
+    pub checking: Option<FuncId>,
+    /// Calls between functions of the component of a generic function with
+    /// a written signature: caller, callee, the callee's type arguments,
+    /// and where, for the type parameters' requirements to be passed on.
+    pub component_calls: Vec<(FuncId, FuncId, Vec<Type>, Span)>,
     pub reported_vars: HashSet<TyVar>,
     /// Where an unusable key type was reported, so each place is reported once.
     pub reported_key_spans: HashSet<Span>,
@@ -374,6 +380,8 @@ impl<'a> Checker<'a> {
             script_names: HashSet::new(),
             deferred: Vec::new(),
             current_component: Vec::new(),
+            checking: None,
+            component_calls: Vec::new(),
             reported_vars: HashSet::new(),
             reported_key_spans: HashSet::new(),
             reported_view_spans: HashSet::new(),
@@ -1659,6 +1667,14 @@ impl<'a> Checker<'a> {
 
     /// Creates the monomorphic signature used while a function's component is
     /// being inferred.
+    /// Whether a function's parameters and result all have written types,
+    /// so that its signature is known before its body is checked.
+    pub fn fully_annotated(&self, id: FuncId) -> bool {
+        self.functions[id.0 as usize]
+            .ast
+            .is_some_and(|f| f.ret.is_some() && f.params.iter().all(|p| p.ty.is_some()))
+    }
+
     pub fn initial_signature(&mut self, id: FuncId) -> Signature {
         let function = self.functions[id.0 as usize].ast.expect("function source");
         let module = self.functions[id.0 as usize].module;
@@ -1739,6 +1755,15 @@ impl<'a> Checker<'a> {
         let mut type_args = Vec::new();
         for bounds in &signature.bounds {
             type_args.push(self.fresh_bounded(*bounds, span));
+        }
+        // A call inside the component of a generic function with a written
+        // signature, whose requirements are known only once every body of
+        // the component has been checked.
+        if self.current_component.contains(&id)
+            && let Some(caller) = self.checking
+        {
+            self.component_calls
+                .push((caller, id, type_args.clone(), span));
         }
         if !explicit.is_empty() {
             if explicit.len() as u32 != signature.explicit_generics {

@@ -38,7 +38,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Structure patterns (positional and by field name), named variant fields, `or` alternatives | experimental | M2 |
 | Function values, closures, captured state, function types | experimental | M2 |
 | Functions declared inside functions (closures) | experimental | M2 |
-| Mutually recursive generic functions | planned | M3, with specialization budgets |
+| Mutually recursive generic functions, with a limit on how deeply type arguments grow | experimental | M3 |
 | Methods: `value.name(...)` calls a function declared beside the value's type | experimental | M2 |
 | `for` loops over iterators, through a `next` method | experimental | M2 |
 | `try` expressions, `is error` narrowing, `Outcome<T>`, unused-outcome warning | experimental | M2 |

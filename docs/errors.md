@@ -193,6 +193,14 @@ A dictionary key type is not usable as a key. Keys must stay equal to themselves
 
 A dictionary literal gives the same key twice; the later one would replace the earlier.
 
+### E_GENERIC_RECURSION
+
+A generic function calls itself through other functions, and the type of one of its parameters, or its result, is not written. The functions of such a cycle are checked together, and a generic one among them needs its whole signature known before its body is: write it, as in `function walk<T>(items: Array<T>) -> integer`.
+
+### E_SPECIALIZATION_LIMIT
+
+A generic function calls itself, directly or through others, with a type argument that grows each time, such as `nest([value])` inside `nest<T>(own value: T)`. Each set of type arguments makes a version of the function, so this one would need versions without end. Call it with the type arguments it has, or keep the growing part in an enum or a union, whose type stays the same.
+
 ### E_UNAVAILABLE
 
 The feature is specified but belongs to a later milestone; the message names it. The feature ledger in `docs/features.md` lists what is planned. Generic functions that call each other wait for M3, which limits how many specializations a program may need, since `f<T>` calling `g<Array<T>>` calling `f<Array<Array<T>>>` would need ever more.

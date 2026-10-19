@@ -2,10 +2,12 @@
 
 use crate::checker::{Checker, ConstState, FnCtx, FunctionEntry, Item, Signature};
 use crate::hir::{self, ConstId, FuncId, LocalKind};
+use crate::infer::Traits;
 use crate::narrow::block_exits;
 use crate::types::Type;
 use sayon_syntax::Diagnostic;
 use sayon_syntax::ast;
+use std::collections::HashMap;
 
 impl<'a> Checker<'a> {
     pub fn check_component(&mut self, component: &[Item], init_order: &mut Vec<ConstId>) {
@@ -92,6 +94,53 @@ impl<'a> Checker<'a> {
         self.check_functions(&functions);
     }
 
+    /// Passes the requirements of the type parameters of a component's
+    /// generic functions on to the type arguments its calls give them,
+    /// until nothing more is required: a function that calls one requiring
+    /// that its type parameter be cloned, with its own type parameter,
+    /// requires that of its own callers too.
+    fn pass_on_requirements(&mut self, required: &mut HashMap<FuncId, HashMap<u32, Traits>>) {
+        let calls = std::mem::take(&mut self.component_calls);
+        // What each call has already passed on, for each type argument.
+        let mut passed: Vec<Vec<Traits>> = calls
+            .iter()
+            .map(|(_, _, args, _)| vec![Traits::NONE; args.len()])
+            .collect();
+        loop {
+            let mut changed = false;
+            for (position, (caller, callee, args, span)) in calls.iter().enumerate() {
+                for (index, arg) in args.iter().enumerate() {
+                    let wanted = required
+                        .get(callee)
+                        .and_then(|traits| traits.get(&(index as u32)))
+                        .copied()
+                        .unwrap_or_default();
+                    let new = Traits::difference(wanted, passed[position][index]);
+                    if new.is_empty() {
+                        continue;
+                    }
+                    passed[position][index] = passed[position][index].union(new);
+                    self.unifier.param_traits.clear();
+                    self.require_traits(arg, new, *span, "a type argument of this call");
+                    for (param, traits) in std::mem::take(&mut self.unifier.param_traits) {
+                        let entry = required
+                            .entry(*caller)
+                            .or_default()
+                            .entry(param)
+                            .or_default();
+                        if !entry.contains(traits) {
+                            *entry = entry.union(traits);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+    }
+
     fn uses_itself(&self, id: ConstId) -> bool {
         let constant = &self.constants[id.0 as usize];
         let mut names = Vec::new();
@@ -148,46 +197,84 @@ impl<'a> Checker<'a> {
             let signature = self.initial_signature(*id);
             self.functions[id.0 as usize].signature = Some(signature);
         }
-        if functions.len() > 1 {
-            for id in functions {
+        // A generic function whose parameter and result types are written
+        // has its final signature already, so the calls of it in its own
+        // component are instantiated like any other: the functions of a
+        // component can call each other with type arguments of their own.
+        let mut written = Vec::new();
+        for id in functions {
+            let explicit = self.functions[id.0 as usize]
+                .signature
+                .as_ref()
+                .is_some_and(|s| s.explicit_generics > 0);
+            if !explicit {
+                continue;
+            }
+            if self.fully_annotated(*id) {
+                written.push(*id);
+                self.functions[id.0 as usize].generalized = true;
+            } else if functions.len() > 1 {
                 let entry = &self.functions[id.0 as usize];
-                if entry
-                    .signature
-                    .as_ref()
-                    .is_some_and(|s| s.explicit_generics > 0)
-                {
-                    let span = entry.span;
-                    self.unavailable(span, "mutually recursive generic functions", "M3");
-                }
+                let (span, name) = (entry.span, entry.name.clone());
+                self.error(
+                    Diagnostic::error(
+                        "E_GENERIC_RECURSION",
+                        format!(
+                            "`{name}` is generic and calls itself through other functions, so its types must be written"
+                        ),
+                    )
+                    .primary(span, "")
+                    .help("write the type of every parameter and the result, as in `function walk<T>(items: Array<T>) -> integer`"),
+                );
             }
         }
         self.current_component = functions.to_vec();
-        self.unifier.param_traits.clear();
+        self.component_calls.clear();
+        // What each body requires of its own type parameters, such as
+        // cloning their values or converting them to JSON.
+        let mut required: HashMap<FuncId, HashMap<u32, Traits>> = HashMap::new();
         let mut bodies = Vec::new();
         for id in functions {
+            self.unifier.param_traits.clear();
+            self.checking = Some(*id);
             bodies.push(self.check_function_body(*id));
+            self.solve_deferred(false);
+            required.insert(*id, std::mem::take(&mut self.unifier.param_traits));
         }
-        self.current_component.clear();
+        self.checking = None;
+        self.unifier.param_traits.clear();
         self.solve_deferred(true);
-        // A body that clones values of an explicit type parameter, or
-        // converts them to or from JSON, requires callers to give a type
-        // that supports it. (A component with explicit type parameters has
-        // one function.)
-        let required = std::mem::take(&mut self.unifier.param_traits);
-        if let [id] = functions
-            && let Some(signature) = &mut self.functions[id.0 as usize].signature
-        {
-            for (index, traits) in required {
-                if index < signature.explicit_generics
-                    && let Some(bounds) = signature.bounds.get_mut(index as usize)
-                {
-                    bounds.traits = bounds.traits.union(traits);
+        // What the last constraints required belongs to the component's
+        // generic functions together.
+        for (index, traits) in std::mem::take(&mut self.unifier.param_traits) {
+            for id in &written {
+                let entry = required.entry(*id).or_default().entry(index).or_default();
+                *entry = entry.union(traits);
+            }
+        }
+        self.pass_on_requirements(&mut required);
+        self.current_component.clear();
+        // A caller must give type arguments that support what the body
+        // requires of them.
+        for id in functions {
+            let Some(traits) = required.remove(id) else {
+                continue;
+            };
+            if let Some(signature) = &mut self.functions[id.0 as usize].signature {
+                for (index, traits) in traits {
+                    if index < signature.explicit_generics
+                        && let Some(bounds) = signature.bounds.get_mut(index as usize)
+                    {
+                        bounds.traits = bounds.traits.union(traits);
+                    }
                 }
             }
         }
 
-        if functions.len() == 1 {
-            self.generalize(functions[0]);
+        if let [id] = functions
+            && !written.contains(id)
+        {
+            self.generalize(*id);
         } else {
             for id in functions {
                 self.functions[id.0 as usize].generalized = true;

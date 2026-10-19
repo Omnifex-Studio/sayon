@@ -1,0 +1,8 @@
+# Each call wraps the value in another array, so `nest` would need a
+# version for every depth.
+function nest<T>(own value: T, depth: integer) -> integer
+    if depth == 0
+        return 0
+    return 1 + nest([value], depth - 1)
+
+print(nest(1, 3))

@@ -181,6 +181,8 @@ function wrap<T>(own value: T) -> Array<T>
 numbers = wrap<integer>(42)
 ```
 
+Generic functions with written types can call each other, each with type arguments of its own, as `count_leaves<T>(tree: Tree<T>)` and `count_all<T>(trees: Array<Tree<T>>)` can for a tree. A generic function that calls itself through other functions needs the types of its parameters and its result written (`E_GENERIC_RECURSION`), and what one function of such a cycle requires of its type parameter, the functions calling it with theirs require too. Each set of type arguments makes a version of the function, so one that calls itself with a type argument that grows each time, as `nest([value])` inside `nest<T>(own value: T)` would, is an error (`E_SPECIALIZATION_LIMIT`).
+
 Type arguments may be given in a call, as `wrap<integer>(42)`. A union directly inside them, as in `f<integer or string>(x)`, reads as a comparison, so write such a type deeper inside, as in `f<Array<integer or string>>(x)`, or give it through an annotation: `value: integer or string = f(x)`.
 
 When a value's type cannot be determined, for example an empty `[]` that is never used, the compiler asks for an annotation.

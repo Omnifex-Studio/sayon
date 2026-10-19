@@ -14,7 +14,28 @@ use sayon_check::types::{
 use sayon_runtime::host::{CANCELLED_CODE, EXIT_CODE};
 use sayon_syntax::ast::{BinaryOp, ParamMode, UnaryOp};
 use sayon_syntax::{Diagnostic, Span};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// How deeply the type arguments of a function's instance may nest. A
+/// generic function that calls itself, or calls itself through others,
+/// with a type argument that grows each time would otherwise be
+/// instantiated without end.
+const SPECIALIZATION_DEPTH: usize = 32;
+
+/// How deeply a type nests: 1 for a type made of no other types.
+fn type_depth(ty: &Type) -> usize {
+    let inner = match ty {
+        Type::Array(element) | Type::View(element, _) | Type::Wrapper(_, element) => {
+            type_depth(element)
+        }
+        Type::Dict(key, value) => type_depth(key).max(type_depth(value)),
+        Type::Union(members) => members.iter().map(type_depth).max().unwrap_or(0),
+        Type::Named(named) => named.args.iter().map(type_depth).max().unwrap_or(0),
+        Type::Function(function) => function.types().map(type_depth).max().unwrap_or(0),
+        _ => 0,
+    };
+    inner + 1
+}
 
 mod json;
 
@@ -46,6 +67,7 @@ fn lower_program(program: &hir::Program, include_tests: bool) -> LowerOutput {
         thunks: HashMap::new(),
         decoders: HashMap::new(),
         encoders: HashMap::new(),
+        unbounded: HashSet::new(),
     };
     let globals = program
         .constants
@@ -181,6 +203,8 @@ struct Lowerer<'p> {
     /// The generated functions reading each type from JSON, and writing it.
     decoders: HashMap<Type, FunctionId>,
     encoders: HashMap<Type, FunctionId>,
+    /// The functions reported for type arguments that grow without end.
+    unbounded: HashSet<hir::FuncId>,
 }
 
 impl<'p> Lowerer<'p> {
@@ -198,6 +222,34 @@ impl<'p> Lowerer<'p> {
     fn instance(&mut self, func: hir::FuncId, args: Vec<Type>) -> FunctionId {
         if let Some(id) = self.instances.get(&(func, args.clone())) {
             return *id;
+        }
+        if args.iter().map(type_depth).max().unwrap_or(0) > SPECIALIZATION_DEPTH {
+            let source = self.program.function(func);
+            if self.unbounded.insert(func) {
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        "E_SPECIALIZATION_LIMIT",
+                        format!("`{}` would be specialized without end", source.name),
+                    )
+                    .primary(
+                        source.span,
+                        format!(
+                            "each call gives it a larger type argument, past {SPECIALIZATION_DEPTH} levels"
+                        ),
+                    )
+                    .help("give the calls the same type arguments the function has, or hold the growing part in an enum or a union"),
+                );
+            }
+            // Another instance stands in, so that lowering ends; the
+            // program is not run.
+            if let Some(id) = self
+                .instances
+                .iter()
+                .find(|((other, _), _)| *other == func)
+                .map(|(_, id)| *id)
+            {
+                return id;
+            }
         }
         let id = FunctionId(self.functions.len() as u32);
         self.functions.push(None);

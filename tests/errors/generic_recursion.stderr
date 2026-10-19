@@ -1,0 +1,16 @@
+error[E_GENERIC_RECURSION]: `ping` is generic and calls itself through other functions, so its types must be written
+  --> generic_recursion.sayon:4:10
+   |
+ 4 | function ping<T>(value: T, n)
+   |          ^^^^
+   |
+   = help: write the type of every parameter and the result, as in `function walk<T>(items: Array<T>) -> integer`
+
+error[E_UNSUPPORTED_OPERATION]: File does not support cloning
+   --> generic_recursion.sayon:25:16
+    |
+ 25 | copied = first(files, 2)
+    |                ^^^^^ argument for `items`
+
+2 errors found; nothing was run
+run `sayon explain E_GENERIC_RECURSION` to learn more about an error
