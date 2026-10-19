@@ -736,11 +736,11 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 
 | Module | Functions |
 |---|---|
-| `standard/io.sayon` | `read_file`, `write_file`, `append_file`, `read_lines`, `read_file_bytes`, `write_file_bytes`, `read_line` (standard input; `nothing` at the end), `write` (no newline), `write_error`; `open` for a `File`, and `input`, `output`, and `errors` for the standard streams as ones, with the methods `read_line`, `lines`, `read`, `read_bytes`, `write`, `write_line`, `write_bytes`, `flush`, `position`, `seek`, `close`; `copy` |
+| `standard/io.sayon` | `read_file`, `write_file`, `append_file`, `read_lines`, `read_file_bytes`, `write_file_bytes`, `read_line` (standard input; `nothing` at the end), `write` (no newline), `write_error`; `open` for a `File`, and `input`, `output`, and `errors` for the standard streams as ones, with the methods `read_line`, `lines`, `read`, `read_bytes`, `read_text` (a part of the text, never cutting a character), `write`, `write_line`, `write_bytes`, `flush`, `position`, `seek`, `close`; `copy` |
 | `standard/os.sayon` | `arguments` (the words after `--` with `sayon run`), `environment`, `platform`, `current_directory`, `exit`, `run` (a `Completed` with `status`, `output`, and `errors`), `start` (a `Process` with the files `input`, `output`, and `errors`, and the methods `finish_input`, `wait`, `stop`, `id`) |
 | `standard/filesystem.sayon` | `exists`, `is_file`, `is_directory`, `is_link`, `list` (sorted names), `walk` (everything below a directory), `size`, `create_directory`, `remove`, `rename`, `copy`, `join`, `name`, `parent`, `extension` |
 | `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters`, `code` (a character's Unicode code), `character` (the character with a code), `graphemes`, `grapheme_count`, `bytes`, `byte_view`, `from_bytes` (strict UTF-8), `from_bytes_lossy` |
-| `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer`; typed values: `decode`, `encode_value`, `from_json`, `to_json` |
+| `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer`; typed values: `decode`, `encode_value`, `from_json`, `to_json`; streams: `items`, `lines`, `write_items` (an `ItemWriter` with `add`, `add_value`, `finish`) |
 | `standard/threads.sayon` | `spawn`, `join`, `detach`, `pause`, `new_channel`, `new_unbounded_channel`, `after`, `send`, `recoverable_send` (a `SendResult<T>`), `receive`, `receive_result` (a `ReceiveResult<T>`), `close`, `select`; see [Tasks and channels](#tasks-and-channels) |
 | `standard/network.sayon` | `connect` for a `Connection` (`read_line`, `lines`, `read`, `read_bytes`, `write`, `write_line`, `write_bytes`, `flush`, `finish_sending`, `set_timeout`, `local_address`, `peer_address`, `close`), `listen` for a `Listener` (`accept`, `address`, `set_timeout`, `close`), `bind` for a `DatagramSocket` (`send`, `receive`, `address`, `set_timeout`, `close`), `resolve`, `address_text`; HTTP: `get`, `post`, `request`, and `Response` (`text`, `header`, `succeeded`); see [Networking](#networking) |
 | `standard/time.sayon` | `Duration` (`nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `add`, `subtract`, `scale`, `in_seconds`, `in_milliseconds`, `describe`), the monotonic clock (`start`, `elapsed`, `between`, `sleep`), `deadline` for a `Deadline` (`remaining`, `passed`, `wait`), `ticker` for a `Ticker` (`wait`), and UTC dates (`DateTime`, `now`, `unix_seconds`, `from_unix`, `to_unix`, `shift`, `difference`, `weekday`, `is_leap_year`, `days_in_month`, `format` and `parse` for ISO 8601) |
@@ -853,6 +853,19 @@ points = json.decode<Array<Point>>("[]")
 - An integer must be written without a fraction or exponent and fit its type; all 64 bits of `unsigned` and `integer` are kept exactly.
 - JSON that does not fit raises `DecodeError`, starting with the path to the place: `$.points[0].y: expected float, found text`.
 - Types JSON cannot hold, such as function values or dictionaries with integer keys, are compile errors, and so are unions where two members read the same kind of JSON value, such as `Point or Line` (both objects). A generic function that decodes its type parameter passes this requirement on to its callers.
+
+Files too large to read at once are read and written a value at a time. `json.items(file)` reads the items of the array a file holds as a `for` loop goes through them, and `json.lines(file)` the values of a file of JSON Lines, one value on each line; a `ParseError` names the item or the line. `json.write_items(file)` gives an `ItemWriter`, whose `add(value)` and `add_value(value)` write an item each and whose `finish()` ends the array.
+
+```sayon
+json = import("standard/json.sayon")
+io = import("standard/io.sayon")
+
+file = io.open("orders.json")
+total = 0
+for order in json.items(file)
+    total += 1
+file.close()
+```
 - Writing a float that is infinite or not a number raises `ValueError`, since JSON has no number for it.
 
 ### Time

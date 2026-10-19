@@ -101,6 +101,12 @@ function file_read(update file: File) -> string
 function file_read_bytes(update file: File, count: integer) -> Array<byte>
     return host_stream_read_bytes(file.stream, count)
 
+# Up to `count` bytes of text, or a few more to end with a whole character;
+# "" only at the end of the file. Reading a file a part at a time this way
+# never cuts a character in two.
+function file_read_text(update file: File, count: integer) -> string
+    return host_stream_read_text(file.stream, count)
+
 function file_write(update file: File, text: string)
     host_stream_write(file.stream, text)
 

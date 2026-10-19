@@ -13,7 +13,12 @@
 # not JSON: a value followed by anything but whitespace, a field name that
 # appears twice in one object, an escape for half of a surrogate pair, a
 # control character inside a string, or nesting more than 512 levels deep.
+#
+# Files too large to read at once are read a value at a time: `items` reads
+# the items of the array a file holds, `lines` the values of a file of JSON
+# Lines, and `write_items` writes an array an item at a time.
 
+io = import("standard/io.sayon")
 strings = import("standard/strings.sayon")
 
 enum Json
@@ -482,3 +487,161 @@ private function write_string(update parts: Array<string>, content: string)
 
 private function hex_pair(code: integer) -> string
     return strings.slice(HEX_DIGITS, code / 16, code / 16 + 1) + strings.slice(HEX_DIGITS, code % 16, code % 16 + 1)
+
+# ----- streams -----------------------------------------------------------------
+
+# The items of the JSON array a file holds, from `items`, read as a loop
+# goes through them.
+type Items = [stream: HostStream, buffer: Array<string>, position: integer, count: integer, started: boolean, finished: boolean]
+
+# The items of the JSON array a file holds, for a `for` loop that reads
+# them one at a time, so that the array need not fit in memory:
+#
+#     for item in json.items(file)
+#         print(json.field(item, "name"))
+#
+# Fails with ParseError, naming the item, when the file does not hold an
+# array or an item is not JSON.
+function items(update file: io.File) -> Items
+    return Items(stream = host_stream_share(file.stream), buffer = [], position = 0, count = 0, started = false, finished = false)
+
+function items_next(update items: Items) -> Json or nothing
+    if items.finished
+        return nothing
+    skip_blank(items)
+    if not items.started
+        if peek(items) != "["
+            host_parse_error("the file does not start with a JSON array")
+        items.position += 1
+        items.started = true
+        skip_blank(items)
+        if peek(items) == "]"
+            return finish_items(items)
+    else
+        next = peek(items)
+        if next == "]"
+            return finish_items(items)
+        if next != ","
+            host_parse_error("expected `,` or `]` after item {items.count} of the array")
+        items.position += 1
+        skip_blank(items)
+    text = scan_item(items)
+    items.count += 1
+    outcome = try parse(text)
+    if outcome is error
+        host_parse_error("item {items.count} of the array: {outcome.message}")
+    return outcome
+
+# The next character of the file, reading more of it when the buffer is
+# used up; "" at its end.
+private function peek(update items: Items) -> string
+    if items.position >= length(items.buffer)
+        items.buffer = strings.characters(host_stream_read_text(items.stream, 16_384))
+        items.position = 0
+        if length(items.buffer) == 0
+            return ""
+    return clone(items.buffer[items.position])
+
+private function skip_blank(update items: Items)
+    while true
+        next = peek(items)
+        if next != " " and next != "\t" and next != "\n" and next != "\r"
+            return
+        items.position += 1
+
+# The end of the array: nothing may follow it but whitespace.
+private function finish_items(update items: Items) -> Json or nothing
+    items.position += 1
+    items.finished = true
+    skip_blank(items)
+    if peek(items) != ""
+        host_parse_error("unexpected text after the array")
+    return nothing
+
+# The text of the next item: up to the `,` or `]` after it, outside any
+# string or nested value.
+private function scan_item(update items: Items) -> string
+    parts: Array<string> = []
+    depth = 0
+    quoted = false
+    escaped = false
+    while true
+        next = peek(items)
+        if next == ""
+            host_parse_error("the file ends inside item {items.count + 1} of the array")
+        if quoted
+            push(parts, clone(next))
+            items.position += 1
+            if escaped
+                escaped = false
+            elseif next == "\\"
+                escaped = true
+            elseif next == "\""
+                quoted = false
+                if depth == 0
+                    return strings.join(parts, "")
+        elseif depth == 0 and (next == "," or next == "]" or next == " " or next == "\n" or next == "\r" or next == "\t")
+            if length(parts) == 0
+                host_parse_error("expected item {items.count + 1} of the array")
+            return strings.join(parts, "")
+        else
+            push(parts, clone(next))
+            items.position += 1
+            if next == "\""
+                quoted = true
+            elseif next == "[" or next == "{{"
+                depth += 1
+            elseif next == "]" or next == "}}"
+                depth -= 1
+                if depth == 0
+                    return strings.join(parts, "")
+
+# The values of a file of JSON Lines, from `lines`: one value on each line.
+type Lines = [stream: HostStream, line: integer]
+
+# The values of a file of JSON Lines, one on each line, for a `for` loop
+# that reads them one at a time. Blank lines are skipped. Fails with
+# ParseError, naming the line, for a line that is not JSON.
+function lines(update file: io.File) -> Lines
+    return Lines(stream = host_stream_share(file.stream), line = 0)
+
+function lines_next(update lines: Lines) -> Json or nothing
+    while true
+        text = host_stream_read_line(lines.stream, io.LINE_LIMIT)
+        if text == nothing
+            return nothing
+        lines.line += 1
+        if strings.trim(text) != ""
+            outcome = try parse(text)
+            if outcome is error
+                host_parse_error("line {lines.line}: {outcome.message}")
+            return outcome
+
+# Writes a JSON array to a file an item at a time, from `write_items`.
+# `finish()` ends the array; the file is still to be closed.
+type ItemWriter = [stream: HostStream, count: integer]
+
+# Starts writing a JSON array to a file, an item on each line.
+function write_items(update file: io.File) -> ItemWriter
+    stream = host_stream_share(file.stream)
+    host_stream_write(stream, "[")
+    return ItemWriter(stream = stream, count = 0)
+
+function item_writer_add(update writer: ItemWriter, value: Json)
+    if writer.count == 0
+        host_stream_write(writer.stream, "\n")
+    else
+        host_stream_write(writer.stream, ",\n")
+    host_stream_write(writer.stream, encode(value))
+    writer.count += 1
+
+# Adds a value of any type JSON can hold, as `encode_value` writes it.
+function item_writer_add_value<T>(update writer: ItemWriter, value: T)
+    item_writer_add(writer, to_json(value))
+
+# Ends the array.
+function item_writer_finish(own writer: ItemWriter)
+    if writer.count == 0
+        host_stream_write(writer.stream, "]\n")
+    else
+        host_stream_write(writer.stream, "\n]\n")

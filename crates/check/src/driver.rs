@@ -276,6 +276,23 @@ impl<'a> Checker<'a> {
         {
             self.generalize(*id);
         } else {
+            // A function of a cycle whose result nothing constrains, one
+            // that only fails, returns nothing, as one outside a cycle does.
+            for id in functions {
+                let Some(signature) = &self.functions[id.0 as usize].signature else {
+                    continue;
+                };
+                let mut free = Vec::new();
+                for param in &signature.params {
+                    self.unifier.free_vars(param, &mut free);
+                }
+                if let Type::Var(var) = self.unifier.shallow(&signature.ret)
+                    && !free.contains(&var)
+                    && self.unifier.bounds(var) == crate::infer::Bounds::default()
+                {
+                    self.unifier.force_bind(var, Type::Nothing);
+                }
+            }
             for id in functions {
                 self.functions[id.0 as usize].generalized = true;
             }

@@ -98,7 +98,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Text encodings other than UTF-8 | planned | M3 |
 | `standard/json`: `Json` values, parse with positions in errors, compact and pretty encoding, exact number text, duplicate-field and depth limits | experimental | M2 |
 | `standard/json` typed values: `decode`, `encode_value`, `from_json`, `to_json` for numbers, text, arrays, dictionaries, structures, enums, and unions, with paths in errors | experimental | M2 |
-| `standard/json` streaming reading and writing | planned | M3 |
+| `standard/json` streams: the items of a large array (`items`), JSON Lines (`lines`), and writing an array an item at a time (`write_items`) | experimental | M3 |
 | `standard/collections`: stable sorting, `Set`, `Queue`; `remove` and `swap` built-ins | experimental | M2 |
 | `standard/time`: durations, monotonic clock, sleep, UTC dates, ISO 8601 | experimental | M2 |
 | `standard/time` deadlines and tickers; timers as channels (`threads.after`) | experimental | M3 |

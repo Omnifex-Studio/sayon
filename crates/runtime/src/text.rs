@@ -3,6 +3,40 @@
 
 use std::fmt::Write as _;
 
+/// The longest start of `bytes`, up to `limit` bytes, that ends between
+/// two UTF-8 characters: a character cut by the limit, or by the end of
+/// `bytes`, is left out.
+pub fn char_boundary(bytes: &[u8], limit: usize) -> usize {
+    let mut end = limit.min(bytes.len());
+    // Back to the start of a character cut by the limit.
+    while end > 0 && end < bytes.len() && bytes[end] & 0xC0 == 0x80 {
+        end -= 1;
+    }
+    if end < bytes.len() {
+        return end;
+    }
+    // A last character that the bytes end inside of is left out too.
+    let mut start = end;
+    while start > 0 && end - start < 4 && bytes[start - 1] & 0xC0 == 0x80 {
+        start -= 1;
+    }
+    if start == 0 {
+        return end;
+    }
+    let lead = bytes[start - 1];
+    let length = match lead {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        _ => 4,
+    };
+    if start - 1 + length > end {
+        start - 1
+    } else {
+        end
+    }
+}
+
 /// How `print` and `tostring` show a `pointer`: without its address, which
 /// is the process's own business.
 pub fn pointer_text(address: usize) -> String {
@@ -189,6 +223,22 @@ pub fn integer_type_range(code: u32) -> (i128, i128) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn character_boundaries() {
+        let text = "aé☕".as_bytes(); // 1, 2, and 3 bytes
+        assert_eq!(char_boundary(text, 0), 0);
+        assert_eq!(char_boundary(text, 1), 1);
+        assert_eq!(char_boundary(text, 2), 1);
+        assert_eq!(char_boundary(text, 3), 3);
+        assert_eq!(char_boundary(text, 5), 3);
+        assert_eq!(char_boundary(text, 6), 6);
+        assert_eq!(char_boundary(text, 99), 6);
+        // Bytes that end inside their last character leave it out.
+        assert_eq!(char_boundary(&text[..5], 5), 3);
+        assert_eq!(char_boundary(&text[..2], 2), 1);
+        assert_eq!(char_boundary(b"plain", 3), 3);
+    }
 
     #[test]
     fn floats_display_like_literals() {

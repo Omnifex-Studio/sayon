@@ -190,6 +190,30 @@ impl PipeInput {
         Err(self.wait())
     }
 
+    /// Up to `count` bytes of text, as much as has arrived, ending with a
+    /// whole character; "" at the end.
+    pub fn read_text(self: &Arc<Self>, count: usize) -> Result<String, HostError> {
+        let mut received = lock(&self.received);
+        if count == 0 {
+            return Ok(String::new());
+        }
+        let limit = count.max(4).min(received.data.len());
+        let end = crate::text::char_boundary(&received.data, limit);
+        if end > 0 {
+            let text = self.take(&mut received, end);
+            return utf8(text, &self.name);
+        }
+        if received.ended {
+            self.failure(&received)?;
+            if received.data.is_empty() {
+                return Ok(String::new());
+            }
+            return Err(("EncodingError", format!("{} is not valid UTF-8", self.name)));
+        }
+        drop(received);
+        Err(self.wait())
+    }
+
     /// Everything until the program closes the pipe, as text.
     pub fn read_rest(self: &Arc<Self>) -> Result<String, HostError> {
         let mut received = lock(&self.received);

@@ -638,6 +638,40 @@ pub fn read_bytes(id: i64, count: i64) -> Result<Vec<u8>, HostError> {
     })
 }
 
+/// Up to `count` bytes of text, or a few more to end with a whole
+/// character; "" only at the end of the stream.
+pub fn read_text(id: i64, count: i64) -> Result<String, HostError> {
+    if count < 0 {
+        return Err(("ValueError", format!("cannot read {count} bytes")));
+    }
+    if let Some(pipe) = pipe_in(id) {
+        return pipe.read_text(count as usize);
+    }
+    reader(id, |reader, path| {
+        let mut bytes = Vec::new();
+        reader
+            .take(count as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| io_error("read", path, &e))?;
+        // A last character the count cut short is read to its end.
+        for _ in 0..3 {
+            if crate::text::char_boundary(&bytes, bytes.len()) == bytes.len() {
+                break;
+            }
+            let mut byte = [0u8; 1];
+            match reader
+                .read(&mut byte)
+                .map_err(|e| io_error("read", path, &e))?
+            {
+                0 => break,
+                _ => bytes.push(byte[0]),
+            }
+        }
+        String::from_utf8(bytes)
+            .map_err(|_| ("EncodingError", format!("\"{path}\" is not valid UTF-8")))
+    })
+}
+
 pub fn write(id: i64, bytes: &[u8]) -> Result<(), HostError> {
     if let Some(result) = connection(id, |connection| connection.write(bytes)) {
         return result;

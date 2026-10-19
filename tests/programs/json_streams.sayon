@@ -1,0 +1,73 @@
+# Reading and writing JSON a value at a time.
+filesystem = import("standard/filesystem.sayon")
+io = import("standard/io.sayon")
+json = import("standard/json.sayon")
+
+# An array written an item at a time, larger than one read of the file, with
+# characters of several bytes where the reads may fall.
+out = io.open("json_streams.tmp", "w")
+writer = json.write_items(out)
+for index in range(1000)
+    writer.add_value(["café ☕ {index}", index])
+writer.add(json.parse("{{\"brackets\": \"[{{]}}\", \"quote\": \"\\\"\"}}"))
+writer.finish()
+out.close()
+
+file = io.open("json_streams.tmp")
+count = 0
+last = ""
+for item in json.items(file)
+    count += 1
+    last = json.encode(item)
+file.close()
+print(count, last)
+
+again = io.open("json_streams.tmp")
+first = ""
+for item in json.items(again)
+    first = json.encode(item)
+    break
+again.close()
+print(first)
+
+# An empty array, and JSON Lines.
+io.write_file("json_streams.tmp", "  [ ]  \n")
+empty = io.open("json_streams.tmp")
+none = 0
+for _ in json.items(empty)
+    none += 1
+empty.close()
+print(none)
+io.write_file("json_streams.tmp", "{{\"a\": 1}}\n\n[true, null]\n  \"x\"  \n")
+lines = io.open("json_streams.tmp")
+for value in json.lines(lines)
+    print(json.encode(value))
+lines.close()
+
+# What is not an array of JSON values fails, naming the item or line.
+function count_items(path: string) -> integer
+    source = io.open(path)
+    total = 0
+    for _ in json.items(source)
+        total += 1
+    source.close()
+    return total
+
+function count_lines(path: string) -> integer
+    source = io.open(path)
+    total = 0
+    for _ in json.lines(source)
+        total += 1
+    source.close()
+    return total
+
+for text in ["[1, 2, {{\"broken\": }}]", "{{\"a\": 1}}", "[1, 2", "[1 2]", "[1,]", "[1] 2"]
+    io.write_file("json_streams.tmp", text)
+    outcome = try count_items("json_streams.tmp")
+    if outcome is error
+        print(outcome.code, outcome.message)
+io.write_file("json_streams.tmp", "1\n{{oops}}\n")
+outcome = try count_lines("json_streams.tmp")
+if outcome is error
+    print(outcome.code, outcome.message)
+filesystem.remove("json_streams.tmp")
