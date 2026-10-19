@@ -3,6 +3,7 @@
 //! `text` holds the display and parsing rules shared with the interpreter;
 //! `ffi` holds the functions compiled programs call.
 
+pub mod callbacks;
 pub mod encodings;
 pub mod ffi;
 pub mod graphemes;

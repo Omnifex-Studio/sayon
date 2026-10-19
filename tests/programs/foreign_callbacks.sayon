@@ -1,0 +1,75 @@
+# Sayon functions that C calls back
+memory = import("standard/memory.sayon")
+threads = import("standard/threads.sayon")
+
+foreign "c"
+    function qsort(base: pointer, count: c_size, size: c_size, compare: function(pointer, pointer) -> c_int)
+    function bsearch(key: pointer, base: pointer, count: c_size, size: c_size, compare: function(pointer, pointer) -> c_int) -> pointer
+    function malloc(size: c_size) -> pointer
+    function free(address: pointer)
+
+function numbers_at(address: pointer, count: integer) -> Array<integer32>
+    numbers: Array<integer32> = []
+    for index in range(count)
+        push(numbers, unsafe memory.read<integer32>(address, index * 4))
+    return numbers
+
+# A named function C can call.
+function ascending(a: pointer, b: pointer) -> c_int
+    unsafe
+        return memory.read<integer32>(a) - memory.read<integer32>(b)
+
+unsafe
+    numbers = malloc(40)
+    for index in range(10)
+        memory.write(numbers, integer32(index * 7 % 10), index * 4)
+    print(numbers_at(numbers, 10))
+
+    # A function literal goes to C with what it captured.
+    comparisons = share(cell(0))
+    qsort(numbers, 10, 4, function(a: pointer, b: pointer) -> c_int
+        comparisons.value.set(comparisons.value.get() + 1)
+        return memory.read<integer32>(b) - memory.read<integer32>(a)
+    )
+    print(numbers_at(numbers, 10), comparisons.value.get() > 0)
+    qsort(numbers, 10, 4, ascending)
+    print(numbers_at(numbers, 10))
+
+    key = malloc(4)
+    memory.write<integer32>(key, 7)
+    found = bsearch(key, numbers, 10, 4, ascending)
+    print("found at", found != null_pointer, memory.read<integer32>(found))
+    memory.write<integer32>(key, 42)
+    print("missing", bsearch(key, numbers, 10, 4, ascending) == null_pointer)
+
+    # A function C calls can call C, which calls back again.
+    pairs = malloc(16)
+    qsort(numbers, 10, 4, function(a: pointer, b: pointer) -> c_int
+        memory.write<integer32>(pairs, 2)
+        memory.write<integer32>(pairs, 1, 4)
+        qsort(pairs, 2, 4, ascending)
+        return memory.read<integer32>(a) - memory.read<integer32>(b)
+    )
+    print(numbers_at(numbers, 10), numbers_at(pairs, 2))
+
+    # The first failure ends the work: C gets 0 from then on, and the call
+    # of the C function fails once C returns.
+    calls = share(cell(0))
+    failed = try qsort(numbers, 10, 4, function(a: pointer, b: pointer) -> c_int
+        calls.value.set(calls.value.get() + 1)
+        error("cannot compare")
+    )
+    if failed is error
+        print(failed.code, failed.message, calls.value.get())
+
+    # A function C calls cannot wait.
+    waited = try qsort(numbers, 10, 4, function(a: pointer, b: pointer) -> c_int
+        threads.pause()
+        return 0
+    )
+    if waited is error
+        print(waited.code, waited.message)
+
+    free(pairs)
+    free(key)
+    free(numbers)

@@ -286,6 +286,9 @@ struct Fiber {
     cursor: usize,
     /// The mutexes whose locks the task holds; it cannot wait meanwhile.
     pub(crate) locks: usize,
+    /// The calls of C functions that can call back, which the task is in;
+    /// it cannot wait meanwhile either.
+    callbacks: usize,
 }
 
 struct Scheduler {
@@ -319,6 +322,7 @@ fn scheduler() -> &'static mut Scheduler {
                 done: false,
                 cursor: 0,
                 locks: 0,
+                callbacks: 0,
             }],
             current: 0,
             stopping: false,
@@ -337,6 +341,50 @@ pub(crate) fn count_lock(change: isize) {
     let s = scheduler();
     let fiber = &mut s.fibers[s.current];
     fiber.locks = fiber.locks.saturating_add_signed(change);
+}
+
+/// Counts a call of a C function that can call Sayon functions back,
+/// which the running task starts (1) or ends (-1).
+pub(crate) fn count_callbacks(change: isize) {
+    let s = scheduler();
+    let fiber = &mut s.fibers[s.current];
+    fiber.callbacks = fiber.callbacks.saturating_add_signed(change);
+}
+
+/// Why a task cannot wait at all.
+#[derive(Clone, Copy)]
+pub(crate) enum Refusal {
+    /// It holds a mutex's lock.
+    Locked,
+    /// It runs a function that C called, whose caller cannot be left.
+    Callback,
+}
+
+impl Refusal {
+    pub(crate) fn code(self) -> &'static str {
+        match self {
+            Refusal::Locked => "LockError",
+            Refusal::Callback => "CallbackError",
+        }
+    }
+
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            Refusal::Locked => "a task cannot wait while it holds a mutex's lock",
+            Refusal::Callback => "a function that C calls cannot wait",
+        }
+    }
+}
+
+fn refusal(index: usize) -> Option<Refusal> {
+    let fiber = &scheduler().fibers[index];
+    if fiber.locks > 0 {
+        Some(Refusal::Locked)
+    } else if fiber.callbacks > 0 {
+        Some(Refusal::Callback)
+    } else {
+        None
+    }
 }
 
 fn is_cancelled(index: usize) -> bool {
@@ -455,16 +503,16 @@ fn switch_to(index: usize) {
 enum Interrupted {
     Cancelled,
     Deadlock,
-    /// The task holds a mutex's lock, and cannot wait.
-    Locked,
+    /// The task cannot wait at all.
+    Refused(Refusal),
 }
 
 /// Lets the running task wait, switching to another task until this one
 /// can go on.
 fn wait(what: Wait) -> Result<(), Interrupted> {
     let current = scheduler().current;
-    if scheduler().fibers[current].locks > 0 {
-        return Err(Interrupted::Locked);
+    if let Some(refusal) = refusal(current) {
+        return Err(Interrupted::Refused(refusal));
     }
     if is_cancelled(current) {
         return Err(Interrupted::Cancelled);
@@ -491,16 +539,16 @@ fn wait(what: Wait) -> Result<(), Interrupted> {
 pub(crate) enum IoStop {
     Cancelled,
     TimedOut,
-    /// The task holds a mutex's lock, and cannot wait.
-    Locked,
+    /// The task cannot wait at all.
+    Refused(Refusal),
 }
 
 /// Lets the running task wait for a socket, or for a connection being
 /// made, while the other tasks run.
 pub(crate) fn wait_io(what: IoWait, deadline: Option<Instant>) -> Result<(), IoStop> {
     let current = scheduler().current;
-    if scheduler().fibers[current].locks > 0 {
-        return Err(IoStop::Locked);
+    if let Some(refusal) = refusal(current) {
+        return Err(IoStop::Refused(refusal));
     }
     if is_cancelled(current) {
         return Err(IoStop::Cancelled);
@@ -535,13 +583,12 @@ unsafe fn interrupted(err: *mut *mut SayonError, why: Interrupted, location: *co
                 "every task is waiting, so none can go on".to_string(),
                 location,
             ),
-            Interrupted::Locked => set_error(err, "LockError", LOCK_MESSAGE.to_string(), location),
+            Interrupted::Refused(refusal) => {
+                set_error(err, refusal.code(), refusal.message().to_string(), location)
+            }
         }
     }
 }
-
-/// The message of the error for a task that waits while it holds a lock.
-pub(crate) const LOCK_MESSAGE: &str = "a task cannot wait while it holds a mutex's lock";
 
 /// Runs a function value on the running fiber: its code with its
 /// environment. Gives the status, after storing the result or the error.
@@ -667,6 +714,7 @@ pub unsafe extern "C" fn sayon_task_spawn(
             done: false,
             cursor: 0,
             locks: 0,
+            callbacks: 0,
         });
         *out = task;
     }

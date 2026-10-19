@@ -264,13 +264,8 @@ pub(crate) unsafe fn join_task(
             }
             match crate::tasks::wait_io(IoWait::Background(shared.clone()), None) {
                 Ok(()) => {}
-                Err(IoStop::Locked) => {
-                    return set_error(
-                        err,
-                        "LockError",
-                        crate::tasks::LOCK_MESSAGE.to_string(),
-                        location,
-                    );
+                Err(IoStop::Refused(refusal)) => {
+                    return set_error(err, refusal.code(), refusal.message().to_string(), location);
                 }
                 Err(_) => {
                     return set_error(

@@ -198,7 +198,8 @@ pub fn c_llvm(ty: &Type) -> &'static str {
         Type::Int(int) => int_llvm(*int),
         Type::Float(FloatType::F64) => "double",
         Type::Float(FloatType::F32) => "float",
-        Type::Pointer | Type::CString => "ptr",
+        // A function C calls back goes as the address of its C entry.
+        Type::Pointer | Type::CString | Type::Function(_) => "ptr",
         Type::Nothing => "void",
         _ => "i64",
     }

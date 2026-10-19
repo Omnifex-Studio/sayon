@@ -1,0 +1,54 @@
+error[E_FOREIGN_TYPE]: a C function cannot take function(string) -> integer32
+  --> foreign_callbacks.sayon:3:28
+   |
+ 3 |     function takes_text(f: function(string) -> c_int)
+   |                            ^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: C calls back a function that takes numbers and `pointer`, and gives a number, a `pointer`, or nothing
+
+error[E_FOREIGN_TYPE]: a C function cannot take function(update integer32)
+  --> foreign_callbacks.sayon:4:25
+   |
+ 4 |     function changes(f: function(update c_int))
+   |                         ^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: C calls back a function that takes numbers and `pointer`, and gives a number, a `pointer`, or nothing
+
+error[E_FOREIGN_TYPE]: a C function cannot take function() -> Array<integer32>
+  --> foreign_callbacks.sayon:5:29
+   |
+ 5 |     function gives_array(f: function() -> Array<c_int>)
+   |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = help: C calls back a function that takes numbers and `pointer`, and gives a number, a `pointer`, or nothing
+
+error[E_FOREIGN_TYPE]: function() -> integer32 cannot be passed to C
+   --> foreign_callbacks.sayon:10:28
+    |
+ 10 |     printf(c_string("%p"), function() -> c_int
+    |                            ^^^^^^^^^^^^^^^^^^^
+    |
+    = help: C calls back a function through a parameter declared with its function type
+
+error[E_TYPE_MISMATCH]: expected function(pointer, pointer) -> integer32, found function(integer, pointer) -> integer32
+   --> foreign_callbacks.sayon:13:31
+    |
+ 13 |     qsort(null_pointer, 0, 4, function(a: integer, b: pointer) -> c_int
+    |                               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ argument for `compare`
+
+error[E_TYPE_MISMATCH]: expected pointer, found integer
+   --> foreign_callbacks.sayon:13:43
+    |
+ 13 |     qsort(null_pointer, 0, 4, function(a: integer, b: pointer) -> c_int
+    |                                           ^^^^^^^ the parameter type expected here
+
+error[E_UNSAFE_VALUE]: the C function `qsort` can only be called
+   --> foreign_callbacks.sayon:16:31
+    |
+ 16 |     qsort(null_pointer, 0, 4, qsort)
+    |                               ^^^^^
+    |
+    = help: wrap the call in a function literal with an `unsafe` inside it
+
+7 errors found; nothing was run
+run `sayon explain E_FOREIGN_TYPE` to learn more about an error

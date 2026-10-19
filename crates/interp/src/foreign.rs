@@ -13,11 +13,24 @@
 //! its position's register, as an integer, and any other by the address of
 //! a copy. One given back in more bytes is written where the address passed
 //! before the arguments points.
+//!
+//! A function value goes to C as one of a fixed set of entry points, one
+//! for each parameter of a C function that is a function, which C calls
+//! with its convention. An entry point finds the function value in the
+//! newest call of its C function, which the call recorded, and runs it on
+//! the machine making that call; as in compiled programs, the function
+//! cannot wait, and its first failure is kept for the call to raise once C
+//! returns, C getting 0 from it and from every later call meanwhile.
 
-use crate::value::Value;
-use sayon_check::types::{FloatType, Type, TypeDef, c_layout, c_size_align, win64_in_register};
+use crate::value::{ErrorValue, Ref, Value};
+use sayon_check::types::{
+    FloatType, FunctionType, Type, TypeDef, c_layout, c_size_align, win64_in_register,
+};
 use sayon_ir::ForeignFunction;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::c_void;
+use std::sync::Mutex;
 
 /// The libraries and functions found so far.
 #[derive(Default)]
@@ -35,73 +48,244 @@ pub struct Foreign {
 /// Why a call could not be made.
 pub type ForeignError = String;
 
+/// Why a call failed.
+pub enum CallFailure {
+    /// It could not be made.
+    Foreign(ForeignError),
+    /// A function that C called back failed.
+    Callback(ErrorValue),
+}
+
+/// Where a C function is, found before it is called.
+pub struct Target {
+    address: usize,
+    flush: Option<usize>,
+}
+
+/// Runs a function value on a machine, for C that calls it back.
+pub type RunCallback = unsafe fn(*mut c_void, &Ref, Vec<Value>) -> Result<Value, ErrorValue>;
+
+/// What a call of a C function that takes functions gives the entry points
+/// C calls: the machine making the call, and the function value of each
+/// parameter that is a function.
+pub struct Callbacks {
+    pub machine: *mut c_void,
+    pub run: RunCallback,
+    pub values: Vec<Option<Ref>>,
+}
+
 impl Foreign {
-    /// Calls the function at `index` of the module's C functions with
-    /// `args`, each value with its C type, and gives its result.
-    pub fn call(
+    /// Finds the function at `index` of the module's C functions.
+    pub fn target(
         &mut self,
         index: u32,
         function: &ForeignFunction,
-        args: &[(Value, Type)],
-        types: &[TypeDef],
-    ) -> Result<Value, ForeignError> {
+    ) -> Result<Target, ForeignError> {
         let address = self.function(index, function)?;
-        // The copies of structures C takes or gives by address, which live
-        // through the call.
-        let mut copies: Vec<Vec<u64>> = Vec::new();
-        let mut slots = Vec::new();
-        let given_back = match &function.ret {
-            Type::Named(_) => {
-                let (size, _) = c_size_align(types, &function.ret);
-                (!win64_in_register(size)).then(|| {
-                    copies.push(vec![0; size.div_ceil(8) as usize]);
-                    slots.push(copies[copies.len() - 1].as_ptr() as u64);
-                    copies.len() - 1
-                })
-            }
-            _ => None,
+        let flush = if function.library == "c" {
+            self.flush
+        } else {
+            None
         };
-        for (value, ty) in args {
-            let Type::Named(_) = ty else {
-                slots.push(slot(value, ty));
-                continue;
-            };
-            let (size, _) = c_size_align(types, ty);
-            let mut copy = vec![0u64; size.div_ceil(8).max(1) as usize];
-            // SAFETY: the copy has room for the structure.
-            unsafe { write(copy.as_mut_ptr() as usize, value, ty, types) };
-            if win64_in_register(size) {
-                slots.push(copy[0]);
-            } else {
-                slots.push(copy.as_ptr() as u64);
-                copies.push(copy);
-            }
-        }
-        // The first four positions are always loaded.
-        while slots.len() < 4 {
-            slots.push(0);
-        }
-        // SAFETY: the address is the named C function, and unsafe code
-        // vouched for the declared signature and the arguments.
-        let (integer, float) = unsafe { platform::call(address, &slots) };
-        if function.library == "c"
-            && let Some(flush) = self.flush
-        {
-            // SAFETY: `fflush(NULL)` flushes every output stream.
-            unsafe { platform::call(flush, &[0, 0, 0, 0]) };
-        }
-        let value = match (&function.ret, given_back) {
-            // SAFETY: C wrote the structure into the copy.
-            (ty, Some(copy)) => unsafe { read(copies[copy].as_ptr() as usize, ty, types) },
-            // SAFETY: the integer holds the structure's bytes.
-            (ty @ Type::Named(_), None) => unsafe {
-                read(&integer as *const u64 as usize, ty, types)
-            },
-            (ty, None) => result(ty, integer, float),
-        };
-        Ok(value)
+        Ok(Target { address, flush })
     }
+}
 
+/// Calls the function at `index` of the module's C functions with `args`,
+/// each value with its C type, and gives its result.
+pub fn call(
+    target: Target,
+    index: u32,
+    function: &ForeignFunction,
+    args: &[(Value, Type)],
+    types: &[TypeDef],
+    callbacks: Option<Callbacks>,
+) -> Result<Value, CallFailure> {
+    let address = target.address;
+    // The copies of structures C takes or gives by address, which live
+    // through the call.
+    let mut copies: Vec<Vec<u64>> = Vec::new();
+    let mut slots = Vec::new();
+    let given_back = match &function.ret {
+        Type::Named(_) => {
+            let (size, _) = c_size_align(types, &function.ret);
+            (!win64_in_register(size)).then(|| {
+                copies.push(vec![0; size.div_ceil(8) as usize]);
+                slots.push(copies[copies.len() - 1].as_ptr() as u64);
+                copies.len() - 1
+            })
+        }
+        _ => None,
+    };
+    for (position, (value, ty)) in args.iter().enumerate() {
+        if let Type::Function(_) = ty {
+            let entry = callback_entry(index, position).map_err(CallFailure::Foreign)?;
+            slots.push(entry as u64);
+            continue;
+        }
+        let Type::Named(_) = ty else {
+            slots.push(slot(value, ty));
+            continue;
+        };
+        let (size, _) = c_size_align(types, ty);
+        let mut copy = vec![0u64; size.div_ceil(8).max(1) as usize];
+        // SAFETY: the copy has room for the structure.
+        unsafe { write(copy.as_mut_ptr() as usize, value, ty, types) };
+        if win64_in_register(size) {
+            slots.push(copy[0]);
+        } else {
+            slots.push(copy.as_ptr() as u64);
+            copies.push(copy);
+        }
+    }
+    // The first four positions are always loaded.
+    while slots.len() < 4 {
+        slots.push(0);
+    }
+    let calling_back = callbacks.is_some();
+    if let Some(callbacks) = callbacks {
+        let signatures = function
+            .params
+            .iter()
+            .map(|param| match param {
+                Type::Function(signature) => Some((**signature).clone()),
+                _ => None,
+            })
+            .collect();
+        CALLS.with(|calls| {
+            calls.borrow_mut().push(Call {
+                function: index,
+                machine: callbacks.machine,
+                run: callbacks.run,
+                values: callbacks.values,
+                signatures,
+                failed: None,
+            })
+        });
+    }
+    // SAFETY: the address is the named C function, and unsafe code
+    // vouched for the declared signature and the arguments.
+    let (integer, float) = unsafe { platform::call(address, &slots) };
+    if let Some(flush) = target.flush {
+        // SAFETY: `fflush(NULL)` flushes every output stream.
+        unsafe { platform::call(flush, &[0, 0, 0, 0]) };
+    }
+    if calling_back {
+        let call = CALLS
+            .with(|calls| calls.borrow_mut().pop())
+            .expect("the record of the call");
+        if let Some(problem) = call.failed {
+            return Err(CallFailure::Callback(problem));
+        }
+    }
+    let value = match (&function.ret, given_back) {
+        // SAFETY: C wrote the structure into the copy.
+        (ty, Some(copy)) => unsafe { read(copies[copy].as_ptr() as usize, ty, types) },
+        // SAFETY: the integer holds the structure's bytes.
+        (ty @ Type::Named(_), None) => unsafe { read(&integer as *const u64 as usize, ty, types) },
+        (ty, None) => result(ty, integer, float),
+    };
+    Ok(value)
+}
+
+/// A call of a C function that takes functions, while C runs.
+struct Call {
+    function: u32,
+    machine: *mut c_void,
+    run: RunCallback,
+    values: Vec<Option<Ref>>,
+    signatures: Vec<Option<FunctionType>>,
+    failed: Option<ErrorValue>,
+}
+
+thread_local! {
+    static CALLS: RefCell<Vec<Call>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The C function and parameter each entry point serves, by its number.
+static ENTRIES: Mutex<Vec<(u32, usize)>> = Mutex::new(Vec::new());
+
+/// The address of the entry point for parameter `position` of the C
+/// function at `index`.
+fn callback_entry(index: u32, position: usize) -> Result<usize, ForeignError> {
+    let mut entries = ENTRIES.lock().unwrap_or_else(|e| e.into_inner());
+    let number = match entries.iter().position(|entry| *entry == (index, position)) {
+        Some(number) => number,
+        None if entries.len() < platform::CALLBACK_ENTRIES => {
+            entries.push((index, position));
+            entries.len() - 1
+        }
+        None => {
+            return Err(format!(
+                "the interpreter passes functions to at most {} parameters of C functions",
+                platform::CALLBACK_ENTRIES
+            ));
+        }
+    };
+    Ok(platform::callback_entry(number))
+}
+
+/// What an entry point runs when C calls it: the function value of its
+/// parameter in the newest call of its C function, with the arguments C
+/// passed, which `ints` holds as integers (each position's register, then
+/// the stack) and `floats` holds for the first four positions as floats.
+/// Gives the result's bits for both result registers.
+unsafe fn called_back(number: usize, ints: *const u64, floats: *const u64) -> u64 {
+    let (index, position) = ENTRIES.lock().unwrap_or_else(|e| e.into_inner())[number];
+    let found = CALLS.with(|calls| {
+        let calls = calls.borrow();
+        let at = calls.iter().rposition(|call| call.function == index)?;
+        let call = &calls[at];
+        if call.failed.is_some() {
+            return Some(None);
+        }
+        let reference = call.values[position].clone()?;
+        let signature = call.signatures[position].clone()?;
+        Some(Some((at, call.machine, call.run, reference, signature)))
+    });
+    let Some(found) = found else {
+        eprintln!(
+            "fatal error: C called a Sayon function after the call it was given to returned, or on another thread"
+        );
+        std::process::abort();
+    };
+    let Some((at, machine, run, reference, signature)) = found else {
+        return 0;
+    };
+    let args = signature
+        .params
+        .iter()
+        .enumerate()
+        .map(|(i, (_, ty))| {
+            // SAFETY: C passed an argument at each position.
+            let bits = unsafe {
+                match ty {
+                    Type::Float(_) if i < 4 => *floats.add(i),
+                    _ => *ints.add(i),
+                }
+            };
+            result(ty, bits, bits)
+        })
+        .collect();
+    // SAFETY: the machine waits in the call of the C function.
+    match unsafe { run(machine, &reference, args) } {
+        Ok(value) => match value {
+            Value::Int(number) => number as u64,
+            Value::F64(number) => number.to_bits(),
+            Value::F32(number) => number.to_bits() as u64,
+            Value::Pointer(address) => address as u64,
+            _ => 0,
+        },
+        Err(problem) => {
+            CALLS.with(|calls| {
+                calls.borrow_mut()[at].failed.get_or_insert(problem);
+            });
+            0
+        }
+    }
+}
+
+impl Foreign {
     fn function(&mut self, index: u32, function: &ForeignFunction) -> Result<usize, ForeignError> {
         if let Some(address) = self.functions.get(&index) {
             return Ok(*address);
@@ -318,6 +502,78 @@ mod platform {
 
     unsafe extern "C" {
         fn sayon_interp_call_c(function: usize, slots: *const u64, count: usize, out: *mut u64);
+        fn sayon_interp_callback_entries();
+    }
+
+    /// The entry points C can call back.
+    pub const CALLBACK_ENTRIES: usize = 64;
+
+    /// Entry points 16 bytes apart, each putting its number in EAX before
+    /// the routine they share. That routine stores the first four
+    /// arguments' integer registers in the 32 bytes the caller reserved for
+    /// them, just below the arguments on the stack, so that every argument
+    /// is in one array of words, and their float registers beside it; it
+    /// gives the result in both RAX and XMM0.
+    macro_rules! callback_entries {
+        ($($number:literal)*) => {
+            std::arch::global_asm!(
+                ".text",
+                ".p2align 4",
+                ".globl sayon_interp_callback_entries",
+                "sayon_interp_callback_entries:",
+                $(
+                    ".p2align 4",
+                    concat!("mov eax, ", stringify!($number)),
+                    "jmp sayon_interp_callback_common",
+                )*
+                ".p2align 4",
+                ".def sayon_interp_callback_common",
+                ".scl 3",
+                ".type 32",
+                ".endef",
+                ".seh_proc sayon_interp_callback_common",
+                "sayon_interp_callback_common:",
+                "mov qword ptr [rsp + 8], rcx",
+                "mov qword ptr [rsp + 16], rdx",
+                "mov qword ptr [rsp + 24], r8",
+                "mov qword ptr [rsp + 32], r9",
+                "sub rsp, 72",
+                ".seh_stackalloc 72",
+                ".seh_endprologue",
+                "movq qword ptr [rsp + 32], xmm0",
+                "movq qword ptr [rsp + 40], xmm1",
+                "movq qword ptr [rsp + 48], xmm2",
+                "movq qword ptr [rsp + 56], xmm3",
+                "mov ecx, eax",
+                "lea rdx, [rsp + 80]",
+                "lea r8, [rsp + 32]",
+                "call sayon_interp_called_back",
+                "movq xmm0, rax",
+                "add rsp, 72",
+                "ret",
+                ".seh_endproc",
+            );
+        };
+    }
+
+    callback_entries!(
+        0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31
+        32 33 34 35 36 37 38 39 40 41 42 43 44 45 46 47 48 49 50 51 52 53 54 55 56 57 58 59 60
+        61 62 63
+    );
+
+    #[unsafe(no_mangle)]
+    unsafe extern "C" fn sayon_interp_called_back(
+        number: u32,
+        ints: *const u64,
+        floats: *const u64,
+    ) -> u64 {
+        // SAFETY: the shared routine passes the arguments' words.
+        unsafe { super::called_back(number as usize, ints, floats) }
+    }
+
+    pub fn callback_entry(number: usize) -> usize {
+        sayon_interp_callback_entries as *const () as usize + 16 * number
     }
 
     /// Calls `function` with the argument slots, at least four; gives the
@@ -370,6 +626,12 @@ mod platform {
 
 #[cfg(not(all(windows, target_arch = "x86_64")))]
 mod platform {
+    pub const CALLBACK_ENTRIES: usize = 0;
+
+    pub fn callback_entry(_number: usize) -> usize {
+        unreachable!("no library opens on this platform")
+    }
+
     pub unsafe fn call(_function: usize, _slots: &[u64]) -> (u64, u64) {
         unreachable!("no library opens on this platform")
     }

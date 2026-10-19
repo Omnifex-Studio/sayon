@@ -1337,10 +1337,16 @@ impl<'a> Checker<'a> {
                     continue;
                 };
                 let ty = self.resolve_type(module, annotation, &HashMap::new());
-                if !self.is_c_value(&ty) && !matches!(ty, Type::CString | Type::Unknown) {
+                if !self.is_c_value(&ty)
+                    && !is_c_callback(&ty)
+                    && !matches!(ty, Type::CString | Type::Unknown)
+                {
                     let help = match ty {
                         Type::String => "take a `c_string`, made with `c_string(text)`",
                         Type::Boolean => "C takes a boolean as a `c_int`, 0 or 1",
+                        Type::Function(_) => {
+                            "C calls back a function that takes numbers and `pointer`, and gives a number, a `pointer`, or nothing"
+                        }
                         Type::Named(_) => {
                             "C takes structures declared with `foreign type`; pass anything else by its address"
                         }
@@ -2627,6 +2633,20 @@ fn conversion_help(expected: &Type, found: &Type) -> Option<String> {
 }
 
 /// Every field type of a structure, or of all variants of an enum.
+/// Whether C can call back a function value of the type: one that takes
+/// numbers and pointers, and gives a number, a pointer, or nothing.
+pub(crate) fn is_c_callback(ty: &Type) -> bool {
+    let Type::Function(signature) = ty else {
+        return false;
+    };
+    let scalar = |ty: &Type| matches!(ty, Type::Int(_) | Type::Float(_) | Type::Pointer);
+    signature
+        .params
+        .iter()
+        .all(|(mode, param)| *mode == ParamMode::Read && scalar(param))
+        && (scalar(&signature.ret) || signature.ret == Type::Nothing)
+}
+
 fn all_field_types(def: &TypeDef) -> Vec<Type> {
     match &def.kind {
         TypeDefKind::Structure(fields) => fields.iter().map(|f| f.ty.clone()).collect(),

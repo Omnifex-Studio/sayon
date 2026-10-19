@@ -1322,6 +1322,9 @@ impl<'a> Checker<'a> {
                     Type::Named(_) => {
                         "a variadic C function takes a structure by its address: a `pointer`"
                     }
+                    Type::Function(_) => {
+                        "C calls back a function through a parameter declared with its function type"
+                    }
                     _ => "C takes numbers, `pointer`, and `c_string`",
                 };
                 self.error(

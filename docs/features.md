@@ -54,7 +54,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | C functions in the interpreter on Linux and macOS | planned | with each platform's validation |
 | C structures (`foreign type`): C layout, by value in C calls, in C memory with `memory.read`, `write`, and `size`; compiled programs on Windows x64 | experimental | M3 |
 | C structures by value in compiled programs on Linux and macOS | planned | with each platform's validation |
-| C callbacks (Sayon functions with their context passed to C) | planned | M3 |
+| C callbacks: Sayon function values, with what they captured, as parameters of C functions that call them during the call; failures raised once C returns; compiled programs on every target, the interpreter on Windows x64 | experimental | M3 |
+| C callbacks that C keeps and calls after the call, or on other threads | planned | M4 |
 | Tasks (fibers) and channels: `standard/threads` `spawn`, `join`, `detach`, `pause`, bounded, unbounded, and rendezvous channels, `receive_result`, `recoverable_send`, `select`; cancellation with cleanup, shutdown of tasks at the end of `main`, deadlock detection; native on Windows | experimental | M3 |
 | Native tasks on Linux and macOS | planned | with each platform's validation |
 | Compile-time `platform` branches | planned | M4 |

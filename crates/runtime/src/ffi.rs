@@ -1608,8 +1608,8 @@ fn call_waiting(
                         let timeout = blocked.timeout.unwrap_or_default();
                         return Err(("TimeoutError", timeout_message(timeout)));
                     }
-                    Err(crate::tasks::IoStop::Locked) => {
-                        return Err(("LockError", crate::tasks::LOCK_MESSAGE.to_string()));
+                    Err(crate::tasks::IoStop::Refused(refusal)) => {
+                        return Err((refusal.code(), refusal.message().to_string()));
                     }
                     Err(crate::tasks::IoStop::Cancelled) => {
                         let code = crate::host::CANCELLED_CODE;

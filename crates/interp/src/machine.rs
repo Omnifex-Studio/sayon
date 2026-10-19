@@ -87,6 +87,9 @@ pub struct Machine<'m> {
     /// ones gone.
     local_channels: Vec<std::sync::Weak<crate::value::ChannelCell>>,
     prune_channels_at: usize,
+    /// The frame depth below each function that C called back and that
+    /// runs, the newest last.
+    callback_bases: Vec<usize>,
 }
 
 /// The first step of `steps` through a view: its position, the viewed
@@ -197,6 +200,7 @@ impl<'m> Machine<'m> {
             thread_task: None,
             local_channels: Vec::new(),
             prune_channels_at: 64,
+            callback_bases: Vec::new(),
         }
     }
 
@@ -326,6 +330,52 @@ impl<'m> Machine<'m> {
         frame.inst = 0;
     }
 
+    /// Runs the function value at `reference` with `args` to its end, for C
+    /// that calls it back during a call of a C function.
+    ///
+    /// # Safety
+    /// `machine` is a machine in such a call, which it made from `self`.
+    unsafe fn run_callback_on(
+        machine: *mut std::ffi::c_void,
+        reference: &Ref,
+        args: Vec<Value>,
+    ) -> Result<Value, ErrorValue> {
+        // SAFETY: the machine waits for C, which calls back on its thread.
+        let machine = unsafe { &mut *(machine as *mut Machine<'static>) };
+        machine.run_callback(reference, args)
+    }
+
+    fn run_callback(&mut self, reference: &Ref, args: Vec<Value>) -> Result<Value, ErrorValue> {
+        let mut env = reference.clone();
+        let code = self.read(&env, |value| match value {
+            Value::Function(code, _) => *code,
+            other => panic!("call back of {other:?}"),
+        });
+        env.path.push(Step::Env);
+        let mut values = vec![SlotValue::Ref(env)];
+        values.extend(args.into_iter().map(SlotValue::Value));
+        let base = self.frames.len();
+        let result = match self.push_frame(code, values) {
+            Ok(()) => {
+                self.callback_bases.push(base);
+                let result = self.execute(base);
+                self.callback_bases.pop();
+                result
+            }
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(value) => Ok(value),
+            Err(RunError::Uncaught(problem)) => Err(problem),
+            Err(RunError::TaskFailures(mut failures)) => Err(failures.remove(0)),
+            Err(RunError::Fatal(message)) => Err(ErrorValue {
+                code: "InternalError".to_string(),
+                message,
+                location: None,
+            }),
+        }
+    }
+
     fn execute(&mut self, base: usize) -> Result<Value, RunError> {
         let module = self.module;
         loop {
@@ -359,7 +409,7 @@ impl<'m> Machine<'m> {
                         _ => Value::Nothing,
                     };
                     if self.frames.len() == base {
-                        if self.current == 0 {
+                        if self.current == 0 || self.callback_bases.last() == Some(&base) {
                             return Ok(value);
                         }
                         // A task finished; another goes on.
@@ -388,7 +438,7 @@ impl<'m> Machine<'m> {
                         },
                     };
                     if self.frames.len() == base {
-                        if self.current == 0 {
+                        if self.current == 0 || self.callback_bases.last() == Some(&base) {
                             return Err(RunError::Uncaught(error));
                         }
                         if !self.finish_task(Err(error)) {
@@ -455,12 +505,23 @@ impl<'m> Machine<'m> {
                     }
                     // Another task runs now; this one runs the operation
                     // again when it is resumed.
-                    Progress::Wait(_) if self.fibers[self.current].locks > 0 => {
-                        let problem = self.error(
-                            "LockError",
-                            "a task cannot wait while it holds a mutex's lock",
-                            *span,
-                        );
+                    Progress::Wait(_)
+                        if self.fibers[self.current].locks > 0
+                            || !self.callback_bases.is_empty() =>
+                    {
+                        let problem = if self.fibers[self.current].locks > 0 {
+                            self.error(
+                                "LockError",
+                                "a task cannot wait while it holds a mutex's lock",
+                                *span,
+                            )
+                        } else {
+                            self.error(
+                                "CallbackError",
+                                "a function that C calls cannot wait",
+                                *span,
+                            )
+                        };
                         let slot = function.error_slot.0 as usize;
                         self.top().slots[slot] = SlotValue::Value(Value::Error(Box::new(problem)));
                         self.jump(*error);
@@ -1383,19 +1444,54 @@ impl<'m> Machine<'m> {
                 tags,
             } => self.host(*function, args, *tags, span),
             Op::CallForeign { function, args } => {
-                let values: Vec<(Value, Type)> = args
-                    .iter()
-                    .map(|(arg, ty)| {
-                        let source = self.source(arg);
-                        (self.with_source(&source, Value::clone), ty.clone())
-                    })
-                    .collect();
+                let module = self.module;
+                let mut values: Vec<(Value, Type)> = Vec::new();
+                // The function values C can call back, which stay where
+                // they are.
+                let mut functions: Vec<Option<Ref>> = Vec::new();
+                for (arg, ty) in args {
+                    if let Type::Function(_) = ty {
+                        let (Operand::Borrow { place, .. } | Operand::Copy(place)) = arg else {
+                            panic!("a function for C to call back is borrowed, not {arg:?}")
+                        };
+                        functions.push(Some(self.resolve(place)));
+                        values.push((Value::Nothing, ty.clone()));
+                        continue;
+                    }
+                    let source = self.source(arg);
+                    functions.push(None);
+                    values.push((self.with_source(&source, Value::clone), ty.clone()));
+                }
                 // What the program printed comes before what C prints.
                 let _ = self.output().flush();
-                let declaration = &self.module.foreign[function.0 as usize];
-                self.foreign
-                    .call(function.0, declaration, &values, &self.module.types)
-                    .map_err(|message| self.error("ForeignError", message, span))
+                let declaration = &module.foreign[function.0 as usize];
+                let target = self
+                    .foreign
+                    .target(function.0, declaration)
+                    .map_err(|message| self.error("ForeignError", message, span))?;
+                let callbacks =
+                    functions
+                        .iter()
+                        .any(Option::is_some)
+                        .then_some(crate::foreign::Callbacks {
+                            machine: self as *mut Machine<'m> as *mut std::ffi::c_void,
+                            run: Machine::run_callback_on,
+                            values: functions,
+                        });
+                match crate::foreign::call(
+                    target,
+                    function.0,
+                    declaration,
+                    &values,
+                    &module.types,
+                    callbacks,
+                ) {
+                    Ok(value) => Ok(value),
+                    Err(crate::foreign::CallFailure::Foreign(message)) => {
+                        Err(self.error("ForeignError", message, span))
+                    }
+                    Err(crate::foreign::CallFailure::Callback(problem)) => Err(problem),
+                }
             }
             Op::RawRead {
                 address,

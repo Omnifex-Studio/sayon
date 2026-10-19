@@ -724,7 +724,27 @@ unsafe
 - A variadic C function takes a structure by its address, as a `pointer`.
 - Structures go to C and come back as the target's C convention passes them; compiled programs pass them on Windows x64 so far, and report `ForeignError` elsewhere.
 
-Compiled programs call C functions on every target. The interpreter calls them on Windows x64 so far, loading each library and finding each function the first time the program calls one; elsewhere it reports `ForeignError`, and a program built with `sayon build` calls them. Passing Sayon functions to C as callbacks is still to come.
+### Functions that C calls back
+
+A parameter of a C function can be a function, which C calls during the call:
+
+```sayon
+foreign "c"
+    function qsort(base: pointer, count: c_size, size: c_size, compare: function(pointer, pointer) -> c_int)
+
+unsafe
+    qsort(numbers, 10, 4, function(a: pointer, b: pointer) -> c_int
+        return memory.read<integer32>(a) - memory.read<integer32>(b)
+    )
+```
+
+- The function takes numbers and `pointer` and gives a number, a `pointer`, or nothing (`E_FOREIGN_TYPE`). Any function value of its type goes: a function literal, with what it captured, or a named function.
+- C may call it only during the call it was given to, on the same thread, as `qsort`, `bsearch`, and functions that walk a list with a callback do. A C function that keeps the address to call later would call into nothing; the program stops with a fatal error when that is detected.
+- A function that C calls cannot wait (`CallbackError`), since its task cannot leave C in the middle of its call.
+- Its failure cannot pass through C. The first one is kept, and C gets 0 (or `null_pointer`) from that call and from every later one, without the function running again; once C returns, the call of the C function fails with the error.
+- A function that C calls can call C functions too, which can call back in turn.
+
+Compiled programs call C functions on every target. The interpreter calls them on Windows x64 so far, loading each library and finding each function the first time the program calls one; elsewhere it reports `ForeignError`, and a program built with `sayon build` calls them. The interpreter has room for functions for 64 different parameters of C functions.
 
 ## Built-in functions
 

@@ -1,0 +1,16 @@
+# Functions that C cannot call back
+foreign "c"
+    function takes_text(f: function(string) -> c_int)
+    function changes(f: function(update c_int))
+    function gives_array(f: function() -> Array<c_int>)
+    function printf(format: c_string, ...) -> c_int
+    function qsort(base: pointer, count: c_size, size: c_size, compare: function(pointer, pointer) -> c_int)
+
+unsafe
+    printf(c_string("%p"), function() -> c_int
+        return 0
+    )
+    qsort(null_pointer, 0, 4, function(a: integer, b: pointer) -> c_int
+        return 0
+    )
+    qsort(null_pointer, 0, 4, qsort)

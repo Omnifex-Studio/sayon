@@ -9,8 +9,8 @@
 
 use crate::layout::SHARED_HEADER;
 use crate::layout::{
-    CPass, Layouts, c_param, c_pass, c_result_address, c_signature, int_code, int_llvm, needs_drop,
-    passes_structures,
+    CPass, Layouts, c_llvm, c_param, c_pass, c_result_address, c_signature, int_code, int_llvm,
+    needs_drop, passes_structures,
 };
 use sayon_check::types::{FloatType, IntType, Type, Wrapper};
 use sayon_ir::*;
@@ -326,8 +326,84 @@ impl<'m> Codegen<'m> {
         out.push('\n');
         out.push_str(&self.function_code);
         out.push_str(&self.helper_code);
+        out.push_str(&self.callback_entries());
         out.push_str(&main);
         out
+    }
+
+    /// For each parameter of a C function that is a function, the function
+    /// C calls: it calls the Sayon function value given for the parameter
+    /// in the newest call of the C function, and keeps its error, if it
+    /// fails, for that call to raise.
+    fn callback_entries(&self) -> String {
+        let mut code = String::new();
+        for (index, function) in self.module.foreign.iter().enumerate() {
+            for (position, param) in function.params.iter().enumerate() {
+                let Type::Function(signature) = param else {
+                    continue;
+                };
+                let ret = c_llvm(&signature.ret);
+                let params: Vec<String> = signature
+                    .params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, ty))| format!("{} %a{i}", c_param(ty)))
+                    .collect();
+                let args: Vec<String> = signature
+                    .params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, ty))| format!("{} %a{i}", c_llvm(ty)))
+                    .collect();
+                let result = if signature.ret == Type::Nothing {
+                    "i8"
+                } else {
+                    ret
+                };
+                let zero = match &signature.ret {
+                    Type::Nothing => "ret void".to_string(),
+                    Type::Float(_) => format!("ret {ret} 0.0"),
+                    Type::Pointer => "ret ptr null".to_string(),
+                    _ => format!("ret {ret} 0"),
+                };
+                let done = if signature.ret == Type::Nothing {
+                    "  ret void\n".to_string()
+                } else {
+                    format!("  %r = load {ret}, ptr %result\n  ret {ret} %r\n")
+                };
+                let _ = write!(
+                    code,
+                    "define internal {ret} @sayon.callback.{index}.{position}({params}) {{\n\
+                     entry:\n\
+                     \x20 %err = alloca ptr\n\
+                     \x20 store ptr null, ptr %err\n\
+                     \x20 %result = alloca {result}\n\
+                     \x20 %value = call ptr @sayon_callbacks_function(i32 {index}, i32 {position})\n\
+                     \x20 %none = icmp eq ptr %value, null\n\
+                     \x20 br i1 %none, label %skip, label %call\n\
+                     call:\n\
+                     \x20 %code = load ptr, ptr %value\n\
+                     \x20 %field = getelementptr i8, ptr %value, i64 8\n\
+                     \x20 %block = load ptr, ptr %field\n\
+                     \x20 %environment = getelementptr i8, ptr %block, i64 16\n\
+                     \x20 %status = call i32 %code(ptr %result, ptr %err, i64 {count}, ptr %environment{rest})\n\
+                     \x20 %failed = icmp ne i32 %status, 0\n\
+                     \x20 br i1 %failed, label %fail, label %done\n\
+                     done:\n\
+                     {done}\
+                     fail:\n\
+                     \x20 call void @sayon_callbacks_failed(i32 {index}, ptr %err)\n\
+                     \x20 br label %skip\n\
+                     skip:\n\
+                     \x20 {zero}\n\
+                     }}\n\n",
+                    params = params.join(", "),
+                    count = args.len() + 1,
+                    rest = args.iter().map(|a| format!(", {a}")).collect::<String>(),
+                );
+            }
+        }
+        code
     }
 
     /// Destroys every module constant, in reverse initialization order.
@@ -2351,6 +2427,27 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 }
                 let (ret_llvm, params) = c_signature(&self.cg.module.types, declaration);
                 let ret_pass = c_pass(&self.cg.module.types, &ret);
+                // The function values C can call back, by parameter.
+                let callbacks = args.iter().any(|(_, ty)| matches!(ty, Type::Function(_)));
+                let frame = if callbacks {
+                    let frame = self.body.alloca(&format!("[{} x ptr]", args.len()));
+                    for (position, (operand, ty)) in args.iter().enumerate() {
+                        let entry = self.offset_pointer(&frame, 8 * position as u64);
+                        if let Type::Function(_) = ty {
+                            let (value, _) = self.pointer(operand);
+                            self.body.line(format!("store ptr {value}, ptr {entry}"));
+                        } else {
+                            self.body.line(format!("store ptr null, ptr {entry}"));
+                        }
+                    }
+                    self.body.line(format!(
+                        "call void @sayon_callbacks_enter(i32 {}, ptr {frame})",
+                        function.0
+                    ));
+                    Some(frame)
+                } else {
+                    None
+                };
                 let mut values = Vec::new();
                 // Where C writes a structure it gives back by address.
                 let written = if let CPass::Address = ret_pass {
@@ -2367,8 +2464,11 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 } else {
                     false
                 };
-                for (operand, ty) in args {
+                for (position, (operand, ty)) in args.iter().enumerate() {
                     let value = match c_pass(&self.cg.module.types, ty) {
+                        CPass::Value if matches!(ty, Type::Function(_)) => {
+                            format!("ptr @sayon.callback.{}.{position}", function.0)
+                        }
                         CPass::Value if *ty == Type::CString => {
                             let (slot, _) = self.pointer(operand);
                             let text = self.body.tmp();
@@ -2421,7 +2521,15 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     self.body.line("call i32 (ptr) @fflush(ptr null)");
                 }
                 self.finish_instruction();
-                Some("0".to_string())
+                if frame.is_none() {
+                    return Some("0".to_string());
+                }
+                // A function C called may have failed.
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_callbacks_leave(ptr {err})"
+                ));
+                Some(status)
             }
             Op::RawRead {
                 address,
@@ -2825,6 +2933,10 @@ declare void @sayon_builder_c_string(ptr, ptr, i1)
 declare void @sayon_builder_pointer(ptr, i64)
 declare void @sayon_task_spawn(ptr, i64, ptr, ptr)
 declare i32 @sayon_task_spawn_parallel(ptr, ptr, i64, ptr, ptr, ptr)
+declare void @sayon_callbacks_enter(i32, ptr)
+declare ptr @sayon_callbacks_function(i32, i32)
+declare void @sayon_callbacks_failed(i32, ptr)
+declare i32 @sayon_callbacks_leave(ptr)
 declare void @sayon_mutex_new(ptr, i64, ptr, ptr)
 declare i32 @sayon_mutex_take(ptr, ptr, ptr, ptr)
 declare void @sayon_mutex_put(ptr, ptr)
