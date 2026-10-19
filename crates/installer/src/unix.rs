@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 
 pub const EXECUTABLE_SUFFIX: &str = "";
 pub const UNINSTALLER: &str = "uninstall";
+/// Where the system lists installed programs, for removing them; here the
+/// uninstaller is the only way.
+pub const APP_SETTINGS: Option<&str> = None;
 
 fn home() -> Option<PathBuf> {
     std::env::var_os("HOME").map(PathBuf::from)
@@ -107,4 +110,11 @@ pub fn move_running_uninstaller(_prefix: &Path) -> Option<PathBuf> {
     None
 }
 
-pub fn delete_after_exit(_file: &Path, _folder: Option<&Path>) {}
+/// The running uninstaller goes at once, and then its folder, which held
+/// nothing else.
+pub fn delete_after_exit(file: &Path, folder: Option<&Path>) {
+    let _ = std::fs::remove_file(file);
+    if let Some(folder) = folder {
+        let _ = std::fs::remove_dir(folder);
+    }
+}

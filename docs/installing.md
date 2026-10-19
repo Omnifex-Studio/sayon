@@ -6,10 +6,11 @@ Each release has an installer for each device it supports, named after the opera
 |---|---|---|
 | Windows, x64 processors (most PCs) | `sayon-<version>-windows-x64-setup.exe` | available |
 | Windows, ARM64 processors | `sayon-<version>-windows-arm64-setup.exe` | not yet; arrives with the ARM64 validation in milestone M5 |
-| Linux | `sayon-<version>-linux-x64-setup` | not yet; arrives with Linux validation |
+| Linux, x64 processors | `sayon-<version>-linux-x64-setup` | available |
+| Linux, ARM64 processors | `sayon-<version>-linux-arm64-setup` | not yet; arrives with the ARM64 validation in milestone M5 |
 | macOS | `sayon-<version>-macos-arm64-setup` | not yet; planned for milestone M7 |
 
-To find your processor on Windows, open Settings > System > About and look at "System type". Downloads are published on the [releases page](https://github.com/Omnifex-Studio/sayon/releases), together with a `SHA256SUMS.txt` file for checking them: `Get-FileHash <file>` in PowerShell prints the checksum to compare. No release has been published yet; see [Building the downloads](#building-the-downloads) to make the installer yourself.
+To find your processor on Windows, open Settings > System > About and look at "System type"; on Linux, `uname -m` prints `x86_64` for x64. Downloads are published on the [releases page](https://github.com/Omnifex-Studio/sayon/releases), together with a `SHA256SUMS.txt` file for checking them: `Get-FileHash <file>` in PowerShell prints the checksum to compare, and `sha256sum -c SHA256SUMS.txt` on Linux checks every file next to it. No release has been published yet; see [Building the downloads](#building-the-downloads) to make the installer yourself.
 
 ## Windows
 
@@ -45,12 +46,41 @@ Remove Sayon from Settings > Apps, or run `uninstall.exe` in the installation fo
 
 The `sayon-<version>-windows-x64.zip` archive holds the same files. Unpack it anywhere, add its `bin` folder to your `PATH`, and run `sayon doctor`.
 
+## Linux
+
+Make the installer executable and run it:
+
+```text
+chmod +x sayon-<version>-linux-x64-setup
+./sayon-<version>-linux-x64-setup
+```
+
+It installs Sayon for your user account, so it needs no root, and it:
+
+- puts Sayon in `~/.local/share/sayon`;
+- links `~/.local/bin/sayon` to it, unless something else is there already.
+
+It leaves your shell's profile alone. Most systems put `~/.local/bin` on `PATH` when it exists; when it is not on yours, the installer prints the line to add to `~/.profile`.
+
+At the end it runs `sayon doctor`. Running and testing programs works straight away; native builds also need clang, from your system's packages (for example `sudo apt install clang`) or from [LLVM](https://releases.llvm.org). TLS uses the system's OpenSSL 3, `libssl.so.3`, which most systems have. The download says in `INSTALL.txt` which version of the GNU C library it needs at least.
+
+The options are those of the Windows installer, and running a newer installer replaces the installed version the same way.
+
+### Uninstalling
+
+Run `~/.local/share/sayon/uninstall`, or the installer with `uninstall`. Uninstalling removes the installation folder and the link. Your own programs and projects are not touched.
+
+### Without the installer
+
+The `sayon-<version>-linux-x64.tar.gz` archive holds the same files. Unpack it anywhere (`tar -xzf <file>`), add its `bin` folder to your `PATH`, and run `sayon doctor`.
+
 ## Building the downloads
 
-`scripts/package.ps1` builds a release of the compiler and runtime, packs it into the archive, and builds the installer with that archive inside it, for the device it runs on:
+`scripts/package.ps1` on Windows, and `scripts/package.sh` on Linux, build a release of the compiler and runtime, pack it into the archive, and build the installer with the files inside it, for the device they run on:
 
 ```text
 powershell -File scripts/package.ps1
+scripts/package.sh
 ```
 
-The results are in `dist/`: the installer, the archive, and `SHA256SUMS.txt`. A plain `cargo build` builds an installer with no files inside, which says so when run.
+The results are in `dist/`: the installer, the archive, and `SHA256SUMS.txt`. On Linux the installer carries the files as a zip archive, which `scripts/package.sh` writes with Python 3. A plain `cargo build` builds an installer with no files inside, which says so when run.

@@ -381,6 +381,8 @@ const FILE_TYPE_KEY: &str = r"Software\Classes\Sayon.Source";
 
 pub const EXECUTABLE_SUFFIX: &str = ".exe";
 pub const UNINSTALLER: &str = "uninstall.exe";
+/// Where the system lists installed programs, for removing them.
+pub const APP_SETTINGS: Option<&str> = Some("Settings > Apps");
 
 /// `%LOCALAPPDATA%\Programs\Sayon`, where per-user programs live.
 pub fn default_prefix() -> Option<PathBuf> {

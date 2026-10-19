@@ -1,6 +1,7 @@
 //! Embeds the release archive the installer unpacks, named by the
-//! `SAYON_INSTALLER_PAYLOAD` environment variable (`scripts/package.ps1`
-//! sets it). Without it the installer is built empty and says so when run.
+//! `SAYON_INSTALLER_PAYLOAD` environment variable (`scripts/package.ps1` and
+//! `scripts/package.sh` set it). Without it the installer is built empty and
+//! says so when run.
 //!
 //! On Windows it also embeds a manifest that runs the installer without
 //! administrator rights (Windows otherwise asks to elevate any program named

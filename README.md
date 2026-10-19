@@ -47,7 +47,7 @@ Every example program is checked to behave identically in the interpreter and as
 
 ## Installing
 
-Download the installer for your device from the [releases page](https://github.com/Omnifex-Studio/sayon/releases) and run it. On Windows with an x64 processor (most PCs) that is `sayon-<version>-windows-x64-setup.exe`. It installs Sayon for your user account without administrator rights, makes `sayon` available in new terminals, and can be removed from Settings > Apps. Installers for other devices arrive as Sayon is validated on them; [installing.md](docs/installing.md) lists them and describes every option. No release has been published yet; until then, build the installer from source as described below.
+Download the installer for your device from the [releases page](https://github.com/Omnifex-Studio/sayon/releases) and run it. On Windows with an x64 processor (most PCs) that is `sayon-<version>-windows-x64-setup.exe`. It installs Sayon for your user account without administrator rights, makes `sayon` available in new terminals, and can be removed from Settings > Apps. On Linux with an x64 processor it is `sayon-<version>-linux-x64-setup`, which installs into `~/.local/share/sayon` and links `~/.local/bin/sayon`. Installers for other devices arrive as Sayon is validated on them; [installing.md](docs/installing.md) lists them and describes every option. No release has been published yet; until then, build the installer from source as described below.
 
 ## Documentation
 
@@ -68,7 +68,7 @@ cargo run -p sayon-cli -- build tests/programs/functions.sayon -o functions.exe
 cargo test
 ```
 
-`scripts/package.ps1` builds the downloads for the device it runs on: the installer `dist/sayon-<version>-windows-x64-setup.exe`, the same files as `dist/sayon-<version>-windows-x64.zip`, and `dist/SHA256SUMS.txt`.
+`scripts/package.ps1` builds the downloads for the device it runs on: the installer `dist/sayon-<version>-windows-x64-setup.exe`, the same files as `dist/sayon-<version>-windows-x64.zip`, and `dist/SHA256SUMS.txt`. On Linux, `scripts/package.sh` builds `dist/sayon-<version>-linux-x64-setup` and `dist/sayon-<version>-linux-x64.tar.gz` the same way.
 
 With `sayon` on your `PATH`, a project looks like this:
 

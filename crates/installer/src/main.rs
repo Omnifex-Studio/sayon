@@ -123,7 +123,12 @@ fn confirm(question: &str, default: bool) -> bool {
 fn install(options: &Options) -> Result<(), String> {
     if PAYLOAD.is_empty() {
         return Err(format!(
-            "this copy of the installer has no Sayon files in it\ndownload the installer for your device from {RELEASES}, or build one with scripts/package.ps1"
+            "this copy of the installer has no Sayon files in it\ndownload the installer for your device from {RELEASES}, or build one with {}",
+            if cfg!(windows) {
+                "scripts/package.ps1"
+            } else {
+                "scripts/package.sh"
+            }
         ));
     }
     let prefix = match &options.prefix {
@@ -182,10 +187,13 @@ fn install(options: &Options) -> Result<(), String> {
         println!("Run it as {}", sayon.display());
     }
     let uninstaller = prefix.join(platform::UNINSTALLER);
-    println!(
-        "To remove it later, run {} or use your system's app settings.",
-        uninstaller.display()
-    );
+    match platform::APP_SETTINGS {
+        Some(settings) => println!(
+            "To remove it later, run {} or use {settings}.",
+            uninstaller.display()
+        ),
+        None => println!("To remove it later, run {}.", uninstaller.display()),
+    }
     Ok(())
 }
 
