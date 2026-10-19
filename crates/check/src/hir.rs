@@ -696,6 +696,100 @@ impl Expr {
     }
 }
 
+/// Calls `f` on every expression in the block, parents before children,
+/// including those of places assigned to.
+pub fn visit_block(block: &Block, f: &mut dyn FnMut(&Expr)) {
+    for stmt in &block.stmts {
+        visit_stmt(stmt, f);
+    }
+}
+
+fn visit_place(place: &Place, f: &mut dyn FnMut(&Expr)) {
+    match place {
+        Place::Local(_) => {}
+        Place::Index { target, index, .. } => {
+            visit_place(target, f);
+            visit_expr(index, f);
+        }
+        Place::Field { target, .. } | Place::Narrow { target, .. } => visit_place(target, f),
+    }
+}
+
+pub fn visit_stmt(stmt: &Stmt, f: &mut dyn FnMut(&Expr)) {
+    match &stmt.kind {
+        StmtKind::Let { value, .. } | StmtKind::Expr(value) => visit_expr(value, f),
+        StmtKind::Assign { place, value } | StmtKind::CompoundAssign { place, value, .. } => {
+            visit_place(place, f);
+            visit_expr(value, f);
+        }
+        StmtKind::If {
+            condition,
+            then_block,
+            else_block,
+        } => {
+            visit_expr(condition, f);
+            visit_block(then_block, f);
+            if let Some(block) = else_block {
+                visit_block(block, f);
+            }
+        }
+        StmtKind::While { condition, body } => {
+            visit_expr(condition, f);
+            visit_block(body, f);
+        }
+        StmtKind::For {
+            iterable,
+            body,
+            next,
+            ..
+        } => {
+            visit_expr(iterable, f);
+            if let Some(next) = next {
+                visit_expr(&next.call, f);
+            }
+            visit_block(body, f);
+        }
+        StmtKind::Return(value) => {
+            if let Some(value) = value {
+                visit_expr(value, f);
+            }
+        }
+        StmtKind::Try {
+            body,
+            catch,
+            finally,
+        } => {
+            visit_block(body, f);
+            if let Some((_, block)) = catch {
+                visit_block(block, f);
+            }
+            if let Some(block) = finally {
+                visit_block(block, f);
+            }
+        }
+        StmtKind::Block(block) => visit_block(block, f),
+        StmtKind::Match {
+            scrutinee, arms, ..
+        } => {
+            visit_expr(scrutinee, f);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    visit_expr(guard, f);
+                }
+                visit_block(&arm.body, f);
+            }
+        }
+        StmtKind::Break | StmtKind::Continue => {}
+    }
+}
+
+pub fn visit_expr(expr: &Expr, f: &mut dyn FnMut(&Expr)) {
+    f(expr);
+    for child in expr.children() {
+        visit_expr(child, f);
+    }
+}
+
 /// Calls `f` on every expression in the block, parents before children.
 pub fn visit_block_mut(block: &mut Block, f: &mut dyn FnMut(&mut Expr)) {
     for stmt in &mut block.stmts {

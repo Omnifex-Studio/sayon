@@ -30,6 +30,8 @@ pub struct Options {
     pub lint: bool,
     /// The packages `dependencies/...` imports reach, from the lock.
     pub packages: packages::Packages,
+    /// The target to check and lower the program for.
+    pub target: &'static sayon_target::Target,
 }
 
 pub struct Output {
@@ -124,7 +126,7 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
         })
         .collect();
     let span = Span::new(modules[0].file, 0, 0);
-    let checked = sayon_check::check_program(&inputs, 0, span);
+    let checked = sayon_check::check_program(&inputs, 0, span, options.target);
     diagnostics.extend(checked.diagnostics);
     if options.lint
         && let Some(program) = &checked.program
@@ -136,6 +138,14 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
         .filter(|m| !m.standard && !m.dependency)
         .map(|m| m.file)
         .collect();
+    if let Some(program) = &checked.program {
+        let own = |span: Span| user_files.contains(&span.file);
+        for need in sayon_check::usage::needs(program, &own) {
+            if !options.target.provides(need.capability) {
+                diagnostics.push(missing_capability(options.target, need));
+            }
+        }
+    }
     // Warnings about a dependency's code are for its authors, not its users.
     let outside: Vec<FileId> = modules
         .iter()
@@ -171,6 +181,25 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
         diagnostics,
         module,
     })
+}
+
+/// The error for an operation the target cannot do.
+fn missing_capability(target: &sayon_target::Target, need: sayon_check::usage::Need) -> Diagnostic {
+    let capability = need.capability;
+    let provided: Vec<&str> = target.capabilities.iter().map(|c| c.name()).collect();
+    Diagnostic::error(
+        "E_CAPABILITY",
+        format!(
+            "{} programs cannot {} (`{capability}`)",
+            target.name,
+            capability.description()
+        ),
+    )
+    .primary(need.span, format!("this needs `{capability}`"))
+    .note(format!("{} provides {}", target.name, provided.join(", ")))
+    .help(format!(
+        "put this in a branch that only targets with it check, such as `if supports(\"{capability}\")`"
+    ))
 }
 
 /// The nearest directory at or above `start` that holds a `sayon.toml`.

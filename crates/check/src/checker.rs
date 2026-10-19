@@ -354,6 +354,10 @@ pub(crate) struct Checker<'a> {
     /// appear in (none in a script, a test, or a constant), finalized
     /// together with it.
     pub closures: Vec<(FuncId, Option<FuncId>)>,
+    /// The target the program is checked for, which decides `platform`,
+    /// `processor`, and `supports`, and so which platform branches are
+    /// checked.
+    pub target: &'static sayon_target::Target,
 }
 
 pub struct CheckOutput {
@@ -398,6 +402,7 @@ impl<'a> Checker<'a> {
             test_blocks: Vec::new(),
             enclosing: Vec::new(),
             closures: Vec::new(),
+            target: sayon_target::host(),
         }
     }
 

@@ -1,0 +1,42 @@
+error[E_UNKNOWN_PLATFORM]: "windos" is not a platform
+  --> platform_names.sayon:3:16
+   |
+ 3 | if platform == "windos"
+   |                ^^^^^^^^ `platform` is never "windos"
+   |
+   = help: did you mean "windows"?
+
+error[E_UNKNOWN_PLATFORM]: "x86" is not a processor
+  --> platform_names.sayon:5:17
+   |
+ 5 | if processor != "x86"
+   |                 ^^^^^ `processor` is never "x86"
+   |
+   = help: did you mean "x64"?
+
+error[E_UNKNOWN_CAPABILITY]: "netwrok" is not a capability
+  --> platform_names.sayon:7:13
+   |
+ 7 | if supports("netwrok") or platform == "playstation"
+   |             ^^^^^^^^^
+   |
+   = help: did you mean "network"?
+
+error[E_UNKNOWN_PLATFORM]: "playstation" is not a platform
+  --> platform_names.sayon:7:39
+   |
+ 7 | if supports("netwrok") or platform == "playstation"
+   |                                       ^^^^^^^^^^^^^ `platform` is never "playstation"
+   |
+   = help: `platform` is one of "windows", "linux", "macos", "android", "ios", "web", "wasi"
+
+error[E_UNKNOWN_CAPABILITY]: `supports` takes the name of one capability, written as a string
+   --> platform_names.sayon:10:7
+    |
+ 10 | print(supports(name))
+    |       ^^^^^^^^^^^^^^
+    |
+    = help: for example `supports("network")`; the compiler decides it for each target
+
+5 errors found; nothing was run
+run `sayon explain E_UNKNOWN_PLATFORM` to learn more about an error

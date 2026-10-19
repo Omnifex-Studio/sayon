@@ -334,6 +334,9 @@ impl<'a> Checker<'a> {
         if let Some(item) = self.item(cx.module, &name.name) {
             return self.item_value(item, span);
         }
+        if let Some(value) = self.compile_time_name(cx, &name.name) {
+            return expr(ExprKind::String(value.to_string()), Type::String, span);
+        }
         if name.name == "Outcome" {
             return self.type_as_value(OUTCOME, span);
         }
@@ -1069,6 +1072,9 @@ impl<'a> Checker<'a> {
             }
             Some(Item::Type(id)) => return self.positional_construct(cx, id, args, span),
             None => {}
+        }
+        if name.name == "supports" && self.import(cx.module, "supports").is_none() {
+            return self.check_supports(cx, args, span);
         }
         // A variant of the expected enum comes before the prelude, so that an
         // enum may have a variant called, for example, `error`.

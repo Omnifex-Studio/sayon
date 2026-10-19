@@ -484,6 +484,38 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A branch of an `if` whose condition the compiler decided: only the
+    /// branch it selects is checked, and becomes a plain block.
+    fn check_selected(
+        &mut self,
+        cx: &mut FnCtx,
+        branches: &[ast::IfBranch],
+        else_body: Option<&ast::Block>,
+        index: usize,
+        selected: bool,
+    ) -> StmtKind {
+        let body = if selected {
+            Some(&branches[index].body)
+        } else if index + 1 < branches.len() {
+            return self.check_if(cx, branches, else_body, index + 1);
+        } else {
+            else_body
+        };
+        let block = match body {
+            Some(body) => {
+                cx.scopes.push(Scope::new());
+                let block = self.check_block(cx, body);
+                cx.scopes.pop();
+                block
+            }
+            None => hir::Block {
+                stmts: Vec::new(),
+                locals: Vec::new(),
+            },
+        };
+        StmtKind::Block(block)
+    }
+
     fn check_if(
         &mut self,
         cx: &mut FnCtx,
@@ -492,6 +524,9 @@ impl<'a> Checker<'a> {
         index: usize,
     ) -> StmtKind {
         let branch = &branches[index];
+        if let Some(selected) = self.compile_time_condition(cx, &branch.condition) {
+            return self.check_selected(cx, branches, else_body, index, selected);
+        }
         let condition = self.check_expr_as(
             cx,
             &branch.condition,

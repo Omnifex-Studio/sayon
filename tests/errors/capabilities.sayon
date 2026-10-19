@@ -1,0 +1,24 @@
+# check: --target web
+# A page has no files, other programs, sockets, threads, or C functions.
+io = import("standard/io.sayon")
+os = import("standard/os.sayon")
+network = import("standard/network.sayon")
+threads = import("standard/threads.sayon")
+
+foreign "c"
+    function abs(value: c_int) -> c_int
+
+function save(text: string)
+    io.write_file("notes.txt", text)
+
+save("hello")
+listing = os.run("ls", [])
+connection = network.connect("example.com", 80)
+worker = threads.spawn_parallel(function() -> integer
+    return 1
+)
+print(unsafe abs(-1))
+
+# What only some targets have is fine inside a branch for them.
+if supports("files")
+    print(io.read_file("notes.txt"))

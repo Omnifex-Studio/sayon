@@ -12,9 +12,11 @@ pub mod lint;
 mod narrow;
 mod ownership;
 mod patterns;
+mod platform;
 mod stmt;
 mod structures;
 pub mod types;
+pub mod usage;
 
 use checker::{Checker, ModuleInfo};
 use sayon_syntax::ast;
@@ -45,13 +47,20 @@ pub fn check_module(module: &ast::Module, span: Span) -> CheckOutput {
         standard: false,
         dependency: false,
     };
-    check_program(&[source], 0, span)
+    check_program(&[source], 0, span, sayon_target::host())
 }
 
-/// Checks a program made of several modules; `entry` is the index of the
-/// module that runs.
-pub fn check_program(modules: &[ModuleSource], entry: usize, span: Span) -> CheckOutput {
+/// Checks a program made of several modules for `target`; `entry` is the
+/// index of the module that runs. The target decides `platform`,
+/// `processor`, and `supports`, and so which platform branches are checked.
+pub fn check_program(
+    modules: &[ModuleSource],
+    entry: usize,
+    span: Span,
+    target: &'static sayon_target::Target,
+) -> CheckOutput {
     let mut checker = Checker::new();
+    checker.target = target;
     checker.entry_module = ModuleId(entry as u32);
     for (index, module) in modules.iter().enumerate() {
         let imports: HashMap<String, (ModuleId, Span)> = module

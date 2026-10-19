@@ -1,11 +1,12 @@
 //! The commands.
 
 use crate::compile::{
-    Options, Target, WorkDir, compile, compile_native, current_project, stdlib_dir,
+    Options, Source, WorkDir, compile, compile_native, current_project, stdlib_dir,
 };
 use crate::{status, usage_error};
 use sayon_syntax::SourceMap;
 use sayon_syntax::diagnostic::render;
+use sayon_target::Target;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -44,16 +45,33 @@ fn report_run_error(error: sayon_interp::RunError, options: &Options) -> u8 {
     }
 }
 
-pub fn check(target: &Target, options: &Options) -> u8 {
-    match compile(&target.entry, target.root.as_deref(), options, false) {
-        Ok(_) => {
-            if !options.quiet {
-                eprintln!("{}: no problems found", target.entry.display());
+/// `sayon check`: checks the program for each target, which selects its
+/// platform branches and finds the capabilities it lacks.
+pub fn check(source: &Source, options: &Options, targets: &[&'static Target]) -> u8 {
+    let named = targets.len() > 1 || targets.iter().any(|t| !t.is_host());
+    let mut result = status::SUCCESS;
+    for target in targets {
+        match compile(
+            &source.entry,
+            source.root.as_deref(),
+            options,
+            false,
+            target,
+        ) {
+            Ok(_) => {
+                if !options.quiet {
+                    let suffix = if named {
+                        format!(" for {target}")
+                    } else {
+                        String::new()
+                    };
+                    eprintln!("{}: no problems found{suffix}", source.entry.display());
+                }
             }
-            status::SUCCESS
+            Err(code) => result = result.max(code),
         }
-        Err(code) => code,
     }
+    result
 }
 
 /// `sayon install`: resolves the project's dependencies, fetches Git sources,
@@ -99,13 +117,18 @@ pub fn install(options: &Options, locked: bool, offline: bool) -> u8 {
 
 /// `sayon lint`: the compiler's checks and the lint warnings. With
 /// `deny_warnings`, any warning fails the command.
-pub fn lint(target: &Target, options: &Options, deny_warnings: bool) -> u8 {
-    match crate::compile::lint(&target.entry, target.root.as_deref(), options) {
+pub fn lint(
+    source: &Source,
+    options: &Options,
+    deny_warnings: bool,
+    target: &'static Target,
+) -> u8 {
+    match crate::compile::lint(&source.entry, source.root.as_deref(), options, target) {
         Err(code) => code,
         Ok((errors, _)) if errors > 0 => status::COMPILE_FAILED,
         Ok((_, 0)) => {
             if !options.quiet {
-                eprintln!("{}: no problems found", target.entry.display());
+                eprintln!("{}: no problems found", source.entry.display());
             }
             status::SUCCESS
         }
@@ -124,8 +147,14 @@ pub fn lint(target: &Target, options: &Options, deny_warnings: bool) -> u8 {
     }
 }
 
-pub fn run(target: &Target, options: &Options, program_args: &[String]) -> u8 {
-    let compiled = match compile(&target.entry, target.root.as_deref(), options, false) {
+pub fn run(source: &Source, options: &Options, program_args: &[String]) -> u8 {
+    let compiled = match compile(
+        &source.entry,
+        source.root.as_deref(),
+        options,
+        false,
+        sayon_target::host(),
+    ) {
         Ok(compiled) => compiled,
         Err(code) => return code,
     };
@@ -148,12 +177,18 @@ pub fn run(target: &Target, options: &Options, program_args: &[String]) -> u8 {
 }
 
 pub fn run_native(
-    target: &Target,
+    source: &Source,
     options: &Options,
     release: bool,
     program_args: &[String],
 ) -> u8 {
-    let compiled = match compile(&target.entry, target.root.as_deref(), options, false) {
+    let compiled = match compile(
+        &source.entry,
+        source.root.as_deref(),
+        options,
+        false,
+        sayon_target::host(),
+    ) {
         Ok(compiled) => compiled,
         Err(code) => return code,
     };
@@ -188,52 +223,92 @@ pub fn run_native(
     }
 }
 
-fn with_executable_extension(mut path: PathBuf) -> PathBuf {
-    if cfg!(windows) {
-        path.set_extension("exe");
-    }
-    path
-}
-
-/// Where `sayon build` writes: next to a standalone file, or under the
-/// project's `build/debug` or `build/release` directory.
-fn default_output(target: &Target, release: bool) -> PathBuf {
-    match &target.project {
+/// Where `sayon build` writes for a target: next to a standalone file, or
+/// under the project's `build/debug` or `build/release` directory. A target
+/// other than this computer's has a name of its own there: `hello-web.wasm`,
+/// or `build/debug/web/hello.wasm`.
+fn default_output(source: &Source, release: bool, target: &Target) -> PathBuf {
+    let suffix = target.executable_suffix();
+    match &source.project {
         Some(project) => {
             let profile = if release { "release" } else { "debug" };
-            with_executable_extension(
-                project
-                    .root
-                    .join("build")
-                    .join(profile)
-                    .join(&project.manifest.name),
-            )
+            let mut directory = project.root.join("build").join(profile);
+            if !target.is_host() {
+                directory = directory.join(target.name);
+            }
+            directory.join(format!("{}{suffix}", project.manifest.name))
         }
         None => {
-            let stem = target
+            let stem = source
                 .entry
                 .file_stem()
-                .map(|s| s.to_os_string())
+                .map(|s| s.to_string_lossy().to_string())
                 .unwrap_or_else(|| "program".into());
-            with_executable_extension(target.entry.with_file_name(stem))
+            let name = if target.is_host() {
+                format!("{stem}{suffix}")
+            } else {
+                format!("{stem}-{}{suffix}", target.name)
+            };
+            source.entry.with_file_name(name)
         }
     }
 }
 
+/// `sayon build`: an executable for each target.
 pub fn build(
-    target: &Target,
+    source: &Source,
     options: &Options,
     output: Option<PathBuf>,
     release: bool,
     emit_llvm: bool,
+    targets: &[&'static Target],
 ) -> u8 {
-    let compiled = match compile(&target.entry, target.root.as_deref(), options, false) {
+    if output.is_some() && targets.len() > 1 {
+        return usage_error("`--output` names one file, so it builds one target at a time");
+    }
+    let mut result = status::SUCCESS;
+    for target in targets {
+        let built = build_for(source, options, output.clone(), release, emit_llvm, target);
+        result = result.max(built);
+    }
+    result
+}
+
+fn build_for(
+    source: &Source,
+    options: &Options,
+    output: Option<PathBuf>,
+    release: bool,
+    emit_llvm: bool,
+    target: &'static Target,
+) -> u8 {
+    let compiled = match compile(
+        &source.entry,
+        source.root.as_deref(),
+        options,
+        false,
+        target,
+    ) {
         Ok(compiled) => compiled,
         Err(code) => return code,
     };
+    if !target.is_host() {
+        let reason = if target.state >= sayon_target::State::Buildable {
+            format!("so far, programs for {target} are built on {target} itself")
+        } else {
+            format!(
+                "building programs for {target} is not available yet; it is planned for milestone {}",
+                target.planned
+            )
+        };
+        eprintln!("error: {reason}");
+        eprintln!("  = note: checking found no problems in the program for {target}");
+        eprintln!("  = help: `sayon target list` shows the targets this computer builds for");
+        return status::BUILD_FAILED;
+    }
     if emit_llvm {
         let destination =
-            output.unwrap_or_else(|| default_output(target, release).with_extension("ll"));
+            output.unwrap_or_else(|| default_output(source, release, target).with_extension("ll"));
         let ir = sayon_codegen::emit_llvm(&compiled.module, &compiled.sources);
         if let Some(parent) = destination.parent().filter(|p| !p.as_os_str().is_empty()) {
             let _ = std::fs::create_dir_all(parent);
@@ -251,7 +326,7 @@ pub fn build(
             }
         };
     }
-    let destination = output.unwrap_or_else(|| default_output(target, release));
+    let destination = output.unwrap_or_else(|| default_output(source, release, target));
     match compile_native(&compiled, &destination, release) {
         Ok(()) => {
             if !options.quiet {
@@ -264,6 +339,84 @@ pub fn build(
             status::BUILD_FAILED
         }
     }
+}
+
+/// `sayon target list`: every target, how far its support has come, and
+/// what it lacks.
+pub fn target_list() -> u8 {
+    println!("Targets (* is this computer):");
+    let width = sayon_target::TARGETS
+        .iter()
+        .map(|t| t.name.len())
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let triple_width = sayon_target::TARGETS
+        .iter()
+        .map(|t| t.triple.len())
+        .max()
+        .unwrap_or(0);
+    for target in sayon_target::TARGETS {
+        let mark = if target.is_host() { "*" } else { " " };
+        let state = if target.state >= sayon_target::State::Buildable {
+            target.state.name().to_string()
+        } else {
+            format!(
+                "{}; building planned for {}",
+                target.state.name(),
+                target.planned
+            )
+        };
+        println!(
+            "  {mark} {:<width$}{:<triple_width$}  {state}",
+            target.name, target.triple
+        );
+        let lacks = target.lacks();
+        if !lacks.is_empty() {
+            let names: Vec<&str> = lacks.iter().map(|c| c.name()).collect();
+            println!("    {:<width$}lacks {}", "", names.join(", "));
+        }
+    }
+    let aliases: Vec<String> = sayon_target::ALIASES
+        .iter()
+        .map(|(alias, name)| format!("{alias} = {name}"))
+        .collect();
+    println!(
+        "Short names: native = {}, {}",
+        sayon_target::host(),
+        aliases.join(", ")
+    );
+    println!("`sayon check --target <target>` checks a program for any target;");
+    println!("`sayon build --target <target>` builds for the ones this computer builds for.");
+    status::SUCCESS
+}
+
+/// `sayon target setup <target>`: what building for a target needs.
+pub fn target_setup(name: &str) -> u8 {
+    let target = match sayon_target::resolve(name) {
+        Ok(target) => target,
+        Err(message) => return usage_error(&message),
+    };
+    println!("{target} ({}, {})", target.triple, target.state.name());
+    if target.is_host() {
+        println!(
+            "This computer's own target: native builds need clang, which `sayon doctor` checks."
+        );
+    } else if target.state >= sayon_target::State::Buildable {
+        println!("So far, programs for {target} are built on {target} itself.");
+    } else {
+        println!(
+            "Building programs for {target} is planned for milestone {}; `sayon check --target {target}` checks them now.",
+            target.planned
+        );
+    }
+    let provides: Vec<&str> = target.capabilities.iter().map(|c| c.name()).collect();
+    println!("Provides: {}", provides.join(", "));
+    let lacks: Vec<&str> = target.lacks().iter().map(|c| c.name()).collect();
+    if !lacks.is_empty() {
+        println!("Lacks: {}", lacks.join(", "));
+    }
+    status::SUCCESS
 }
 
 /// Collects `.sayon` files under a directory in a stable order, skipping
@@ -317,7 +470,7 @@ pub fn test(files: &[String], options: &Options) -> u8 {
     }
     let (mut passed, mut failed, mut broken) = (0usize, 0usize, 0usize);
     for path in &paths {
-        let compiled = match compile(path, root.as_deref(), options, true) {
+        let compiled = match compile(path, root.as_deref(), options, true, sayon_target::host()) {
             Ok(compiled) => compiled,
             Err(_) => {
                 broken += 1;

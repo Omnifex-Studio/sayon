@@ -31,17 +31,17 @@ pub struct Project {
 
 /// The program a command works on: a file named on the command line, or the
 /// entry file of the project around the current directory.
-pub struct Target {
+pub struct Source {
     pub entry: PathBuf,
     /// The directory imports resolve from, for a project.
     pub root: Option<PathBuf>,
     pub project: Option<Project>,
 }
 
-impl Target {
-    pub fn resolve(file: Option<&String>, command: &str, options: &Options) -> Result<Target, u8> {
+impl Source {
+    pub fn resolve(file: Option<&String>, command: &str, options: &Options) -> Result<Source, u8> {
         if let Some(file) = file {
-            return Ok(Target {
+            return Ok(Source {
                 entry: PathBuf::from(file),
                 root: None,
                 project: None,
@@ -57,12 +57,75 @@ impl Target {
             }
         };
         let entry = project.root.join(&project.manifest.entry);
-        Ok(Target {
+        Ok(Source {
             entry,
             root: Some(project.root.clone()),
             project: Some(project),
         })
     }
+}
+
+/// The targets `--target` names, `all` being the project's targets or the
+/// default set; this computer's when there is none. Each must provide
+/// what the project's manifest requires.
+pub fn targets(
+    names: &[&str],
+    source: &Source,
+    options: &Options,
+) -> Result<Vec<&'static sayon_target::Target>, u8> {
+    let manifest = source.project.as_ref().map(|project| &project.manifest);
+    let mut targets: Vec<&'static sayon_target::Target> = Vec::new();
+    for name in names {
+        let named: Vec<&'static sayon_target::Target> = if *name == "all" {
+            match manifest {
+                Some(manifest) if !manifest.targets.is_empty() => manifest.targets.clone(),
+                _ => sayon_target::DEFAULT_SET
+                    .iter()
+                    .filter_map(|name| sayon_target::find(name))
+                    .collect(),
+            }
+        } else {
+            match sayon_target::resolve(name) {
+                Ok(target) => vec![target],
+                Err(message) => return Err(usage_error(&message)),
+            }
+        };
+        for target in named {
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
+    }
+    if targets.is_empty() {
+        targets.push(sayon_target::host());
+    }
+    let required = manifest
+        .map(|m| m.required_capabilities.as_slice())
+        .unwrap_or(&[]);
+    let label = if options.color {
+        "\x1b[1;31merror\x1b[0m"
+    } else {
+        "error"
+    };
+    let mut missing = false;
+    for target in &targets {
+        for capability in required {
+            if !target.provides(*capability) {
+                eprintln!(
+                    "{label}: sayon.toml requires `{capability}`, but {target} programs cannot {}",
+                    capability.description()
+                );
+                missing = true;
+            }
+        }
+    }
+    if missing {
+        eprintln!(
+            "  = help: leave such targets out of `--target`, or change `required_capabilities`"
+        );
+        return Err(status::COMPILE_FAILED);
+    }
+    Ok(targets)
 }
 
 /// The project around the current directory, if there is one. A manifest
@@ -166,6 +229,7 @@ fn driver_options(
     options: &Options,
     tests: bool,
     lint: bool,
+    target: &'static sayon_target::Target,
 ) -> Result<sayon_driver::Options, u8> {
     let root = project_root(entry, root);
     let mut packages = sayon_driver::packages::Packages::default();
@@ -193,17 +257,20 @@ fn driver_options(
         root,
         lint,
         packages,
+        target,
     })
 }
 
-/// Loads, checks, and lowers a program, printing any diagnostics.
+/// Loads, checks, and lowers a program for `target`, printing any
+/// diagnostics.
 pub fn compile(
     entry: &Path,
     root: Option<&Path>,
     options: &Options,
     tests: bool,
+    target: &'static sayon_target::Target,
 ) -> Result<Compiled, u8> {
-    let driver_options = driver_options(entry, root, options, tests, false)?;
+    let driver_options = driver_options(entry, root, options, tests, false, target)?;
     let output = match sayon_driver::compile(entry, &driver_options) {
         Ok(output) => output,
         Err(sayon_driver::EntryError(message)) => {
@@ -228,8 +295,13 @@ pub fn compile(
 
 /// Checks a program with the lint warnings, printing the diagnostics.
 /// Returns the error and warning counts, or the status for a missing entry.
-pub fn lint(entry: &Path, root: Option<&Path>, options: &Options) -> Result<(usize, usize), u8> {
-    let driver_options = driver_options(entry, root, options, false, true)?;
+pub fn lint(
+    entry: &Path,
+    root: Option<&Path>,
+    options: &Options,
+    target: &'static sayon_target::Target,
+) -> Result<(usize, usize), u8> {
+    let driver_options = driver_options(entry, root, options, false, true, target)?;
     let output = match sayon_driver::compile(entry, &driver_options) {
         Ok(output) => output,
         Err(sayon_driver::EntryError(message)) => {

@@ -319,6 +319,14 @@ The program's entry runs the module constant initializers, then the entry functi
 
 Budgets for source size, generic expansion, and IR size are not enforced yet.
 
+## Targets
+
+`crates/target` holds the table of targets: each one's name, LLVM triple, platform, processor, address size, how far its support has come, and the capabilities it provides. It depends on nothing, so the checker, the code generator, and the command line share it, and the runtime can later. The short names map to fixed entries. `sayon build` builds only for the computer's own target so far; any target can be checked.
+
+The checker holds the target. A name `platform` or `processor` that no local, item, or import of the module declares is the target's string, and `supports("name")` called where `supports` is not declared is the target's boolean. When checking an `if`, a condition made only of those, compared with string literals and joined by `and`, `or`, and `not`, is evaluated first: the selected branch is checked as a plain block and the others are skipped, so the program the later phases see has only the selected code. A literal that is no platform, processor, or capability is reported while evaluating, on every side of `and` and `or`.
+
+After checking, `sayon_check::usage::needs` walks the program from its entry, its constants' initializers, and its finally functions, following each call, function value, and closure to the functions they name, breadth first. Each built-in and host primitive maps to a capability, or to none for those every target has; a C call needs `foreign`. A function of the program's own reports its operations where they are; one of the standard library or a dependency reports them where the program's own code first led to it, which the walk carries from caller to callee. The driver reports each capability the target lacks once, at its first such place. Linking passes only the libraries of the C functions the lowered program calls, so a `foreign` block for another platform's library costs nothing when its branch is not selected.
+
 ## Toolchain
 
 | Component | Version | Notes |

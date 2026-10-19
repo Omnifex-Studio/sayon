@@ -1085,7 +1085,7 @@ description = "Says hello"     # optional
 
 `sayon init hello` creates a project with a manifest, a program, a module with a test, and ignore rules. Inside a project (in its root or any directory below it), `sayon run`, `check`, `build`, and `test` need no file name: they use the manifest's entry file. Imports in a project's files resolve from the project root, also when a file is named on the command line. `sayon build` writes `build/debug/<name>` (`build/release/<name>` with `--release`), and `sayon clean` removes the `build` directory. Without file names, `sayon test` runs the tests in `src` and `tests`.
 
-Unknown or misspelled manifest keys are errors.
+Unknown or misspelled manifest keys are errors. A `[compiler]` table names the project's [targets](#targets).
 
 ### Dependencies
 
@@ -1115,6 +1115,80 @@ utilities = import("dependencies/utilities/src/library.sayon")
 - Dependencies by version from a package registry arrive with the registry (milestone M5).
 
 `sayon doctor` reports the Unicode version the toolchain follows and where the standard library, the runtime library, and clang were found. `sayon explain CODE` explains a diagnostic or runtime error code; [errors.md](errors.md) lists them all.
+
+## Targets
+
+A program is checked and built for a target: a platform and a processor. `sayon run`, `sayon test`, and `sayon build` without `--target` use this computer's own; `--target` names others, and can be given more than once:
+
+```text
+sayon check --target web          # check the program as a web page would run it
+sayon check --target all          # the project's targets, or windows-x64 and linux-x64
+sayon build --target linux-x64
+sayon target list                 # every target, how far it has come, and what it lacks
+sayon target setup wasi           # what building for one needs
+```
+
+| Target | Platform | Processor | State |
+|---|---|---|---|
+| `windows-x64` | `windows` | `x64` | built and run |
+| `linux-x64` | `linux` | `x64` | built and run |
+| `wasi` | `wasi` | `wasm32` | checked; built from M4 on |
+| `web` | `web` | `wasm32` | checked; built from M4 on |
+| `android-arm64`, `android-x64` | `android` | `arm64`, `x64` | checked; built from M4 on |
+| `windows-arm64`, `linux-arm64` | `windows`, `linux` | `arm64` | checked; built from M5 on |
+| `macos-arm64`, `macos-x64` | `macos` | `arm64`, `x64` | checked; built from M7 on |
+| `ios-arm64`, `ios-simulator-arm64` | `ios` | `arm64` | checked; built from M7 on |
+
+`native` is this computer's target, and the short names `windows`, `linux`, `android`, `macos`, and `ios` are `windows-x64`, `linux-x64`, `android-arm64`, `macos-arm64`, and `ios-arm64`, for good: a later release never moves them to another processor. Each target's LLVM triple, such as `x86_64-unknown-linux-gnu`, names it too. So far, a program is built on the system it is for; a target other than this computer's checks the program but stops before building it. `sayon build` writes a program for a target other than this computer's under `build/debug/<target>/`, or next to a standalone file as `<name>-<target>`.
+
+### Platform branches
+
+```sayon
+if platform == "web"
+    show_in_page(text)
+elseif platform == "android"
+    show_on_phone(text)
+else
+    print(text)
+```
+
+`platform` is the target's platform: `"windows"`, `"linux"`, `"macos"`, `"android"`, `"ios"`, `"web"`, or `"wasi"`. `processor` is `"x64"`, `"arm64"`, or `"wasm32"`. `supports("name")` is whether the target has a [capability](#capabilities).
+
+An `if` whose condition is made only of these, compared with written names and joined by `and`, `or`, and `not`, is decided by the compiler: only the branch the target selects is checked and compiled. So a branch can call what exists only on its platform, and the others need not even be defined for this target; every branch must still be valid syntax. Checking with `--target` checks the branch of that target, and `--target all` each one. A written name that is no platform, processor, or capability is an error, since its branch would silently never apply.
+
+Anywhere else, `platform` and `processor` are strings and `supports(...)` is a boolean, all fixed when the program is compiled. A variable, function, or import of the program's own with one of these names hides it and is an ordinary value, so `if platform == "web"` after `platform = "web"` is an ordinary condition.
+
+### Capabilities
+
+Each target provides capabilities: what its programs can ask of the system.
+
+| Capability | What it covers | Targets without it |
+|---|---|---|
+| `console` | `print` and standard output and errors | none |
+| `input` | reading standard input | web, Android, iOS |
+| `files` | files and directories | web |
+| `environment` | environment variables, the current directory, program arguments | web, Android, iOS |
+| `processes` | `os.run`, `os.start` | web, WASI, Android, iOS |
+| `network` | TCP and UDP sockets, resolving names | web, WASI |
+| `http` | the HTTP client | WASI |
+| `tls` | `network.connect_secure`, `connection.secure`, `https://` | web, WASI, Android, iOS |
+| `tasks` | tasks, channels, `sleep`, `select` | none |
+| `threads` | `threads.spawn_parallel` | web, WASI |
+| `foreign` | C functions and `standard/memory` | web |
+| `time_zones` | IANA time zones | web, WASI, Android, iOS |
+| `clock`, `random`, `json`, `math`, `text`, `collections` | the rest of the standard library | none |
+
+A program needs a capability when it can reach an operation that uses it: the compiler follows every function the program calls or uses as a value, from its entry through the standard library and its dependencies. Checking or building for a target that lacks one is an error (`E_CAPABILITY`) at the program's own code that leads to the operation. Code in a branch the target does not select needs nothing, so `if supports("files")` keeps file access to the targets with files. A program never meets a capability's absence while it runs.
+
+A project can name its targets and the capabilities it cannot do without:
+
+```toml
+[compiler]
+targets = ["native", "web"]                    # what --target all means
+required_capabilities = ["console", "files"]   # every target must have these
+```
+
+Before checking, `check` and `build` stop for any target that lacks a required capability.
 
 ## Tests
 

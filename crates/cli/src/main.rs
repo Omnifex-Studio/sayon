@@ -39,6 +39,8 @@ Usage:
     sayon install [--locked]         Fetch dependencies and write sayon.lock
     sayon clean                      Remove a project's build output
     sayon doctor                     Check the installation and native toolchain
+    sayon target list                List the targets and what each provides
+    sayon target setup <target>      Show what building for a target needs
     sayon explain <code>             Explain an error code, such as E_MOVED_VALUE
     sayon version                    Print the version
     sayon help                       Print this help
@@ -50,6 +52,9 @@ Options:
     --color <auto|always|never>      Color diagnostics (default: auto)
     -q, --quiet                      Print only errors
     -o, --output <path>              Executable to write (build)
+    --target <target>                Check or build for a target, such as
+                                     linux-x64, web, or all (check, lint,
+                                     build; repeatable for check and build)
     --release                        Optimize native code (build, run --native)
     --emit-llvm                      Write LLVM IR instead of an executable (build)
     --check                          Report unformatted files without changing them (fmt)
@@ -75,7 +80,10 @@ Exit status:
 pub struct Args {
     pub positional: Vec<String>,
     pub flags: Vec<String>,
+    /// The last value of each valued option.
     pub values: HashMap<String, String>,
+    /// Every value of each valued option, in order, for those that repeat.
+    pub repeated: Vec<(String, String)>,
     /// Words after `--`.
     pub rest: Vec<String>,
 }
@@ -83,6 +91,15 @@ pub struct Args {
 impl Args {
     pub fn flag(&self, name: &str) -> bool {
         self.flags.iter().any(|f| f == name)
+    }
+
+    /// Every value given for an option that can repeat.
+    pub fn all(&self, name: &str) -> Vec<&str> {
+        self.repeated
+            .iter()
+            .filter(|(option, _)| option == name)
+            .map(|(_, value)| value.as_str())
+            .collect()
     }
 }
 
@@ -98,6 +115,7 @@ fn parse_args(
         positional: Vec::new(),
         flags: Vec::new(),
         values: HashMap::new(),
+        repeated: Vec::new(),
         rest: Vec::new(),
     };
     let mut iter = args.iter();
@@ -129,6 +147,7 @@ fn parse_args(
                     .cloned()
                     .ok_or_else(|| format!("{name} needs a value"))?,
             };
+            parsed.repeated.push((canonical.to_string(), value.clone()));
             parsed.values.insert(canonical.to_string(), value);
         } else {
             return Err(format!("unknown option `{arg}`"));
@@ -164,17 +183,17 @@ fn dispatch(args: &[String]) -> u8 {
             return status::SUCCESS;
         }
         "run" => (&["--quiet", "--native", "--release"], &["--color"], true),
-        "check" => (&["--quiet"], &["--color"], false),
-        "lint" => (&["--quiet"], &["--color", "--deny"], false),
+        "check" => (&["--quiet"], &["--color", "--target"], false),
+        "lint" => (&["--quiet"], &["--color", "--deny", "--target"], false),
         "build" => (
             &["--quiet", "--release", "--emit-llvm"],
-            &["--color", "--output"],
+            &["--color", "--output", "--target"],
             false,
         ),
         "test" => (&["--quiet"], &["--color"], false),
         "fmt" => (&["--check"], &[], false),
         "install" => (&["--quiet", "--locked", "--offline"], &["--color"], false),
-        "init" | "clean" | "doctor" | "explain" => (&[], &[], false),
+        "init" | "clean" | "doctor" | "explain" | "target" => (&[], &[], false),
         other => return usage_error(&format!("unknown command `{other}`")),
     };
     let parsed = match parse_args(rest, flags, valued, allow_rest) {
@@ -205,17 +224,21 @@ fn dispatch(args: &[String]) -> u8 {
             if parsed.positional.len() > 1 {
                 return usage_error(&format!("`sayon {command}` takes one source file"));
             }
-            let target =
-                match compile::Target::resolve(parsed.positional.first(), command, &options) {
-                    Ok(target) => target,
+            let source =
+                match compile::Source::resolve(parsed.positional.first(), command, &options) {
+                    Ok(source) => source,
                     Err(code) => return code,
                 };
+            let targets = match compile::targets(&parsed.all("--target"), &source, &options) {
+                Ok(targets) => targets,
+                Err(code) => return code,
+            };
             match command.as_str() {
                 "run" if parsed.flag("--native") => {
-                    commands::run_native(&target, &options, parsed.flag("--release"), &parsed.rest)
+                    commands::run_native(&source, &options, parsed.flag("--release"), &parsed.rest)
                 }
-                "run" => commands::run(&target, &options, &parsed.rest),
-                "check" => commands::check(&target, &options),
+                "run" => commands::run(&source, &options, &parsed.rest),
+                "check" => commands::check(&source, &options, &targets),
                 "lint" => {
                     let deny = match parsed.values.get("--deny").map(String::as_str) {
                         None => false,
@@ -226,14 +249,18 @@ fn dispatch(args: &[String]) -> u8 {
                             ));
                         }
                     };
-                    commands::lint(&target, &options, deny)
+                    let [target] = targets.as_slice() else {
+                        return usage_error("`sayon lint` checks one target at a time");
+                    };
+                    commands::lint(&source, &options, deny, target)
                 }
                 _ => commands::build(
-                    &target,
+                    &source,
                     &options,
                     parsed.values.get("--output").map(Into::into),
                     parsed.flag("--release"),
                     parsed.flag("--emit-llvm"),
+                    &targets,
                 ),
             }
         }
@@ -245,6 +272,13 @@ fn dispatch(args: &[String]) -> u8 {
         },
         "clean" => commands::clean(&options),
         "doctor" => commands::doctor(),
+        "target" => match parsed.positional.as_slice() {
+            [list] if list == "list" => commands::target_list(),
+            [setup, name] if setup == "setup" => commands::target_setup(name),
+            _ => usage_error(
+                "`sayon target` takes `list`, or `setup` and a target, such as `sayon target setup wasi`",
+            ),
+        },
         "explain" => explain::explain(&parsed.positional),
         "install" => {
             if !parsed.positional.is_empty() {

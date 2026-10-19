@@ -65,6 +65,27 @@ impl Module {
         &self.functions[id.0 as usize]
     }
 
+    /// The C functions some function calls, in the order of their
+    /// declarations. A platform branch that was not selected calls none.
+    pub fn called_foreign(&self) -> Vec<ForeignId> {
+        let mut called = vec![false; self.foreign.len()];
+        for function in &self.functions {
+            for block in &function.blocks {
+                if let Terminator::Op {
+                    op: Op::CallForeign { function, .. },
+                    ..
+                } = &block.term
+                {
+                    called[function.0 as usize] = true;
+                }
+            }
+        }
+        (0..self.foreign.len())
+            .filter(|index| called[*index])
+            .map(|index| ForeignId(index as u32))
+            .collect()
+    }
+
     /// The finally function of a structure, if it has one.
     pub fn finally_of(&self, ty: &Type) -> Option<FunctionId> {
         match ty {

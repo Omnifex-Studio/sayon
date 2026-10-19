@@ -1,0 +1,26 @@
+# Compile-time platform branches: only the branch the target selects is
+# checked and compiled, so the others can name what this target lacks.
+
+function where_am_i() -> string
+    if platform == "web"
+        return page_title()
+    elseif platform == "windows" or platform == "linux" or platform == "macos"
+        return "a desktop"
+    else
+        return "somewhere else"
+
+print(where_am_i())
+print(supports("files"), supports("json"))
+print(processor == "x64" or processor == "arm64")
+
+if not supports("tasks")
+    tasks_are_missing()
+
+# Outside conditions the names are plain values.
+known = platform
+print(length(known) > 0, typeof(processor))
+
+# A name of the program's own is an ordinary value, even holding "web".
+platform = "web"
+if platform == "web"
+    print("the program's own platform variable")

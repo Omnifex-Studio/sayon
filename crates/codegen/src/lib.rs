@@ -104,12 +104,14 @@ fn system_libraries() -> &'static [&'static str] {
     }
 }
 
-/// The libraries a program's `foreign` blocks name, as the linker knows
-/// them. The C runtime is linked already, but on Windows its `printf` and
-/// kin are in a library of their own.
+/// The libraries of the C functions a program calls, as the linker knows
+/// them; a library none of whose functions are called, as in a platform
+/// branch for another system, is left out. The C runtime is linked already,
+/// but on Windows its `printf` and kin are in a library of their own.
 pub fn foreign_libraries(module: &Module) -> Vec<String> {
     let mut libraries: Vec<String> = Vec::new();
-    for function in &module.foreign {
+    for id in module.called_foreign() {
+        let function = &module.foreign[id.0 as usize];
         let library = if function.library == "c" {
             if !cfg!(windows) {
                 continue;

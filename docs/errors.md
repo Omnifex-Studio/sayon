@@ -474,7 +474,28 @@ A module constant depends on itself, directly or through other constants or func
 
 ### E_MANIFEST
 
-`sayon.toml` is invalid: a key is unknown or misspelled, a value has the wrong type, or a package name or version is malformed. The message points at the problem.
+`sayon.toml` is invalid: a key is unknown or misspelled, a value has the wrong type, a package name or version is malformed, or `[compiler]` names a target or capability that does not exist. The message points at the problem.
+
+## Targets and capabilities
+
+### E_CAPABILITY
+
+The program can reach an operation that the target it is checked or built for cannot do, such as `os.run` for `web`, which cannot start other programs. The error points at the program's own code that leads to it, also when the operation itself is in the standard library. Move that code into a branch that only targets with the capability select:
+
+```sayon
+if supports("processes")
+    listing = os.run("ls", [])
+```
+
+or check and build the program for targets that have it. `sayon target list` shows what each target lacks.
+
+### E_UNKNOWN_PLATFORM
+
+A platform branch compares `platform` or `processor` with a name that is not one, such as `platform == "windos"`, so its branch would never apply. `platform` is one of `"windows"`, `"linux"`, `"macos"`, `"android"`, `"ios"`, `"web"`, and `"wasi"`; `processor` is `"x64"`, `"arm64"`, or `"wasm32"`.
+
+### E_UNKNOWN_CAPABILITY
+
+`supports` names something that is not a capability, or is given something other than one written name, such as a variable: the compiler decides `supports("network")` for each target, so the name must be written out. The capabilities are `console`, `input`, `files`, `environment`, `processes`, `network`, `http`, `tls`, `tasks`, `threads`, `foreign`, `time_zones`, `clock`, `random`, `json`, `math`, `text`, and `collections`.
 
 ## Lint warnings
 

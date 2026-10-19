@@ -88,6 +88,7 @@ Native builds need [LLVM](https://releases.llvm.org)'s clang at build time (foun
 
 | Path | Contents |
 |---|---|
+| `crates/target` | The targets programs are checked and built for, and their capabilities |
 | `crates/syntax` | Source files, diagnostics, lexer, and parser |
 | `crates/check` | Name resolution, type inference, and ownership checking |
 | `crates/ir` | Control-flow IR with explicit moves, drops, and error edges |

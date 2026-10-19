@@ -60,7 +60,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Finally functions: a structure's own destruction, wherever its values are destroyed; never copied, cannot wait, failures fatal | experimental | M3 |
 | Tasks (fibers) and channels: `standard/threads` `spawn`, `join`, `detach`, `pause`, bounded, unbounded, and rendezvous channels, `receive_result`, `recoverable_send`, `select`; cancellation with cleanup, shutdown of tasks at the end of `main`, deadlock detection; native on Windows and Linux x86-64 | experimental | M3 |
 | Native tasks on macOS and on ARM64 | planned | with each platform's validation |
-| Compile-time `platform` branches | planned | M4 |
+| Compile-time platform branches: `platform`, `processor`, `supports("capability")`; only the selected branch is checked and compiled | experimental | M4 |
+| Capabilities: each target's are recorded, and a program's needs are found by following its calls through the standard library; a lacking target is an error at the program's own code | experimental | M4 |
 | `async`/`await`, hygienic macros | planned | M8 |
 
 ## Tools
@@ -70,6 +71,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `sayon run` (interpreter) | experimental | M1 |
 | `sayon check` | experimental | M1 |
 | `sayon build`, `sayon run --native` on Windows x64 (M1) and Linux x86-64 (M3) | experimental | M1, M3 |
+| Targets: `--target` for `check`, `lint`, and `build` (repeatable, `all`, `native`, short names, triples); `sayon target list` and `setup`; `[compiler]` `targets` and `required_capabilities` in `sayon.toml` | experimental | M4 |
+| Building on one system for another (WebAssembly, Android, and the other desktop systems) | planned | M4 to M7, with each target |
 | Diagnostics with stable codes and source excerpts | experimental | M1 |
 | VS Code syntax highlighting and file icon | experimental | M1 |
 | `sayon test` with `test` blocks (interpreter) | experimental | M1 |
@@ -126,5 +129,5 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Windows x64 (`x86_64-pc-windows-msvc`) | yes | yes | yes, development machine | no |
 | Linux x64 (`x86_64-unknown-linux-gnu`) | yes | yes | yes, Ubuntu 26.04 under WSL 2 | no |
 | Windows and Linux ARM64 | yes | no | no | no |
-| Android, browser WebAssembly, WASI | yes | no | no | no |
+| Android (`android-arm64`, `android-x64`), browser WebAssembly (`web`), WASI (`wasi`) | yes, checked with `--target` | no | no | no |
 | macOS, iOS | yes | no | no | no |

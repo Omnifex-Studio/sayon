@@ -17,6 +17,7 @@ sayon-interp = { path = "crates/interp" }
 sayon-runtime = { path = "crates/runtime" }
 sayon-codegen = { path = "crates/codegen" }
 sayon-driver = { path = "crates/driver" }
+sayon-target = { path = "crates/target" }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"

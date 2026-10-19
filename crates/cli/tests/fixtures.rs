@@ -382,7 +382,18 @@ fn invalid_programs_report_their_recorded_diagnostics() {
     let mut failures = Vec::new();
     for source in sources(&dir) {
         let name = source.file_name().unwrap().to_string_lossy().to_string();
-        let outcome = sayon(&dir, &["check", "--color", "never", &name]);
+        // A first line `# check: --target web` adds its words to the command.
+        let text = std::fs::read_to_string(&source).unwrap();
+        let extra: Vec<&str> = text
+            .lines()
+            .next()
+            .and_then(|line| line.strip_prefix("# check:"))
+            .map(|words| words.split_whitespace().collect())
+            .unwrap_or_default();
+        let mut args = vec!["check", "--color", "never"];
+        args.extend(extra);
+        args.push(&name);
+        let outcome = sayon(&dir, &args);
         if outcome.status != 2 {
             failures.push(format!("{name}: expected status 2, got {}", outcome.status));
         }

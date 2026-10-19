@@ -20,6 +20,10 @@
 //!
 //! [dev_dependencies]            # only for the package's own tests
 //! checks = { path = "../checks" }
+//!
+//! [compiler]
+//! targets = ["native", "web"]   # what `--target all` builds; optional
+//! required_capabilities = ["console", "files"]   # optional
 //! ```
 
 use sayon_syntax::{Diagnostic, FileId, Span};
@@ -36,6 +40,11 @@ pub struct Manifest {
     pub dependencies: Vec<Dependency>,
     /// Dependencies of the package's tests only.
     pub dev_dependencies: Vec<Dependency>,
+    /// The targets `--target all` means, by their table names; empty when
+    /// the manifest names none.
+    pub targets: Vec<&'static sayon_target::Target>,
+    /// What every target the package is built for must provide.
+    pub required_capabilities: Vec<sayon_target::Capability>,
 }
 
 /// One entry of `[dependencies]`: the alias imports use, and where the
@@ -93,7 +102,7 @@ const PACKAGE_KEYS: [&str; 6] = [
     "description",
     "language",
 ];
-const LATER_TABLES: [(&str, &str); 1] = [("compiler", "M4")];
+const COMPILER_KEYS: [&str; 2] = ["targets", "required_capabilities"];
 const DEPENDENCY_TABLES: [&str; 2] = ["dependencies", "dev_dependencies"];
 
 fn valid_name(text: &str) -> bool {
@@ -228,6 +237,8 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
     let mut description = None;
     let mut dependencies: Vec<Dependency> = Vec::new();
     let mut dev_dependencies: Vec<Dependency> = Vec::new();
+    let mut targets: Vec<&'static sayon_target::Target> = Vec::new();
+    let mut required_capabilities: Vec<sayon_target::Capability> = Vec::new();
     let mut seen: Vec<(String, String, Span)> = Vec::new();
 
     for item in &entries {
@@ -266,6 +277,10 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
                     dev_dependencies.push(found);
                 }
             }
+            continue;
+        }
+        if item.table == "compiler" {
+            compiler(item, &mut targets, &mut required_capabilities, &mut errors);
             continue;
         }
         if item.table != "package" {
@@ -390,7 +405,92 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
         description,
         dependencies,
         dev_dependencies,
+        targets,
+        required_capabilities,
     })
+}
+
+/// Reads one entry of `[compiler]`.
+fn compiler(
+    item: &Entry,
+    targets: &mut Vec<&'static sayon_target::Target>,
+    required: &mut Vec<sayon_target::Capability>,
+    errors: &mut Vec<Diagnostic>,
+) {
+    let names = match &item.value {
+        Value::Strings(names) => names,
+        other => {
+            if COMPILER_KEYS.contains(&item.key.as_str()) {
+                errors.push(
+                    Diagnostic::error(
+                        "E_MANIFEST",
+                        format!(
+                            "`{}` must be an array of strings, not {}",
+                            item.key,
+                            other.kind()
+                        ),
+                    )
+                    .primary(item.value_span, ""),
+                );
+                return;
+            }
+            &Vec::new()
+        }
+    };
+    match item.key.as_str() {
+        "targets" => {
+            for name in names {
+                match sayon_target::find(name) {
+                    Some(target) if !targets.contains(&target) => targets.push(target),
+                    Some(_) => {}
+                    None => errors.push(
+                        Diagnostic::error("E_MANIFEST", format!("\"{name}\" is not a target"))
+                            .primary(item.value_span, "")
+                            .help("`sayon target list` shows the targets and their names"),
+                    ),
+                }
+            }
+        }
+        "required_capabilities" => {
+            for name in names {
+                match sayon_target::Capability::named(name) {
+                    Some(capability) if !required.contains(&capability) => {
+                        required.push(capability)
+                    }
+                    Some(_) => {}
+                    None => {
+                        let all: Vec<&str> = sayon_target::Capability::ALL
+                            .iter()
+                            .map(|c| c.name())
+                            .collect();
+                        let help = match all.iter().find(|c| close(name, c)) {
+                            Some(suggestion) => format!("did you mean \"{suggestion}\"?"),
+                            None => format!("the capabilities are {}", all.join(", ")),
+                        };
+                        errors.push(
+                            Diagnostic::error(
+                                "E_MANIFEST",
+                                format!("\"{name}\" is not a capability"),
+                            )
+                            .primary(item.value_span, "")
+                            .help(help),
+                        );
+                    }
+                }
+            }
+        }
+        other => {
+            let help = match COMPILER_KEYS.iter().find(|k| close(other, k)) {
+                Some(suggestion) => format!("did you mean `{suggestion}`?"),
+                None => format!("[compiler] accepts {}", COMPILER_KEYS.join(", ")),
+            };
+            errors.push(
+                Diagnostic::error("E_MANIFEST", format!("unknown key `{other}` in [compiler]"))
+                    .primary(item.key_span, "")
+                    .help(help),
+            );
+        }
+    }
 }
 
 fn close(a: &str, b: &str) -> bool {
@@ -438,19 +538,14 @@ fn read_entries(file: FileId, text: &str, errors: &mut Vec<Diagnostic>) -> Vec<E
             };
             let name = name.trim().to_string();
             let span = span_of(indent, trimmed.len());
-            if name == "package" || DEPENDENCY_TABLES.contains(&name.as_str()) {
+            if name == "package" || name == "compiler" || DEPENDENCY_TABLES.contains(&name.as_str())
+            {
                 table = Some(name);
-            } else if let Some((_, milestone)) = LATER_TABLES.iter().find(|(t, _)| *t == name) {
-                errors.push(
-                    Diagnostic::error("E_UNAVAILABLE", format!("[{name}] is not available yet"))
-                        .primary(span, format!("planned for milestone {milestone}")),
-                );
-                table = Some(String::new());
             } else {
                 errors.push(
                     Diagnostic::error("E_MANIFEST", format!("unknown table [{name}]"))
                         .primary(span, "")
-                        .help("the manifest has [package], [dependencies], and [dev_dependencies] tables"),
+                        .help("the manifest has [package], [dependencies], [dev_dependencies], and [compiler] tables"),
                 );
                 table = Some(String::new());
             }
@@ -663,6 +758,43 @@ mod tests {
             }
         );
         assert_eq!(manifest.dev_dependencies[0].alias, "checks");
+    }
+
+    #[test]
+    fn reads_the_compiler_table() {
+        let manifest = parse(
+            FileId(0),
+            "[package]
+name = \"app\"
+version = \"0.1.0\"
+
+[compiler]
+targets = [\"linux\", \"web\", \"linux-x64\"]
+required_capabilities = [\"console\", \"json\"]
+",
+        )
+        .ok()
+        .unwrap();
+        let names: Vec<&str> = manifest.targets.iter().map(|t| t.name).collect();
+        assert_eq!(names, vec!["linux-x64", "web"]);
+        assert_eq!(manifest.required_capabilities.len(), 2);
+        assert_eq!(
+            codes(
+                "[package]
+name = \"a\"
+version = \"0.1.0\"
+[compiler]
+targets = [\"plan9\"]
+required_capabilities = [\"netwrok\"]
+flags = []
+"
+            ),
+            vec![
+                "\"plan9\" is not a target",
+                "\"netwrok\" is not a capability",
+                "unknown key `flags` in [compiler]"
+            ]
+        );
     }
 
     #[test]

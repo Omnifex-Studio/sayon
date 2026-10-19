@@ -92,8 +92,6 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
 pub fn planned(name: &str) -> Option<(&'static str, &'static str)> {
     Some(match name {
         "Box" => ("explicit shared ownership", "M3"),
-
-        "platform" => ("compile-time platform branches", "M4"),
         _ => return None,
     })
 }

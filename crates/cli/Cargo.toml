@@ -11,6 +11,7 @@ name = "sayon"
 path = "src/main.rs"
 
 [dependencies]
+sayon-target.workspace = true
 sayon-syntax.workspace = true
 sayon-check.workspace = true
 sayon-ir.workspace = true

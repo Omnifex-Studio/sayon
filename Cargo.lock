@@ -8,6 +8,7 @@ version = "0.0.1"
 dependencies = [
  "sayon-runtime",
  "sayon-syntax",
+ "sayon-target",
 ]
 
 [[package]]
@@ -21,6 +22,7 @@ dependencies = [
  "sayon-ir",
  "sayon-runtime",
  "sayon-syntax",
+ "sayon-target",
 ]
 
 [[package]]
@@ -31,6 +33,7 @@ dependencies = [
  "sayon-ir",
  "sayon-runtime",
  "sayon-syntax",
+ "sayon-target",
 ]
 
 [[package]]
@@ -40,6 +43,7 @@ dependencies = [
  "sayon-check",
  "sayon-ir",
  "sayon-syntax",
+ "sayon-target",
 ]
 
 [[package]]
@@ -71,4 +75,8 @@ version = "0.0.1"
 
 [[package]]
 name = "sayon-syntax"
+version = "0.0.1"
+
+[[package]]
+name = "sayon-target"
 version = "0.0.1"
