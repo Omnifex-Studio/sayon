@@ -20,6 +20,36 @@
 # being joined makes the program fail after it reports the error. A task
 # whose handle is dropped without a `join` is cancelled; `detach` lets it
 # run on instead. Waiting when no other task can run raises DeadlockError.
+#
+# `spawn_parallel` starts a task on a thread of its own instead, which runs
+# at the same time as the others, on another processor when there is one.
+# What its function captures moves to that thread, and its result moves
+# back, so both must be sendable: they share nothing with the thread they
+# left, which rules out `Shared` and `Weak` values, tasks, channels, views,
+# and functions. Tasks on different threads share data through a mutex:
+#
+#     total = mutex(0)
+#     first = threads.spawn_parallel(function()
+#         total.change(function(update value: integer) value += 1)
+#     )
+#     second = threads.spawn_parallel(function()
+#         total.change(function(update value: integer) value += 2)
+#     )
+#     threads.join(first)
+#     threads.join(second)
+#     print(total.get())      # 3
+#
+# A mutex is a handle, like a `Shared` value, that every copy refers to; its
+# value is read and changed only under its lock: `get`, `set`, `replace`,
+# and `change`, which holds the lock while its function changes the value
+# in place. A task cannot wait for anything while it holds a lock, so the
+# function given to `change` cannot send, receive, join, sleep, or take the
+# lock of the same mutex again (LockError).
+#
+# The tasks a parallel task spawns run on its thread, and end with it.
+# When the main task finishes, the tasks on other threads are cancelled and
+# the program waits for their threads; `os.exit` in any task ends the whole
+# program.
 
 time = import("standard/time.sayon")
 
@@ -40,6 +70,12 @@ private constant UNBOUNDED = 9223372036854775807
 # Starts a task running `body`, and gives its handle.
 function spawn<T>(own body: function() -> T) -> Task<T>
     return task_spawn(body)
+
+# Starts a task running `body` on a thread of its own, and gives its handle,
+# which `join` and `detach` take like any other. Fails with ThreadError when
+# no thread can be started.
+function spawn_parallel<T>(own body: function() -> T) -> Task<T>
+    return task_spawn_parallel(body)
 
 # Waits for a task to finish and gives its result. When the task failed,
 # fails with its error.

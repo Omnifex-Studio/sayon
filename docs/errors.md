@@ -147,7 +147,7 @@ Type arguments are written where they are not accepted, or with the wrong count:
 
 ### E_UNSUPPORTED_OPERATION
 
-The operation is not defined for the type, such as `+` on booleans, `<` on arrays, or `==` on function values. The message names the type and the operation.
+The operation is not defined for the type, such as `+` on booleans, `<` on arrays, `==` on function values, or sending a `Shared` value to a task on another thread. The message names the type and the operation.
 
 ### E_NOT_INDEXABLE
 
@@ -394,7 +394,11 @@ A shared value is changed, borrowed for changes, or taken out of its handle. Eve
 
 ### E_SHARED_CONSTANT
 
-A constant would hold a `Shared`, `Weak`, or `Cell` value. A constant is one value for the whole program and never changes; make the shared value in `main` or a function and pass it where it is needed.
+A constant would hold a `Shared`, `Weak`, `Cell`, or `Mutex` value. A constant is one value for the whole program and never changes; make the shared value in `main` or a function and pass it where it is needed.
+
+### E_PARALLEL_FUNCTION
+
+`threads.spawn_parallel` was given a function value held in a variable or computed. What the function captured moves to the task's thread, so it must be sendable, and that is checked where the function is written: pass a function literal, as in `threads.spawn_parallel(function() ...)`, or a named function.
 
 ## Unsafe code and C functions
 
@@ -575,6 +579,14 @@ An HTTP request went wrong in a way HTTP itself defines: the URL is not an `http
 ### ChannelClosedError
 
 A `threads.send` on a closed channel, whose message is then destroyed, or a `threads.receive` (or `select`) on a closed channel that has no messages left. `threads.receive_result` tells the end of a channel apart without an error.
+
+### LockError
+
+A task waited for something while it held a mutex's lock: inside `mutex.change(...)`, it sent, received, joined, slept, paused, or took the lock of the same mutex again, which would make every other task that wants the lock wait with it. The mutex keeps its value as the function left it. Do the waiting before or after the change.
+
+### ThreadError
+
+The system could not start a thread for `threads.spawn_parallel`, for example because the program has too many.
 
 ### DeadlockError
 

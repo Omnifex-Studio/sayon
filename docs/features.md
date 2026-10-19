@@ -49,7 +49,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | String indexing and character iteration (`text[i]`, `for character in text`); slicing with `strings.slice` | experimental | M2 |
 | Grapheme clusters (Unicode 17.0), UTF-8 bytes of strings and strings from bytes | experimental | M2 |
 | `Shared<T>`, `Weak<T>`, `Cell<T>`: `share`, `cell`, `.value`, `.weak()`, `.upgrade()`, `.get()`, `.set()`, `.replace()` | experimental | M3 |
-| `Mutex<T>` and sharing between threads | planned | M3, with threads |
+| `Mutex<T>`: `mutex`, `.get()`, `.set()`, `.replace()`, `.change()`; sendable values checked where a task crosses threads; `LockError` for waiting under a lock | experimental | M3 |
 | C functions: `foreign` blocks, variadic calls, the target's C types, `pointer` and `null_pointer`, `c_string`; `unsafe` blocks, expressions, and functions; `standard/memory` | experimental | M3 |
 | C functions in the interpreter on Linux and macOS | planned | with each platform's validation |
 | C callbacks (Sayon functions with their context passed to C), C structures by value | planned | M3 |
@@ -106,7 +106,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `standard/network`: TCP connections and listeners, UDP datagrams, address resolution, timeouts; waiting for sockets lets other tasks run | experimental | M3 |
 | `standard/network` HTTP/1.1 client: `get`, `post`, `request`, chunked and sized bodies, redirects, body size limits | experimental | M3 |
 | TLS (`https://`) with certificate verification, streaming HTTP bodies | planned | M3 |
-| Tasks on several threads in parallel | planned | M3 |
+| Tasks on threads of their own (`threads.spawn_parallel`), with their own tasks, cancellation, and `os.exit` across threads; native on Windows | experimental | M3 |
+| Channels between threads | planned | M3 |
 | `standard.graphics` | planned | M4 baseline |
 
 ## Platforms

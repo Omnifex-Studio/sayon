@@ -55,6 +55,10 @@ thread_local! {
 }
 
 pub(crate) fn blocked(wait: IoWait, timeout: Option<Duration>) -> HostError {
+    // The thread that waits for work of another is woken by it.
+    if matches!(wait, IoWait::Background(_)) {
+        prepare_waking();
+    }
     BLOCKED.with(|cell| *cell.borrow_mut() = Some(Blocked { wait, timeout }));
     (BLOCKED_CODE, String::new())
 }
@@ -91,9 +95,10 @@ pub fn wait_any(waits: &[IoWait], timeout: Option<Duration>) {
         fds.push(platform::entry(raw, false, true));
     }
     let mut timeout = timeout;
-    if jobs {
-        match waker() {
-            Some(waker) => fds.push(platform::entry(waker.raw(), true, false)),
+    let waking = jobs || has_waker();
+    if waking {
+        match waker_socket() {
+            Some(raw) => fds.push(platform::entry(raw, true, false)),
             // Without a way to be woken, look again soon.
             None => {
                 let soon = Duration::from_millis(10);
@@ -108,8 +113,8 @@ pub fn wait_any(waits: &[IoWait], timeout: Option<Duration>) {
         return;
     }
     platform::poll(&mut fds, timeout);
-    if jobs && let Some(waker) = waker() {
-        waker.drain();
+    if waking {
+        drain_waker();
     }
 }
 
@@ -520,7 +525,7 @@ impl Connecting {
             result: Mutex::new(None),
         });
         // Made before the thread can need it.
-        let _ = waker();
+        prepare_waking();
         let host = host.to_string();
         let shared = job.clone();
         let started = std::thread::Builder::new()
@@ -675,20 +680,26 @@ impl Datagrams {
 
 // ----- waking the scheduler ----------------------------------------------------------------------
 
-/// A socket the threads making connections send a byte to when they are
-/// done, which the scheduler waits on with the others.
+/// A socket of a thread whose scheduler waits, which threads of the runtime
+/// (and of other tasks) send a byte to when they have done something a task
+/// may wait for. Each thread has its own, so that a wake reaches every
+/// scheduler that waits; it is registered while the thread lives.
 struct Waker {
     socket: UdpSocket,
     address: SocketAddr,
 }
 
 impl Waker {
-    fn raw(&self) -> u64 {
-        platform::raw(&self.socket)
+    fn new() -> Option<Waker> {
+        let socket = UdpSocket::bind("127.0.0.1:0").ok()?;
+        socket.set_nonblocking(true).ok()?;
+        let address = socket.local_addr().ok()?;
+        lock(&WAKERS).push(address);
+        Some(Waker { socket, address })
     }
 
-    fn wake(&self) {
-        let _ = self.socket.send_to(&[1], self.address);
+    fn raw(&self) -> u64 {
+        platform::raw(&self.socket)
     }
 
     fn drain(&self) {
@@ -697,30 +708,66 @@ impl Waker {
     }
 }
 
-static WAKER: OnceLock<Option<Waker>> = OnceLock::new();
-
-/// Wakes the scheduler if it waits, for a thread of the runtime that has
-/// done something a task may wait for.
-pub(crate) fn wake() {
-    if let Some(waker) = waker() {
-        waker.wake();
+impl Drop for Waker {
+    fn drop(&mut self) {
+        lock(&WAKERS).retain(|address| *address != self.address);
     }
 }
 
-/// Makes the scheduler's way of being woken, before a thread can need it.
-pub(crate) fn prepare_waking() {
-    let _ = waker();
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn waker() -> Option<&'static Waker> {
-    WAKER
-        .get_or_init(|| {
-            let socket = UdpSocket::bind("127.0.0.1:0").ok()?;
-            socket.set_nonblocking(true).ok()?;
-            let address = socket.local_addr().ok()?;
-            Some(Waker { socket, address })
-        })
+/// The addresses of the wakers of the threads alive.
+static WAKERS: Mutex<Vec<SocketAddr>> = Mutex::new(Vec::new());
+
+thread_local! {
+    static WAKER: std::cell::OnceCell<Option<Waker>> = const { std::cell::OnceCell::new() };
+}
+
+/// The socket wakes are sent from.
+fn sender() -> Option<&'static UdpSocket> {
+    static SENDER: OnceLock<Option<UdpSocket>> = OnceLock::new();
+    SENDER
+        .get_or_init(|| UdpSocket::bind("127.0.0.1:0").ok())
         .as_ref()
+}
+
+/// Wakes the schedulers that wait, for a thread that has done something a
+/// task may wait for.
+pub fn wake() {
+    let addresses = lock(&WAKERS).clone();
+    if let Some(sender) = sender() {
+        for address in addresses {
+            let _ = sender.send_to(&[1], address);
+        }
+    }
+}
+
+/// Makes this thread's waker, before anything can need to wake it.
+pub fn prepare_waking() {
+    WAKER.with(|cell| {
+        cell.get_or_init(Waker::new);
+    });
+}
+
+/// Whether this thread has a waker, so that its waits should end when it
+/// is woken.
+pub fn has_waker() -> bool {
+    WAKER.with(|cell| cell.get().is_some_and(|waker| waker.is_some()))
+}
+
+/// This thread's waker's socket, made when first needed.
+fn waker_socket() -> Option<u64> {
+    WAKER.with(|cell| cell.get_or_init(Waker::new).as_ref().map(Waker::raw))
+}
+
+fn drain_waker() {
+    WAKER.with(|cell| {
+        if let Some(Some(waker)) = cell.get() {
+            waker.drain();
+        }
+    });
 }
 
 // ----- the system's poll --------------------------------------------------------------------------

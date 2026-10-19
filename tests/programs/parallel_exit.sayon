@@ -1,0 +1,11 @@
+# os.exit in a task on another thread ends the whole program
+threads = import("standard/threads.sayon")
+os = import("standard/os.sayon")
+time = import("standard/time.sayon")
+
+quitter = threads.spawn_parallel(function()
+    os.exit(3)
+)
+threads.detach(quitter)
+time.sleep(time.seconds(60))
+print("main never reaches here")

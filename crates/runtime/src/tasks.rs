@@ -8,8 +8,10 @@
 //! the interpreter's (see its `machine/tasks.rs`), so both execution modes
 //! run a program's tasks in the same order.
 //!
-//! Everything here runs on one thread, and no reference into the scheduler
-//! is held across a switch between fibers.
+//! Each thread that runs Sayon code has a scheduler of its own: the main
+//! thread's, and those of tasks started on threads of their own (see
+//! `parallel`). No reference into a scheduler is held across a switch
+//! between fibers.
 
 // The functions called by generated code rely on the same conventions as
 // those of `ffi`, where their contracts are described.
@@ -92,7 +94,10 @@ mod os {
 
 /// What a task's handle and the scheduler know of the task. The handle and
 /// the scheduler each hold a reference.
+#[repr(C)]
 pub struct TaskBlock {
+    /// 0, which tells it from a task on a thread of its own.
+    kind: u32,
     references: usize,
     /// The function value the task runs: its code and environment block.
     code: *const u8,
@@ -182,6 +187,8 @@ struct Fiber {
     started: bool,
     done: bool,
     cursor: usize,
+    /// The mutexes whose locks the task holds; it cannot wait meanwhile.
+    pub(crate) locks: usize,
 }
 
 struct Scheduler {
@@ -191,18 +198,21 @@ struct Scheduler {
     exit_status: Option<i32>,
 }
 
-struct Global(UnsafeCell<Option<Scheduler>>);
+thread_local! {
+    static SCHEDULER: UnsafeCell<Option<Scheduler>> = const { UnsafeCell::new(None) };
+}
 
-// SAFETY: compiled programs run their tasks on one thread.
-unsafe impl Sync for Global {}
+/// This thread's scheduler, if it has made one.
+fn scheduler_slot() -> *mut Option<Scheduler> {
+    SCHEDULER.with(|cell| cell.get())
+}
 
-static SCHEDULER: Global = Global(UnsafeCell::new(None));
-
-/// The scheduler, made with the main task when first needed.
+/// This thread's scheduler, made with its first task when first needed.
 fn scheduler() -> &'static mut Scheduler {
-    // SAFETY: one thread, and no caller keeps the reference across a switch.
+    // SAFETY: the scheduler lives as long as its thread, which is the only
+    // one using it, and no caller keeps the reference across a switch.
     unsafe {
-        (*SCHEDULER.0.get()).get_or_insert_with(|| Scheduler {
+        (*scheduler_slot()).get_or_insert_with(|| Scheduler {
             fibers: vec![Fiber {
                 os: std::ptr::null_mut(),
                 task: std::ptr::null_mut(),
@@ -211,6 +221,7 @@ fn scheduler() -> &'static mut Scheduler {
                 started: true,
                 done: false,
                 cursor: 0,
+                locks: 0,
             }],
             current: 0,
             stopping: false,
@@ -219,11 +230,26 @@ fn scheduler() -> &'static mut Scheduler {
     }
 }
 
+/// The running task's place in its thread's scheduler.
+pub(crate) fn current_fiber() -> usize {
+    scheduler().current
+}
+
+/// Counts a mutex's lock the running task takes (1) or frees (-1).
+pub(crate) fn count_lock(change: isize) {
+    let s = scheduler();
+    let fiber = &mut s.fibers[s.current];
+    fiber.locks = fiber.locks.saturating_add_signed(change);
+}
+
 fn is_cancelled(index: usize) -> bool {
     let s = scheduler();
     let fiber = &s.fibers[index];
     // SAFETY: the scheduler holds a reference to each task.
-    s.stopping || (!fiber.task.is_null() && unsafe { (*fiber.task).cancel })
+    s.stopping
+        || crate::parallel::exiting()
+        || (index == 0 && crate::parallel::thread_cancelled())
+        || (!fiber.task.is_null() && unsafe { (*fiber.task).cancel })
 }
 
 fn can_go_on(index: usize, now: Instant) -> bool {
@@ -240,14 +266,10 @@ fn can_go_on(index: usize, now: Instant) -> bool {
 
 /// Destroys what a task's function captured.
 unsafe fn destroy_environment(task: *mut TaskBlock) {
-    // SAFETY: the environment block starts with its destroy function.
+    // SAFETY: the task's environment, which this destroys only once.
     unsafe {
-        let environment = (*task).environment;
-        if !environment.is_null() {
-            let destroy: unsafe extern "C" fn(*mut u8) = *(environment as *const _);
-            destroy(environment);
-            (*task).environment = std::ptr::null_mut();
-        }
+        destroy_function_environment((*task).environment);
+        (*task).environment = std::ptr::null_mut();
     }
 }
 
@@ -304,6 +326,9 @@ fn next_fiber() -> Option<usize> {
         let timeout = wake.map(|w| w.saturating_duration_since(now));
         if !sockets.is_empty() {
             network::wait_any(&sockets, timeout);
+        } else if network::has_waker() {
+            // Another thread can end the wait early, to cancel a task.
+            network::wait_any(&[], Some(timeout?));
         } else {
             std::thread::sleep(timeout?);
         }
@@ -327,12 +352,17 @@ fn switch_to(index: usize) {
 enum Interrupted {
     Cancelled,
     Deadlock,
+    /// The task holds a mutex's lock, and cannot wait.
+    Locked,
 }
 
 /// Lets the running task wait, switching to another task until this one
 /// can go on.
 fn wait(what: Wait) -> Result<(), Interrupted> {
     let current = scheduler().current;
+    if scheduler().fibers[current].locks > 0 {
+        return Err(Interrupted::Locked);
+    }
     if is_cancelled(current) {
         return Err(Interrupted::Cancelled);
     }
@@ -358,12 +388,17 @@ fn wait(what: Wait) -> Result<(), Interrupted> {
 pub(crate) enum IoStop {
     Cancelled,
     TimedOut,
+    /// The task holds a mutex's lock, and cannot wait.
+    Locked,
 }
 
 /// Lets the running task wait for a socket, or for a connection being
 /// made, while the other tasks run.
 pub(crate) fn wait_io(what: IoWait, deadline: Option<Instant>) -> Result<(), IoStop> {
     let current = scheduler().current;
+    if scheduler().fibers[current].locks > 0 {
+        return Err(IoStop::Locked);
+    }
     if is_cancelled(current) {
         return Err(IoStop::Cancelled);
     }
@@ -397,6 +432,39 @@ unsafe fn interrupted(err: *mut *mut SayonError, why: Interrupted, location: *co
                 "every task is waiting, so none can go on".to_string(),
                 location,
             ),
+            Interrupted::Locked => set_error(err, "LockError", LOCK_MESSAGE.to_string(), location),
+        }
+    }
+}
+
+/// The message of the error for a task that waits while it holds a lock.
+pub(crate) const LOCK_MESSAGE: &str = "a task cannot wait while it holds a mutex's lock";
+
+/// Runs a function value on the running fiber: its code with its
+/// environment. Gives the status, after storing the result or the error.
+pub(crate) unsafe fn call_function(
+    code: *const u8,
+    environment: *mut u8,
+    result: *mut u8,
+    error: *mut *mut SayonError,
+) -> i32 {
+    type Code = unsafe extern "C" fn(*mut u8, *mut *mut SayonError, i64, *mut u8) -> i32;
+    // SAFETY: the code of a function value of no parameters.
+    unsafe {
+        let code: Code = std::mem::transmute(code);
+        // A named function's value has no environment; its code never reads it.
+        let structure = environment.wrapping_add(16);
+        code(result, error, 1, structure)
+    }
+}
+
+/// Destroys a function value's environment, if it has one.
+pub(crate) unsafe fn destroy_function_environment(environment: *mut u8) {
+    // SAFETY: the environment block starts with its destroy function.
+    unsafe {
+        if !environment.is_null() {
+            let destroy: unsafe extern "C" fn(*mut u8) = *(environment as *const _);
+            destroy(environment);
         }
     }
 }
@@ -408,13 +476,13 @@ unsafe extern "system" fn task_start(parameter: *mut c_void) {
     let task = scheduler().fibers[index].task;
     // SAFETY: the scheduler holds a reference to the task.
     unsafe {
-        type Code = unsafe extern "C" fn(*mut u8, *mut *mut SayonError, i64, *mut u8) -> i32;
-        let code: Code = std::mem::transmute((*task).code);
-        let environment = (*task).environment;
-        // A named function's value has no environment; its code never reads it.
-        let structure = environment.wrapping_add(16);
         let mut error: *mut SayonError = std::ptr::null_mut();
-        let status = code((*task).result, &mut error, 1, structure);
+        let status = call_function(
+            (*task).code,
+            (*task).environment,
+            (*task).result,
+            &mut error,
+        );
         (*task).outcome = if status == 0 {
             Outcome::Succeeded
         } else {
@@ -473,6 +541,7 @@ pub unsafe extern "C" fn sayon_task_spawn(
         let result = crate::ffi::sayon_alloc(result_size.max(1));
         allocated();
         let task = Box::into_raw(Box::new(TaskBlock {
+            kind: 0,
             references: 2,
             code,
             environment,
@@ -494,6 +563,7 @@ pub unsafe extern "C" fn sayon_task_spawn(
             started: false,
             done: false,
             cursor: 0,
+            locks: 0,
         });
         *out = task;
     }
@@ -532,6 +602,10 @@ pub unsafe extern "C" fn sayon_task_drop(slot: *mut *mut TaskBlock) {
         if task.is_null() {
             return;
         }
+        if (*task).kind != 0 {
+            crate::parallel::drop_task(slot as *mut *mut crate::parallel::ParallelBlock);
+            return;
+        }
         *slot = std::ptr::null_mut();
         if (*task).references == 2 && !(*task).joined && !(*task).detached {
             (*task).cancel = true;
@@ -543,7 +617,13 @@ pub unsafe extern "C" fn sayon_task_drop(slot: *mut *mut TaskBlock) {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sayon_task_detach(slot: *const *mut TaskBlock) {
     // SAFETY: the slot holds a live task.
-    unsafe { (**slot).detached = true }
+    unsafe {
+        if (**slot).kind != 0 {
+            crate::parallel::detach_task(*slot as *const crate::parallel::ParallelBlock);
+            return;
+        }
+        (**slot).detached = true
+    }
 }
 
 /// Waits for a task and moves its result into `out`, or its error into the
@@ -558,6 +638,10 @@ pub unsafe extern "C" fn sayon_task_join(
     // SAFETY: the slot holds a live task.
     unsafe {
         let task = *slot;
+        if (*task).kind != 0 {
+            let block = task as *const crate::parallel::ParallelBlock;
+            return crate::parallel::join_task(err, block, out, location);
+        }
         loop {
             match std::mem::replace(&mut (*task).outcome, Outcome::Taken) {
                 Outcome::Succeeded => {
@@ -623,9 +707,23 @@ pub unsafe extern "C" fn sayon_task_sleep(
 /// with, or -1 when the main task's own stands.
 #[unsafe(no_mangle)]
 pub extern "C" fn sayon_tasks_finish(main_failed: bool) -> i32 {
-    // SAFETY: one thread; no task runs while this is the running fiber.
+    let local = finish_local_tasks(main_failed);
+    // Then the tasks on threads of their own, which may end the program.
+    let threads = crate::parallel::finish_threads(main_failed);
+    match (local, threads) {
+        (_, Some(status)) => status,
+        (status, None) if status >= 0 => status,
+        (status, None) if crate::parallel::failed() && !main_failed => status.max(1),
+        (status, None) => status,
+    }
+}
+
+/// Finishes the tasks of this thread's scheduler: the status a task's
+/// `os.exit` asked for, 1 when a task failed unjoined, or -1.
+pub(crate) fn finish_local_tasks(main_failed: bool) -> i32 {
+    // SAFETY: no task runs while this is the running fiber.
     unsafe {
-        if (*SCHEDULER.0.get()).is_none() {
+        if (*scheduler_slot()).is_none() {
             return -1;
         }
     }
@@ -677,8 +775,13 @@ pub extern "C" fn sayon_tasks_finish(main_failed: bool) -> i32 {
 /// Whether a task asked the program to exit, so that the main task's
 /// cancellation is not reported.
 pub fn exit_requested() -> Option<i32> {
-    // SAFETY: read on the program's thread.
-    unsafe { (*SCHEDULER.0.get()).as_ref().and_then(|s| s.exit_status) }
+    // SAFETY: read on the thread the scheduler belongs to.
+    unsafe {
+        (*scheduler_slot())
+            .as_ref()
+            .and_then(|s| s.exit_status)
+            .or(crate::parallel::exit_status())
+    }
 }
 
 // ----- channels ---------------------------------------------------------------------------------

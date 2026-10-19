@@ -1161,7 +1161,7 @@ impl<'a> Checker<'a> {
                         Type::view(element, name.name == "MutableView")
                     }
                     // A module's own type of the same name comes first.
-                    "Shared" | "Weak" | "Cell" | "Task" | "Channel"
+                    "Shared" | "Weak" | "Cell" | "Task" | "Channel" | "Mutex"
                         if !matches!(self.item(module, &name.name), Some(Item::Type(_))) =>
                     {
                         if !arity(self, 1) {
@@ -1173,6 +1173,7 @@ impl<'a> Checker<'a> {
                             "Weak" => Wrapper::Weak,
                             "Task" => Wrapper::Task,
                             "Channel" => Wrapper::Channel,
+                            "Mutex" => Wrapper::Mutex,
                             _ => Wrapper::Cell,
                         };
                         Type::wrapper(kind, inner)
@@ -1975,6 +1976,9 @@ impl<'a> Checker<'a> {
                     }
                     Wrapper::Task => "a task's result comes from `threads.join(task)`",
                     Wrapper::Channel => "messages come from `threads.receive(channel)`",
+                    Wrapper::Mutex => {
+                        "a mutex's value is read under its lock, with `mutex.get()` or `mutex.change(...)`"
+                    }
                 };
                 self.error(
                     Diagnostic::error("E_UNKNOWN_FIELD", format!("{ty} has no field `{name}`"))
@@ -2210,12 +2214,16 @@ impl<'a> Checker<'a> {
     /// variable that is still unresolved.
     pub fn default_vars(&mut self, first_var: u32) {
         // A function literal that only fails returns `nothing`, as a named
-        // function does, unless something else decided its result.
+        // function does, unless something else decided its result: bounds
+        // such as being sendable leave it to `nothing`.
         for var in std::mem::take(&mut self.failing_results) {
-            if let Type::Var(var) = self.unifier.shallow(&Type::Var(var))
-                && self.unifier.bounds(var) == Bounds::default()
-            {
-                self.unifier.force_bind(var, Type::Nothing);
+            if let Type::Var(var) = self.unifier.shallow(&Type::Var(var)) {
+                let bounds = self.unifier.bounds(var);
+                if bounds == Bounds::default()
+                    || self.unifier.add_bounds(&Type::Nothing, bounds).is_ok()
+                {
+                    self.unifier.force_bind(var, Type::Nothing);
+                }
             }
         }
         for index in first_var..self.unifier.var_count() {

@@ -190,7 +190,7 @@
     },
     "builtin-function": {
       "name": "support.function.builtin.sayon",
-      "match": "\\b(print|length|bytelength|typeof|assert|range|tonumber|tostring|push|pop|remove|swap|haskey|readfile|writefile|clone|share|cell|view|mutable_view|split_view|error|raise|move)\\b(?=\\s*\\()"
+      "match": "\\b(print|length|bytelength|typeof|assert|range|tonumber|tostring|push|pop|remove|swap|haskey|readfile|writefile|clone|share|cell|mutex|view|mutable_view|split_view|error|raise|move)\\b(?=\\s*\\()"
     },
     "type-name": {
       "name": "entity.name.type.sayon",

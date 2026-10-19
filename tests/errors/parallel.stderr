@@ -1,0 +1,57 @@
+error[E_SHARED_CONSTANT]: a constant cannot hold Mutex<integer>
+  --> parallel.sayon:4:10
+   |
+ 4 | constant LOCKED = mutex(0)
+   |          ^^^^^^
+   |
+   = note: a constant never changes, and is the same for the whole program; Shared, Weak, Cell, and Mutex values are for state that is owned and changed
+   = help: create the value in `main` or a function, and pass it where it is needed
+
+error[E_UNSUPPORTED_OPERATION]: Shared<_> does not support being sent to another thread
+  --> parallel.sayon:7:12
+   |
+ 7 |     return settings.value
+   |            ^^^^^^^^ a task on another thread takes what its function captured
+
+error[E_UNSUPPORTED_OPERATION]: Channel<integer> does not support being sent to another thread
+   --> parallel.sayon:11:18
+    |
+ 11 |     threads.send(channel, 1)
+    |                  ^^^^^^^ a task on another thread takes what its function captured
+
+error[E_UNSUPPORTED_OPERATION]: Shared<integer> does not support being sent to another thread
+   --> parallel.sayon:13:33
+    |
+ 13 | handle = threads.spawn_parallel(function() -> Shared<integer>
+    |                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the result of a task on another thread is sent back
+
+error[E_UNSUPPORTED_OPERATION]: Task<_> does not support being sent to another thread
+   --> parallel.sayon:20:25
+    |
+ 20 |     return threads.join(waiter)
+    |                         ^^^^^^ a task on another thread takes what its function captured
+
+error[E_PARALLEL_FUNCTION]: a task on another thread runs a function literal or a named function
+   --> parallel.sayon:24:35
+    |
+ 24 | indirect = threads.spawn_parallel(body)
+    |                                   ^^^^
+    |
+    = help: write the function here, so that what it captures can be checked
+
+error[E_UNKNOWN_METHOD]: Mutex<Array<_>> has no method `size`
+   --> parallel.sayon:27:19
+    |
+ 27 |     print(numbers.size())
+    |                   ^^^^
+    |
+    = note: its methods are `get()`, `set(value)`, `replace(value)`, and `change(function)`
+
+error[E_UNSUPPORTED_OPERATION]: function() -> integer does not support being sent to another thread
+   --> parallel.sayon:29:18
+    |
+ 29 | listener = mutex(function() -> integer
+    |                  ^^^^^^^^^^^^^^^^^^^^^ tasks on other threads share a mutex's value
+
+8 errors found; nothing was run
+run `sayon explain E_SHARED_CONSTANT` to learn more about an error

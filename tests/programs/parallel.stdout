@@ -1,0 +1,15 @@
+[5, 4, 5]
+hello from another thread
+total 4000
+[4950, 14950, 24950, 34950]
+["start", "from a thread"]
+["start", "from a thread"] ["replaced"]
+["set"] mutex Mutex<Array<string>>
+["through a copy"]
+joined error: UserError failed on its thread
+LockError a task cannot wait while it holds a mutex's lock
+LockError the task holds the mutex's lock already
+counter 1
+squares 30
+abandoned task cancelled: true
+done

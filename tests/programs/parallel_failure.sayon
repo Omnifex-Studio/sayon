@@ -1,0 +1,8 @@
+# A task on another thread that fails unjoined fails the program
+threads = import("standard/threads.sayon")
+
+broken = threads.spawn_parallel(function()
+    error("lost on its thread")
+)
+threads.detach(broken)
+print("main done")

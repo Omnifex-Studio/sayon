@@ -335,6 +335,7 @@ impl<'m> Codegen<'m> {
             }
             Type::Wrapper(Wrapper::Weak, _) => body.line("call void @sayon_weak_release(ptr %p)"),
             Type::Wrapper(Wrapper::Task, _) => body.line("call void @sayon_task_drop(ptr %p)"),
+            Type::Wrapper(Wrapper::Mutex, _) => body.line("call void @sayon_mutex_release(ptr %p)"),
             Type::Wrapper(Wrapper::Channel, _) => {
                 body.line("call void @sayon_channel_release(ptr %p)")
             }
@@ -446,6 +447,9 @@ impl<'m> Codegen<'m> {
             }
             Type::Wrapper(Wrapper::Channel, _) => {
                 body.line("call void @sayon_channel_clone(ptr %src, ptr %dst)")
+            }
+            Type::Wrapper(Wrapper::Mutex, _) => {
+                body.line("call void @sayon_mutex_clone(ptr %src, ptr %dst)")
             }
             Type::Wrapper(Wrapper::Task, _) => unreachable!("a task cannot be cloned"),
             Type::Wrapper(Wrapper::Cell, inner) => {
@@ -801,6 +805,7 @@ impl<'m> Codegen<'m> {
             Type::Wrapper(Wrapper::Weak, _) => self.text(body, "weak"),
             Type::Wrapper(Wrapper::Task, _) => self.text(body, "task"),
             Type::Wrapper(Wrapper::Channel, _) => self.text(body, "channel"),
+            Type::Wrapper(Wrapper::Mutex, _) => self.text(body, "mutex"),
             Type::Wrapper(Wrapper::Cell, inner) => {
                 let display = self.helper(Helper::Display, inner);
                 body.line(format!(

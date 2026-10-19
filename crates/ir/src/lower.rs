@@ -22,6 +22,15 @@ use std::collections::{HashMap, HashSet};
 /// instantiated without end.
 const SPECIALIZATION_DEPTH: usize = 32;
 
+/// The operand that takes a value out of a place: a copy for a Copy value.
+fn moved(ty: &Type, place: Place) -> Operand {
+    if ty.is_copy() {
+        Operand::Copy(place)
+    } else {
+        Operand::Move(place)
+    }
+}
+
 /// How deeply a type nests: 1 for a type made of no other types.
 fn type_depth(ty: &Type) -> usize {
     let inner = match ty {
@@ -372,9 +381,10 @@ struct FnLower<'l, 'p> {
     cleanup_cache: HashMap<CleanupKey, BlockId>,
 }
 
-/// Identifies an error-cleanup block: the handler depth, whether the return
-/// value is dropped, and the scopes (by identity and size) it destroys.
-type CleanupKey = (usize, bool, Vec<(u32, usize)>);
+/// Identifies an error-cleanup block: the handler it goes to, if any,
+/// whether the return value is dropped, and the scopes (by identity and
+/// size) it destroys.
+type CleanupKey = (Option<BlockId>, bool, Vec<(u32, usize)>);
 
 impl<'l, 'p> FnLower<'l, 'p> {
     fn new(
@@ -527,7 +537,8 @@ impl<'l, 'p> FnLower<'l, 'p> {
             .iter()
             .map(|s| (s.id, s.slots.len()))
             .collect();
-        let key = (self.handlers.len(), drop_return, shape);
+        // Two handlers can share a depth and a scope, one after the other.
+        let key = (handler.map(|(target, _)| target), drop_return, shape);
         if let Some(block) = self.cleanup_cache.get(&key) {
             return *block;
         }
@@ -2390,6 +2401,58 @@ impl<'l, 'p> FnLower<'l, 'p> {
         self.switch_to(join);
     }
 
+    /// `mutex.change(function)`: takes the value under the lock, lets
+    /// the function change it in place, and puts it back, also when it
+    /// fails, so that the lock is always released.
+    fn mutex_change(&mut self, args: &'p [hir::Arg], dest: Place, span: Span) {
+        let mutex = self.operand(&args[0].expr, Want::Read);
+        let change = self.place_of(&args[1].expr, Want::Mut);
+        let Type::Wrapper(_, inner) = self.ty(&args[0].expr.ty) else {
+            panic!("change of a non-mutex value")
+        };
+        let value = self.temp((*inner).clone());
+        self.op(
+            Op::MutexTake {
+                mutex: mutex.clone(),
+            },
+            Some(Place::slot(value)),
+            span,
+        );
+        let on_error = self.new_block();
+        let join = self.new_block();
+        // The value lives in the scope around the handler, so the error edge
+        // keeps it to put back.
+        self.handlers.push(HandlerCtx {
+            target: on_error,
+            scope_depth: self.scopes.len(),
+        });
+        let result = self.temp(Type::Nothing);
+        self.op(
+            Op::CallValue {
+                callee: change,
+                args: vec![Operand::Borrow {
+                    place: Place::slot(value),
+                    mutable: true,
+                }],
+            },
+            Some(Place::slot(result)),
+            span,
+        );
+        self.handlers.pop();
+        let back = moved(&inner, Place::slot(value));
+        self.push(Inst::MutexPut {
+            mutex: mutex.clone(),
+            value: back.clone(),
+        });
+        self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing)));
+        self.goto(join);
+        self.switch_to(on_error);
+        self.push(Inst::MutexPut { mutex, value: back });
+        let target = self.error_target();
+        self.goto(target);
+        self.switch_to(join);
+    }
+
     /// `channel_send_result`: `sent` (variant 0) once the channel takes the
     /// message, or `unsent(message, problem)` (variant 1) when it is closed,
     /// which leaves the message with the sender. Any other error, such as
@@ -2779,6 +2842,61 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 let value = self.operand(&args[0].expr, Want::Owned);
                 self.assign(dest, Rvalue::MakeShared { value, ty: inner });
             }
+            Builtin::MakeMutex => {
+                let inner = self.ty(&args[0].expr.ty);
+                let value = self.operand(&args[0].expr, Want::Owned);
+                self.assign(dest, Rvalue::MakeMutex { value, ty: inner });
+            }
+            Builtin::MutexGet => {
+                let mutex = self.operand(&args[0].expr, Want::Read);
+                let inner = ty.clone();
+                let value = self.temp(inner.clone());
+                self.op(
+                    Op::MutexTake {
+                        mutex: mutex.clone(),
+                    },
+                    Some(Place::slot(value)),
+                    span,
+                );
+                let copy = if inner.is_copy() {
+                    Rvalue::Use(Operand::Copy(Place::slot(value)))
+                } else {
+                    Rvalue::Clone {
+                        value: Operand::Borrow {
+                            place: Place::slot(value),
+                            mutable: false,
+                        },
+                        ty: inner.clone(),
+                    }
+                };
+                self.assign(dest, copy);
+                let back = moved(&inner, Place::slot(value));
+                self.push(Inst::MutexPut { mutex, value: back });
+            }
+            Builtin::MutexSet | Builtin::MutexReplace => {
+                // The new value first, in case it reads the mutex.
+                let new = self.value_temp(&args[1].expr);
+                let mutex = self.operand(&args[0].expr, Want::Read);
+                let inner = self.ty(&args[1].expr.ty);
+                let old = self.temp(inner.clone());
+                self.op(
+                    Op::MutexTake {
+                        mutex: mutex.clone(),
+                    },
+                    Some(Place::slot(old)),
+                    span,
+                );
+                self.push(Inst::MutexPut { mutex, value: new });
+                if builtin == Builtin::MutexReplace {
+                    let taken = moved(&inner, Place::slot(old));
+                    self.assign(dest, Rvalue::Use(taken));
+                } else {
+                    // The old value goes once the lock is free.
+                    self.push(Inst::Drop(Place::slot(old)));
+                    self.assign(dest, Rvalue::Use(Operand::Const(Constant::Nothing)));
+                }
+            }
+            Builtin::MutexChange => self.mutex_change(args, dest, span),
             // A cell is laid out like its value.
             Builtin::MakeCell => {
                 let value = self.operand(&args[0].expr, Want::Owned);
@@ -2844,6 +2962,20 @@ impl<'l, 'p> FnLower<'l, 'p> {
                 let body = self.operand(&args[0].expr, Want::Owned);
                 self.op(
                     Op::Spawn {
+                        body,
+                        result: *result,
+                    },
+                    Some(dest),
+                    span,
+                );
+            }
+            Builtin::TaskSpawnParallel => {
+                let Type::Wrapper(_, result) = ty.clone() else {
+                    panic!("spawn without a task type")
+                };
+                let body = self.operand(&args[0].expr, Want::Owned);
+                self.op(
+                    Op::SpawnParallel {
                         body,
                         result: *result,
                     },

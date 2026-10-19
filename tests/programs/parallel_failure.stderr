@@ -1,0 +1,2 @@
+error: a task failed: UserError: lost on its thread
+  --> parallel_failure.sayon:5:5

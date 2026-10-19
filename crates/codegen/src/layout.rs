@@ -247,9 +247,10 @@ pub fn needs_drop(ty: &Type) -> bool {
         | Type::Function(_)
         | Type::Stream
         | Type::CString
-        | Type::Wrapper(Wrapper::Shared | Wrapper::Weak | Wrapper::Task | Wrapper::Channel, _) => {
-            true
-        }
+        | Type::Wrapper(
+            Wrapper::Shared | Wrapper::Weak | Wrapper::Task | Wrapper::Channel | Wrapper::Mutex,
+            _,
+        ) => true,
         Type::Wrapper(Wrapper::Cell, inner) => needs_drop(inner),
         Type::Union(members) => members.iter().any(needs_drop),
         // Every non-Copy field owns something.

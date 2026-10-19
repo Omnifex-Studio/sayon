@@ -27,6 +27,9 @@ pub(super) struct Fiber {
     /// When the operation the task runs first waited for a socket, which
     /// its timeout counts from.
     pub(super) io_started: Option<Instant>,
+    /// The mutexes whose locks the task holds, which it cannot wait while
+    /// it holds.
+    pub(super) locks: usize,
 }
 
 impl Fiber {
@@ -40,6 +43,7 @@ impl Fiber {
             done: false,
             cursor: 0,
             io_started: None,
+            locks: 0,
         }
     }
 }
@@ -114,6 +118,7 @@ impl<'m> Machine<'m> {
         matches!(
             op,
             Op::Spawn { .. }
+                | Op::SpawnParallel { .. }
                 | Op::Join { .. }
                 | Op::Detach { .. }
                 | Op::Yield
@@ -128,11 +133,24 @@ impl<'m> Machine<'m> {
 
     /// Whether the running task is to stop where it waits.
     fn cancelled(&self) -> bool {
+        self.fiber_cancelled(self.current)
+    }
+
+    /// Whether fiber `index` is to stop where it waits: the program is
+    /// ending, its task was cancelled, or, for the first fiber of a task's
+    /// own thread, that task was.
+    fn fiber_cancelled(&self, index: usize) -> bool {
         self.stopping
-            || self.fibers[self.current]
+            || self.program.exiting()
+            || self.fibers[index]
                 .task
                 .as_ref()
                 .is_some_and(|task| task.borrow().cancel)
+            || (index == 0
+                && self
+                    .thread_task
+                    .as_ref()
+                    .is_some_and(|task| task.cancel.load(std::sync::atomic::Ordering::Relaxed)))
     }
 
     fn task_error(&self, code: &str, message: String, span: Span) -> ErrorValue {
@@ -158,7 +176,11 @@ impl<'m> Machine<'m> {
         }
         let waits = !matches!(
             op,
-            Op::Spawn { .. } | Op::ChannelNew { .. } | Op::Close { .. } | Op::Detach { .. }
+            Op::Spawn { .. }
+                | Op::SpawnParallel { .. }
+                | Op::ChannelNew { .. }
+                | Op::Close { .. }
+                | Op::Detach { .. }
         );
         if waits && self.cancelled() {
             return Progress::Failed(self.task_error(
@@ -189,11 +211,20 @@ impl<'m> Machine<'m> {
                     done: false,
                     cursor: 0,
                     io_started: None,
+                    locks: 0,
                 });
                 Progress::Done(Value::Task(TaskHandle(state)))
             }
+            Op::SpawnParallel { body, .. } => self.spawn_parallel(body, span),
             Op::Join { task } => {
                 let reference = self.resolve(task);
+                let parallel = self.read(&reference, |value| match value {
+                    Value::ParallelTask(handle) => Some(handle.state().clone()),
+                    _ => None,
+                });
+                if let Some(state) = parallel {
+                    return self.join_parallel(&state);
+                }
                 let state = self.read(&reference, |value| match value {
                     Value::Task(handle) => handle.0.clone(),
                     other => panic!("join of {other:?}"),
@@ -218,6 +249,7 @@ impl<'m> Machine<'m> {
                 let reference = self.resolve(task);
                 self.read(&reference, |value| match value {
                     Value::Task(handle) => handle.0.borrow_mut().detached = true,
+                    Value::ParallelTask(handle) => Self::detach_parallel(handle.state()),
                     other => panic!("detach of {other:?}"),
                 });
                 Progress::Done(Value::Nothing)
@@ -360,7 +392,7 @@ impl<'m> Machine<'m> {
         if fiber.done {
             return false;
         }
-        let stopping = self.stopping || fiber.task.as_ref().is_some_and(|t| t.borrow().cancel);
+        let stopping = self.fiber_cancelled(index);
         // A task cancelled before it started never runs.
         if stopping && !fiber.started {
             return false;
@@ -399,10 +431,13 @@ impl<'m> Machine<'m> {
                     wake = Some(wake.map_or(until, |w| w.min(until)));
                 }
             }
-            let _ = self.out.flush();
+            let _ = self.output().flush();
             let timeout = wake.map(|w| w.saturating_duration_since(now));
             if !sockets.is_empty() {
                 network::wait_any(&sockets, timeout);
+            } else if network::has_waker() {
+                // Another thread can end the wait early, to cancel a task.
+                network::wait_any(&[], Some(timeout?));
             } else {
                 std::thread::sleep(timeout?);
             }
@@ -412,7 +447,7 @@ impl<'m> Machine<'m> {
     /// Finishes the tasks cancelled before they started: they never run, and
     /// what their functions captured is destroyed.
     fn retire_unstarted(&mut self) {
-        let stopping = self.stopping;
+        let stopping = self.stopping || self.program.exiting();
         for fiber in &mut self.fibers {
             let cancelled = stopping || fiber.task.as_ref().is_some_and(|t| t.borrow().cancel);
             if !fiber.started && !fiber.done && cancelled {

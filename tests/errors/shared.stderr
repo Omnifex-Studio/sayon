@@ -4,7 +4,7 @@ error[E_SHARED_CONSTANT]: a constant cannot hold Shared<integer>
  4 | constant GLOBAL = share(1)
    |          ^^^^^^
    |
-   = note: a constant never changes, and is the same for the whole program; Shared, Weak, and Cell values are for state that is owned and changed
+   = note: a constant never changes, and is the same for the whole program; Shared, Weak, Cell, and Mutex values are for state that is owned and changed
    = help: create the value in `main` or a function, and pass it where it is needed
 
 error[E_SHARED_IMMUTABLE]: a shared value cannot change

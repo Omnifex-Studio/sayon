@@ -881,6 +881,18 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     "call void @sayon_dict_set(ptr {handle}, ptr {key_ptr}, ptr {temp}, ptr {drop})"
                 ));
             }
+            Inst::MutexPut { mutex, value } => {
+                let (slot, ty) = self.pointer(mutex);
+                let Type::Wrapper(_, inner) = ty else {
+                    panic!("a value put into {ty}")
+                };
+                let llvm = self.cg.llvm(&inner);
+                let temp = self.body.alloca(&llvm);
+                self.store_operand(value, &temp, &inner);
+                self.body.line(format!(
+                    "call void @sayon_mutex_put(ptr {slot}, ptr {temp})"
+                ));
+            }
         }
         self.finish_instruction();
     }
@@ -1149,6 +1161,21 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 let payload = self.offset_pointer(&block, SHARED_HEADER);
                 self.store_operand(value, &payload, ty);
                 self.body.line(format!("store ptr {block}, ptr {dest}"));
+            }
+            Rvalue::MakeMutex { value, ty } => {
+                // The mutex takes the value over.
+                let llvm = self.cg.llvm(ty);
+                let temp = self.body.alloca(&llvm);
+                self.store_operand(value, &temp, ty);
+                let size = self.cg.layouts.size_of(ty);
+                let drop = if needs_drop(ty) {
+                    self.cg.helper(Helper::Drop, ty)
+                } else {
+                    "null".to_string()
+                };
+                self.body.line(format!(
+                    "call void @sayon_mutex_new(ptr {temp}, i64 {size}, ptr {drop}, ptr {dest})"
+                ));
             }
             Rvalue::Downgrade(shared) => {
                 let (pointer, _) = self.pointer(shared);
@@ -1605,6 +1632,42 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     "call void @sayon_task_spawn(ptr {function}, i64 {size}, ptr {drop}, ptr {out})"
                 ));
                 Some("0".to_string())
+            }
+            Op::SpawnParallel { body, result } => {
+                // The task takes the function value over.
+                let (llvm, value, _) = self.value(body);
+                let function = self.body.alloca(&llvm);
+                self.body
+                    .line(format!("store {llvm} {value}, ptr {function}"));
+                let size = self.cg.layouts.size_of(result);
+                let drop = if needs_drop(result) {
+                    self.cg.helper(Helper::Drop, result)
+                } else {
+                    "null".to_string()
+                };
+                let out = match dest {
+                    Some(place) => self.place_ptr(place).0,
+                    None => self.body.alloca("ptr"),
+                };
+                let location = self.cg.location(span);
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_task_spawn_parallel(ptr {err}, ptr {function}, i64 {size}, ptr {drop}, ptr {out}, ptr {location})"
+                ));
+                Some(status)
+            }
+            Op::MutexTake { mutex } => {
+                let (slot, _) = self.pointer(mutex);
+                let out = match dest {
+                    Some(place) => self.place_ptr(place).0,
+                    None => panic!("a mutex's value taken nowhere"),
+                };
+                let location = self.cg.location(span);
+                let status = self.body.tmp();
+                self.body.line(format!(
+                    "{status} = call i32 @sayon_mutex_take(ptr {err}, ptr {slot}, ptr {out}, ptr {location})"
+                ));
+                Some(status)
             }
             Op::Join { task } => {
                 let (task, _) = self.place_ptr(task);
@@ -2711,6 +2774,12 @@ declare void @sayon_c_string_drop(ptr)
 declare void @sayon_builder_c_string(ptr, ptr, i1)
 declare void @sayon_builder_pointer(ptr, i64)
 declare void @sayon_task_spawn(ptr, i64, ptr, ptr)
+declare i32 @sayon_task_spawn_parallel(ptr, ptr, i64, ptr, ptr, ptr)
+declare void @sayon_mutex_new(ptr, i64, ptr, ptr)
+declare i32 @sayon_mutex_take(ptr, ptr, ptr, ptr)
+declare void @sayon_mutex_put(ptr, ptr)
+declare void @sayon_mutex_clone(ptr, ptr)
+declare void @sayon_mutex_release(ptr)
 declare i32 @sayon_task_join(ptr, ptr, ptr, ptr)
 declare void @sayon_task_detach(ptr)
 declare void @sayon_task_drop(ptr)

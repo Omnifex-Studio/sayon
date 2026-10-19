@@ -1,0 +1,31 @@
+# What cannot cross to a task on another thread
+threads = import("standard/threads.sayon")
+
+constant LOCKED = mutex(0)
+settings = share(1)
+reader = threads.spawn_parallel(function() -> integer
+    return settings.value
+)
+channel: Channel<integer> = threads.new_channel()
+sender = threads.spawn_parallel(function()
+    threads.send(channel, 1)
+)
+handle = threads.spawn_parallel(function() -> Shared<integer>
+    return share(2)
+)
+waiter = threads.spawn(function() -> integer
+    return 1
+)
+joiner = threads.spawn_parallel(function() -> integer
+    return threads.join(waiter)
+)
+body = function() -> integer
+    return 1
+indirect = threads.spawn_parallel(body)
+local = threads.spawn_parallel(function()
+    numbers = mutex([1])
+    print(numbers.size())
+)
+listener = mutex(function() -> integer
+    return 1
+)

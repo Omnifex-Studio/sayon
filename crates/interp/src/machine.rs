@@ -5,14 +5,20 @@
 //! creates a reference that the callee reads and writes through.
 
 use crate::value::*;
+use parallel::{JoinThreads, MutexCell, ParallelState, Program};
 use sayon_check::types::{FloatType, IntType, Type};
 use sayon_ir::*;
 use sayon_runtime::host::{
     CANCELLED_CODE, EXIT_CODE, Host, HostArg, HostType, HostValue, exit_status, invoke,
 };
+use std::sync::{Arc, Mutex as Lock};
 use tasks::{Fiber, Progress};
 
+pub(crate) mod parallel;
 mod tasks;
+
+/// Where a program's output goes, shared by the machines of its threads.
+pub type Output<'m> = Arc<Lock<&'m mut (dyn Write + Send)>>;
 use sayon_runtime::text::{
     Number, parse_number, position_error, range_length, split_bounds_message, view_bounds_message,
 };
@@ -61,7 +67,7 @@ pub struct Machine<'m> {
     sources: &'m SourceMap,
     globals: Vec<Option<Value>>,
     frames: Vec<Frame>,
-    out: &'m mut dyn Write,
+    out: Output<'m>,
     /// Every task; the running one's frames are `frames`.
     fibers: Vec<Fiber>,
     current: usize,
@@ -72,6 +78,10 @@ pub struct Machine<'m> {
     exit_status: Option<i32>,
     /// The C libraries and functions the program has called.
     foreign: crate::foreign::Foreign,
+    /// What the machines of the program's threads share.
+    program: Arc<Program>,
+    /// For the machine of a task on a thread of its own: the task.
+    thread_task: Option<Arc<ParallelState>>,
 }
 
 /// The first step of `steps` through a view: its position, the viewed
@@ -148,7 +158,25 @@ fn constant_value(constant: &Constant) -> Value {
 }
 
 impl<'m> Machine<'m> {
-    pub fn new(module: &'m Module, sources: &'m SourceMap, out: &'m mut dyn Write) -> Machine<'m> {
+    pub fn new(
+        module: &'m Module,
+        sources: &'m SourceMap,
+        out: &'m mut (dyn Write + Send),
+    ) -> Machine<'m> {
+        Machine::with_output(
+            module,
+            sources,
+            Arc::new(Lock::new(out)),
+            Default::default(),
+        )
+    }
+
+    fn with_output(
+        module: &'m Module,
+        sources: &'m SourceMap,
+        out: Output<'m>,
+        program: Arc<Program>,
+    ) -> Machine<'m> {
         Machine {
             module,
             sources,
@@ -160,15 +188,36 @@ impl<'m> Machine<'m> {
             stopping: false,
             exit_status: None,
             foreign: Default::default(),
+            program,
+            thread_task: None,
         }
+    }
+
+    /// The machine of a task on a thread of its own.
+    fn for_thread(
+        module: &'m Module,
+        sources: &'m SourceMap,
+        out: Output<'m>,
+        program: Arc<Program>,
+        task: Arc<ParallelState>,
+    ) -> Machine<'m> {
+        let mut machine = Machine::with_output(module, sources, out, program);
+        machine.thread_task = Some(task);
+        machine
+    }
+
+    /// The program's output, for one write.
+    fn output(&self) -> std::sync::MutexGuard<'_, &'m mut (dyn Write + Send)> {
+        parallel::lock(&self.out)
     }
 
     /// Initializes globals, runs the entry function, and returns its exit
     /// status, or the one `os.exit` gave.
     pub fn run(&mut self) -> Result<i32, RunError> {
+        let _threads = JoinThreads(self.program.clone());
         let result = self.run_program();
         let result = self.finish(result);
-        let _ = self.out.flush();
+        let _ = self.output().flush();
         // Files kept by constants stay open until the program ends.
         sayon_runtime::streams::flush_all();
         result
@@ -194,16 +243,18 @@ impl<'m> Machine<'m> {
         T: From<i32>,
     {
         self.shutdown();
+        let thread_failures = self.finish_threads();
         let result = match result {
             Err(RunError::Uncaught(error)) if error.code == EXIT_CODE => {
                 Ok(T::from(exit_status(&error.message)))
             }
             other => other,
         };
-        if let Some(status) = self.exit_status {
+        if let Some(status) = self.exit_status.or(self.program.exit_status()) {
             return Ok(T::from(status));
         }
-        let failures = self.task_failures();
+        let mut failures = self.task_failures();
+        failures.extend(thread_failures);
         match result {
             Ok(_) if !failures.is_empty() => Err(RunError::TaskFailures(failures)),
             other => other,
@@ -212,6 +263,7 @@ impl<'m> Machine<'m> {
 
     /// Initializes globals and runs one test function.
     pub fn run_test(&mut self, test: FunctionId) -> Result<(), RunError> {
+        let _threads = JoinThreads(self.program.clone());
         let module = self.module;
         for (global, initializer) in &module.initializers {
             let value = self.call(*initializer)?;
@@ -219,7 +271,7 @@ impl<'m> Machine<'m> {
         }
         let result = self.call(test).map(|_| 0);
         let result = self.finish(result).map(|_| ());
-        let _ = self.out.flush();
+        let _ = self.output().flush();
         result
     }
 
@@ -396,6 +448,16 @@ impl<'m> Machine<'m> {
                     }
                     // Another task runs now; this one runs the operation
                     // again when it is resumed.
+                    Progress::Wait(_) if self.fibers[self.current].locks > 0 => {
+                        let problem = self.error(
+                            "LockError",
+                            "a task cannot wait while it holds a mutex's lock",
+                            *span,
+                        );
+                        let slot = function.error_slot.0 as usize;
+                        self.top().slots[slot] = SlotValue::Value(Value::Error(Box::new(problem)));
+                        self.jump(*error);
+                    }
                     Progress::Wait(wait) => {
                         if !self.suspend(wait) {
                             let problem = self.error(
@@ -693,6 +755,7 @@ impl<'m> Machine<'m> {
                     other => panic!("dictionary assignment into {other:?}"),
                 });
             }
+            Inst::MutexPut { mutex, value } => self.mutex_put(mutex, value),
         }
     }
 
@@ -905,6 +968,10 @@ impl<'m> Machine<'m> {
             }
             Rvalue::MakeShared { value, .. } => {
                 Value::Shared(Rc::new(RefCell::new(self.take(value))))
+            }
+            Rvalue::MakeMutex { value, .. } => {
+                let value = self.take(value);
+                Value::Mutex(MutexCell::new(&value))
             }
             Rvalue::Downgrade(shared) => {
                 let source = self.source(shared);
@@ -1212,7 +1279,7 @@ impl<'m> Machine<'m> {
                     });
                 }
                 line.push('\n');
-                self.out.write_all(line.as_bytes()).map_err(|error| {
+                self.output().write_all(line.as_bytes()).map_err(|error| {
                     self.error("IOError", format!("could not write output: {error}"), span)
                 })?;
                 Ok(Value::Nothing)
@@ -1315,7 +1382,7 @@ impl<'m> Machine<'m> {
                     })
                     .collect();
                 // What the program printed comes before what C prints.
-                let _ = self.out.flush();
+                let _ = self.output().flush();
                 let declaration = &self.module.foreign[function.0 as usize];
                 self.foreign
                     .call(function.0, declaration, &values)
@@ -1347,6 +1414,10 @@ impl<'m> Machine<'m> {
                 Value::Error(error) => Err(*error),
                 other => panic!("raise of {other:?}"),
             },
+            Op::MutexTake { mutex } => self.mutex_take(mutex, span),
+            Op::SpawnParallel { .. } => {
+                unreachable!("task operations are handled by the frame loop")
+            }
         }
     }
 
@@ -1394,10 +1465,10 @@ impl<'m> Machine<'m> {
         match function {
             Host::Write => {
                 let text = values[0].as_str().to_string();
-                let written = self
-                    .out
-                    .write_all(text.as_bytes())
-                    .and_then(|_| self.out.flush());
+                let written = {
+                    let mut out = self.output();
+                    out.write_all(text.as_bytes()).and_then(|_| out.flush())
+                };
                 return written.map(|_| Value::Nothing).map_err(|error| {
                     self.error("IOError", format!("could not write output: {error}"), span)
                 });
@@ -1408,12 +1479,12 @@ impl<'m> Machine<'m> {
                     if sayon_runtime::streams::is_standard_output(stream.id())) =>
             {
                 let written = match &values[1..] {
-                    [Value::Str(text)] => self.out.write_all(text.as_bytes()),
+                    [Value::Str(text)] => self.output().write_all(text.as_bytes()),
                     [Value::Array(bytes)] => {
                         let bytes: Vec<u8> = bytes.iter().map(|b| b.as_int() as u8).collect();
-                        self.out.write_all(&bytes)
+                        self.output().write_all(&bytes)
                     }
-                    _ => self.out.flush(),
+                    _ => self.output().flush(),
                 };
                 return written.map(|_| Value::Nothing).map_err(|error| {
                     self.error("IOError", format!("could not write output: {error}"), span)
@@ -1429,13 +1500,13 @@ impl<'m> Machine<'m> {
             | Host::StreamReadBytes
             | Host::StreamReadText
             | Host::StreamCopy => {
-                let _ = self.out.flush();
+                let _ = self.output().flush();
             }
             Host::StreamWrite | Host::StreamWriteBytes
                 if matches!(&values[0], Value::Stream(stream)
                     if sayon_runtime::streams::is_standard_error(stream.id())) =>
             {
-                let _ = self.out.flush();
+                let _ = self.output().flush();
             }
             _ => {}
         }

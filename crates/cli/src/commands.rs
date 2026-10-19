@@ -129,8 +129,8 @@ pub fn run(target: &Target, options: &Options, program_args: &[String]) -> u8 {
         Ok(compiled) => compiled,
         Err(code) => return code,
     };
-    let stdout = std::io::stdout();
-    let mut out = std::io::BufWriter::new(stdout.lock());
+    // Not locked for the run: tasks on other threads write too.
+    let mut out = std::io::BufWriter::new(std::io::stdout());
     sayon_runtime::host::set_arguments(program_args.to_vec());
     let result = sayon_interp::Machine::new(&compiled.module, &compiled.sources, &mut out).run();
     let _ = out.flush();

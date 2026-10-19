@@ -1,0 +1,137 @@
+# Tasks on threads of their own, and mutexes
+threads = import("standard/threads.sayon")
+time = import("standard/time.sayon")
+
+# A task's captures move to its thread, and its result moves back.
+words = ["alpha", "beta", "gamma"]
+lengths = threads.spawn_parallel(function() -> Array<integer>
+    result: Array<integer> = []
+    for word in words
+        push(result, length(word))
+    return result
+)
+print(threads.join(lengths))
+
+greeting = threads.spawn_parallel(function() -> string
+    return "hello from another thread"
+)
+print(threads.join(greeting))
+
+# Workers add to a total under its lock.
+total = mutex(0)
+workers: Array<Task<nothing>> = []
+for _ in range(4)
+    copy = clone(total)
+    push(workers, threads.spawn_parallel(function()
+        for _ in range(1000)
+            copy.change(function(update value: integer)
+                value += 1
+            )
+    ))
+while length(workers) > 0
+    last = pop(workers)
+    if last != nothing
+        threads.join(last)
+print("total", total.get())
+
+# Each worker sums its own part; the results come back in order.
+parts: Array<Task<integer>> = []
+for part in range(4)
+    push(parts, threads.spawn_parallel(function() -> integer
+        sum = 0
+        for n in range(part * 100, part * 100 + 100)
+            sum += n
+        return sum
+    ))
+sums: Array<integer> = []
+while length(parts) > 0
+    push(sums, threads.join(remove(parts, 0)))
+print(sums)
+
+# A mutex keeps any sendable value.
+log = mutex(["start"])
+writer = clone(log)
+threads.join(threads.spawn_parallel(function()
+    writer.change(function(update entries: Array<string>)
+        push(entries, "from a thread")
+    )
+))
+print(log.get())
+old = log.replace(["replaced"])
+print(old, log.get())
+log.set(["set"])
+print(log.get(), log, typeof(log))
+# Copies of a handle refer to the same mutex.
+alias = log
+alias.set(["through a copy"])
+print(log.get())
+
+# A failing task's error comes back through join.
+failing = threads.spawn_parallel(function() -> integer
+    error("failed on its thread")
+)
+outcome = try threads.join(failing)
+if outcome is error
+    print("joined error:", outcome.code, outcome.message)
+
+# A task cannot wait while it holds a lock, or take the same lock again.
+counter = mutex(1)
+waited = try counter.change(function(update value: integer)
+    threads.pause()
+    value += 1
+)
+if waited is error
+    print(waited.code, waited.message)
+inner = clone(counter)
+again = try counter.change(function(update value: integer)
+    value = inner.get()
+)
+if again is error
+    print(again.code, again.message)
+# The lock was freed each time, and the value kept.
+print("counter", counter.get())
+
+# A parallel task runs tasks of its own on its thread.
+local = threads.spawn_parallel(function() -> integer
+    channel: Channel<integer> = threads.new_channel()
+    producer = threads.spawn(function()
+        for n in range(5)
+            threads.send(channel, n * n)
+        threads.close(channel)
+    )
+    sum = 0
+    while true
+        match threads.receive_result(channel)
+            case message(n)
+                sum += n
+            case closed
+                break
+    threads.join(producer)
+    return sum
+)
+print("squares", threads.join(local))
+
+# A task whose handle is dropped without a join is cancelled.
+function abandon(done: Mutex<boolean>)
+    worker = threads.spawn_parallel(function()
+        try
+            time.sleep(time.seconds(60))
+        finally
+            done.set(true)
+    )
+
+done = mutex(false)
+abandon(done)
+checks = 0
+while not done.get() and checks < 2000
+    time.sleep(time.milliseconds(5))
+    checks += 1
+print("abandoned task cancelled:", done.get())
+
+# A task on another thread that waits is cancelled when the program ends.
+sleeper = threads.spawn_parallel(function()
+    time.sleep(time.seconds(60))
+    print("never printed")
+)
+threads.detach(sleeper)
+print("done")

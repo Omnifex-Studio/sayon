@@ -373,6 +373,17 @@ pub enum Builtin {
     Share,
     /// `cell(own value)`: a new `Cell<T>`.
     MakeCell,
+    /// `mutex(own value)`: a new `Mutex<T>`.
+    MakeMutex,
+    /// `mutex.get()`: a copy of the value, taken under the lock.
+    MutexGet,
+    /// `mutex.set(own value)`.
+    MutexSet,
+    /// `mutex.replace(own value)`: the value it held.
+    MutexReplace,
+    /// `mutex.change(function)`: calls the function with the value to change,
+    /// holding the lock meanwhile.
+    MutexChange,
     /// `shared.weak()`: a `Weak<T>` of a shared value.
     Downgrade,
     /// `weak.upgrade()`: `Shared<T> or nothing`.
@@ -386,6 +397,8 @@ pub enum Builtin {
     /// `task_spawn(own body)` in `standard/threads`: a new task running a
     /// function value; the built-ins below are the rest of that module's.
     TaskSpawn,
+    /// `task_spawn_parallel(own body)`: a new task on a thread of its own.
+    TaskSpawnParallel,
     /// `task_join(own task)`: its result, waiting for it.
     TaskJoin,
     /// `task_detach(own task)`: lets it run on without a handle.
@@ -447,12 +460,18 @@ impl Builtin {
             Builtin::TypedEncode => "typed_encode",
             Builtin::Share => "share",
             Builtin::MakeCell => "cell",
+            Builtin::MakeMutex => "mutex",
+            Builtin::MutexGet => "get",
+            Builtin::MutexSet => "set",
+            Builtin::MutexReplace => "replace",
+            Builtin::MutexChange => "change",
             Builtin::Downgrade => "weak",
             Builtin::Upgrade => "upgrade",
             Builtin::CellGet => "get",
             Builtin::CellSet => "set",
             Builtin::CellReplace => "replace",
             Builtin::TaskSpawn => "task_spawn",
+            Builtin::TaskSpawnParallel => "task_spawn_parallel",
             Builtin::TaskJoin => "task_join",
             Builtin::TaskDetach => "task_detach",
             Builtin::TaskYield => "task_yield",

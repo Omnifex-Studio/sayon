@@ -1427,6 +1427,11 @@ impl<'a> Checker<'a> {
             let mode = signature.explicit_modes[index].unwrap_or(ParamMode::Read);
             checked.push(Arg { expr: value, mode });
         }
+        if self.is_parallel_spawn(id)
+            && let Some(body) = checked.first()
+        {
+            self.check_parallel_body(&body.expr, &ret);
+        }
         expr(
             ExprKind::Call {
                 function: id,
@@ -1436,6 +1441,51 @@ impl<'a> Checker<'a> {
             ret,
             span,
         )
+    }
+
+    /// Whether a function is `standard/threads`'s `spawn_parallel`, whose
+    /// argument is checked where it is called.
+    fn is_parallel_spawn(&self, id: hir::FuncId) -> bool {
+        let entry = &self.functions[id.0 as usize];
+        entry.name == "spawn_parallel"
+            && self.modules[entry.module.0 as usize].name == "standard/threads.sayon"
+    }
+
+    /// A task on another thread takes its function's captures there, and
+    /// sends its result back: both must be able to cross.
+    fn check_parallel_body(&mut self, body: &hir::Expr, task: &Type) {
+        let context = "a task on another thread takes what its function captured";
+        match &body.kind {
+            ExprKind::Closure { captures, .. } => {
+                for capture in captures {
+                    self.require_traits(
+                        &capture.value.ty,
+                        Traits::SEND,
+                        capture.value.span,
+                        context,
+                    );
+                }
+            }
+            ExprKind::FunctionRef { .. } => {}
+            _ => {
+                self.error(
+                    Diagnostic::error(
+                        "E_PARALLEL_FUNCTION",
+                        "a task on another thread runs a function literal or a named function",
+                    )
+                    .primary(body.span, "")
+                    .help("write the function here, so that what it captures can be checked"),
+                );
+            }
+        }
+        if let Type::Wrapper(Wrapper::Task, result) = self.unifier.resolve(task) {
+            self.require_traits(
+                &result,
+                Traits::SEND,
+                body.span,
+                "the result of a task on another thread is sent back",
+            );
+        }
     }
 
     /// Requires unsafe code around a call of an `unsafe function`.
@@ -1552,6 +1602,10 @@ impl<'a> Checker<'a> {
             (Wrapper::Cell, "get") => (Builtin::CellGet, 0, inner.clone()),
             (Wrapper::Cell, "set") => (Builtin::CellSet, 1, Type::Nothing),
             (Wrapper::Cell, "replace") => (Builtin::CellReplace, 1, inner.clone()),
+            (Wrapper::Mutex, "get") => (Builtin::MutexGet, 0, inner.clone()),
+            (Wrapper::Mutex, "set") => (Builtin::MutexSet, 1, Type::Nothing),
+            (Wrapper::Mutex, "replace") => (Builtin::MutexReplace, 1, inner.clone()),
+            (Wrapper::Mutex, "change") => (Builtin::MutexChange, 1, Type::Nothing),
             _ => {
                 let methods = match kind {
                     Wrapper::Shared => "`weak()`, and the field `value`",
@@ -1560,6 +1614,9 @@ impl<'a> Checker<'a> {
                     Wrapper::Task => "none; use `threads.join(task)` and `threads.detach(task)`",
                     Wrapper::Channel => {
                         "none; use `threads.send`, `threads.receive`, and `threads.close`"
+                    }
+                    Wrapper::Mutex => {
+                        "`get()`, `set(value)`, `replace(value)`, and `change(function)`"
                     }
                 };
                 let receiver_ty = self.unifier.resolve(&receiver.ty);
@@ -1583,17 +1640,34 @@ impl<'a> Checker<'a> {
             }
             return expr(ExprKind::Nothing, ty, span);
         }
-        if builtin == Builtin::CellGet {
+        if matches!(builtin, Builtin::CellGet | Builtin::MutexGet) {
             self.require_traits(
                 &inner,
                 Traits::CLONE,
                 receiver.span,
-                "`get` copies the cell's value",
+                "`get` copies the value",
             );
         }
         let mut checked = vec![read(receiver)];
-        if count == 1 {
-            let value = self.check_expr_as(cx, &args[0], &inner, "the cell's new value");
+        if builtin == Builtin::MutexChange {
+            // The change gets the value for changes, under the lock.
+            let change_ty = Type::function(crate::types::FunctionType {
+                params: vec![(ParamMode::Update, inner.clone())],
+                ret: Type::Nothing,
+            });
+            let change = self.check_expr_as(
+                cx,
+                &args[0],
+                &change_ty,
+                "a function that changes the value",
+            );
+            // Calling a function value borrows it for changes.
+            checked.push(Arg {
+                expr: change,
+                mode: ParamMode::Update,
+            });
+        } else if count == 1 {
+            let value = self.check_expr_as(cx, &args[0], &inner, "the new value");
             checked.push(Arg {
                 expr: value,
                 mode: ParamMode::Own,
@@ -1880,11 +1954,11 @@ impl<'a> Checker<'a> {
                 }
                 (checked, Type::view(element, mutable))
             }
-            Builtin::Share | Builtin::MakeCell => {
-                let kind = if builtin == Builtin::Share {
-                    Wrapper::Shared
-                } else {
-                    Wrapper::Cell
+            Builtin::Share | Builtin::MakeCell | Builtin::MakeMutex => {
+                let kind = match builtin {
+                    Builtin::Share => Wrapper::Shared,
+                    Builtin::MakeMutex => Wrapper::Mutex,
+                    _ => Wrapper::Cell,
                 };
                 // An expected `Cell<integer or nothing>` types `cell(nothing)`.
                 let inner = expected.and_then(|ty| match self.unifier.resolve(ty) {
@@ -1895,6 +1969,14 @@ impl<'a> Checker<'a> {
                     Some(inner) => self.check_expr_as(cx, &args[0], inner, "the value"),
                     None => self.check_expr(cx, &args[0], None),
                 };
+                if kind == Wrapper::Mutex {
+                    self.require_traits(
+                        &value.ty,
+                        Traits::SEND,
+                        args[0].span,
+                        "tasks on other threads share a mutex's value",
+                    );
+                }
                 let ty = Type::wrapper(kind, value.ty.clone());
                 let value = Arg {
                     expr: value,
@@ -1906,7 +1988,29 @@ impl<'a> Checker<'a> {
             | Builtin::Upgrade
             | Builtin::CellGet
             | Builtin::CellSet
-            | Builtin::CellReplace => unreachable!("methods are checked as methods"),
+            | Builtin::CellReplace
+            | Builtin::MutexGet
+            | Builtin::MutexSet
+            | Builtin::MutexReplace
+            | Builtin::MutexChange => unreachable!("methods are checked as methods"),
+            Builtin::TaskSpawnParallel => {
+                let result = self.fresh_var(span);
+                let body_ty = Type::function(crate::types::FunctionType {
+                    params: Vec::new(),
+                    ret: result.clone(),
+                });
+                let body = self.check_expr_as(
+                    cx,
+                    &args[0],
+                    &body_ty,
+                    "a task runs a function of no arguments",
+                );
+                let owned = Arg {
+                    expr: body,
+                    mode: ParamMode::Own,
+                };
+                (vec![owned], Type::wrapper(Wrapper::Task, result))
+            }
             Builtin::TaskSpawn => {
                 let result = self.fresh_var(span);
                 let body_ty = Type::function(crate::types::FunctionType {

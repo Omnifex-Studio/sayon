@@ -23,6 +23,9 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
             "typed_decode" => return Some(PreludeItem::Builtin(Builtin::TypedDecode)),
             "typed_encode" => return Some(PreludeItem::Builtin(Builtin::TypedEncode)),
             "task_spawn" => return Some(PreludeItem::Builtin(Builtin::TaskSpawn)),
+            "task_spawn_parallel" => {
+                return Some(PreludeItem::Builtin(Builtin::TaskSpawnParallel));
+            }
             "task_join" => return Some(PreludeItem::Builtin(Builtin::TaskJoin)),
             "task_detach" => return Some(PreludeItem::Builtin(Builtin::TaskDetach)),
             "task_yield" => return Some(PreludeItem::Builtin(Builtin::TaskYield)),
@@ -58,6 +61,7 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
         "split_view" => Builtin::SplitView,
         "share" => Builtin::Share,
         "cell" => Builtin::MakeCell,
+        "mutex" => Builtin::MakeMutex,
         "haskey" => Builtin::HasKey,
         "readfile" => Builtin::ReadFile,
         "writefile" => Builtin::WriteFile,
@@ -87,7 +91,7 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
 /// "undefined name".
 pub fn planned(name: &str) -> Option<(&'static str, &'static str)> {
     Some(match name {
-        "Shared" | "Weak" | "Cell" | "Mutex" | "Box" => ("explicit shared ownership", "M3"),
+        "Box" => ("explicit shared ownership", "M3"),
 
         "platform" => ("compile-time platform branches", "M4"),
         _ => return None,

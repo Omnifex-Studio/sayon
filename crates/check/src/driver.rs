@@ -180,7 +180,7 @@ impl<'a> Checker<'a> {
                     format!("a constant cannot hold {ty}"),
                 )
                 .primary(decl.name.span, "")
-                .note("a constant never changes, and is the same for the whole program; Shared, Weak, and Cell values are for state that is owned and changed")
+                .note("a constant never changes, and is the same for the whole program; Shared, Weak, Cell, and Mutex values are for state that is owned and changed")
                 .help("create the value in `main` or a function, and pass it where it is needed"),
             );
         }

@@ -359,6 +359,11 @@ pub enum Rvalue {
         value: Operand,
         ty: Type,
     },
+    /// A new mutex holding `value`, of type `ty`, with one handle.
+    MakeMutex {
+        value: Operand,
+        ty: Type,
+    },
     /// A `Weak` handle of the shared value a `Shared` handle refers to.
     Downgrade(Operand),
     /// A new `Shared` handle from a `Weak` one, as the union member with
@@ -401,6 +406,12 @@ pub enum Inst {
     DictSet {
         dict: Place,
         key: Operand,
+        value: Operand,
+    },
+    /// Moves a value back into the mutex `MutexTake` took it from, and
+    /// releases its lock.
+    MutexPut {
+        mutex: Operand,
         value: Operand,
     },
 }
@@ -457,6 +468,17 @@ pub enum Op {
     Spawn {
         body: Operand,
         result: Type,
+    },
+    /// A new task on a thread of its own running `body`.
+    SpawnParallel {
+        body: Operand,
+        result: Type,
+    },
+    /// Takes the lock of a mutex, waiting for it, and moves its value out
+    /// until `MutexPut`. Fails when the running task holds the lock
+    /// already.
+    MutexTake {
+        mutex: Operand,
     },
     /// The result of the task at `task`, once it has finished; its error
     /// when it failed.

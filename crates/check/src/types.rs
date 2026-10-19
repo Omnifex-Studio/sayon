@@ -168,6 +168,9 @@ pub enum Wrapper {
     /// A channel of `standard/threads`, a counted handle every task holding
     /// it sends and receives through.
     Channel,
+    /// A value that tasks on several threads share, one at a time: a
+    /// counted handle to the value and its lock.
+    Mutex,
 }
 
 impl Wrapper {
@@ -178,6 +181,7 @@ impl Wrapper {
             Wrapper::Cell => "Cell",
             Wrapper::Task => "Task",
             Wrapper::Channel => "Channel",
+            Wrapper::Mutex => "Mutex",
         }
     }
 }
@@ -194,7 +198,10 @@ impl Type {
     /// `Shared`, `Weak`, and unions of them with Copy types.
     pub fn is_retained(&self) -> bool {
         match self {
-            Type::Wrapper(Wrapper::Shared | Wrapper::Weak | Wrapper::Channel, _) => true,
+            Type::Wrapper(
+                Wrapper::Shared | Wrapper::Weak | Wrapper::Channel | Wrapper::Mutex,
+                _,
+            ) => true,
             Type::Union(members) => {
                 members.iter().any(Type::is_retained)
                     && members.iter().all(|m| m.is_copy() || m.is_retained())

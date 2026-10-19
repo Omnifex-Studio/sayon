@@ -77,9 +77,12 @@ impl Traits {
     pub const CLONE: Traits = Traits(128);
     /// Reading from and writing to JSON (`json.decode`, `json.to_json`).
     pub const JSON: Traits = Traits(256);
-    /// Reading from and writing to raw memory (`standard/foreign`'s `read`
+    /// Reading from and writing to raw memory (`standard/memory`'s `read`
     /// and `write`): numbers and pointers.
     pub const RAW: Traits = Traits(512);
+    /// Being sent to a task on another thread: values that share nothing
+    /// with the thread they leave, or share it only through a `Mutex`.
+    pub const SEND: Traits = Traits(1024);
 
     pub fn contains(self, other: Traits) -> bool {
         self.0 & other.0 == other.0
@@ -99,7 +102,7 @@ impl Traits {
     }
 
     fn each(self) -> impl Iterator<Item = Traits> {
-        (0..10)
+        (0..11)
             .map(|bit| Traits(1 << bit))
             .filter(move |t| self.contains(*t))
     }
@@ -116,6 +119,7 @@ impl Traits {
             Traits::CLONE => "cloning",
             Traits::JSON => "JSON conversion",
             Traits::RAW => "reading from memory",
+            Traits::SEND => "being sent to another thread",
             _ => "these operations",
         }
     }
@@ -458,6 +462,35 @@ impl Unifier {
                     true
                 }
                 _ => false,
+            },
+            Traits::SEND => match &ty {
+                Type::Array(element) => return self.require_trait(element, Traits::SEND),
+                Type::Dict(key, value) => {
+                    let value = (**value).clone();
+                    self.require_trait(key, Traits::SEND)?;
+                    return self.require_trait(&value, Traits::SEND);
+                }
+                Type::Union(members) => {
+                    for member in members.clone() {
+                        self.require_trait(&member, Traits::SEND)?;
+                    }
+                    return Ok(());
+                }
+                Type::Named(named) => return self.fields_support(named, &ty, one),
+                // A mutex is shared between threads by design, and a cell
+                // goes with its value.
+                Type::Wrapper(Wrapper::Mutex | Wrapper::Cell, inner) => {
+                    return self.require_trait(inner, Traits::SEND);
+                }
+                // Shared handles, tasks, and channels belong to the tasks
+                // of one thread; views borrow from it, and a function value
+                // may have captured any of them.
+                Type::Wrapper(..) | Type::View(..) | Type::Function(_) => false,
+                Type::Param(index) => {
+                    self.record_param_trait(*index, one);
+                    true
+                }
+                _ => true,
             },
             _ => true,
         };

@@ -51,6 +51,10 @@ pub enum Value {
     /// A C string: its bytes and the NUL after them, which stay where they
     /// are while the value lives, for C code to read.
     CString(Rc<[u8]>),
+    /// A mutex handle; cloning the value retains it.
+    Mutex(std::sync::Arc<crate::machine::parallel::MutexCell>),
+    /// The handle of a task on a thread of its own.
+    ParallelTask(crate::machine::parallel::ParallelHandle),
 }
 
 /// What the scheduler and a task's handle know of the task.
@@ -387,8 +391,9 @@ pub fn display(value: &Value, out: &mut String, nested: bool, types: &[TypeDef])
         // A shared value and a cell show their value.
         Value::Shared(shared) => display(&shared.borrow(), out, nested),
         Value::Weak(_) => out.push_str("weak"),
-        Value::Task(_) => out.push_str("task"),
+        Value::Task(_) | Value::ParallelTask(_) => out.push_str("task"),
         Value::Channel(_) => out.push_str("channel"),
+        Value::Mutex(_) => out.push_str("mutex"),
         Value::Pointer(address) => out.push_str(&sayon_runtime::text::pointer_text(*address)),
         Value::CString(bytes) => {
             let text = String::from_utf8_lossy(&bytes[..bytes.len() - 1]);

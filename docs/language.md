@@ -604,7 +604,7 @@ function attach(parent: Shared<Node>, child: Shared<Node>)
     parent.value.children.set(children)
 ```
 
-- Handles cannot be compared, and a constant cannot hold one or a cell (`E_SHARED_CONSTANT`). They are for one thread; sharing between threads arrives with `Mutex` in this milestone.
+- Handles cannot be compared, and a constant cannot hold one or a cell (`E_SHARED_CONSTANT`). They are for one thread; tasks on different threads share a `Mutex` instead (see [Tasks on threads of their own](#tasks-on-threads-of-their-own)).
 
 ## Errors
 
@@ -921,7 +921,32 @@ threads.join(sender)
 - `after(delay, message)` is a timer: a channel that receives `message` once `delay` has passed. Selecting it with other channels waits for their messages or for too long, as with `select([events, threads.after(time.seconds(5), timeout)], handler)` for an enum `Event` with a `timeout` variant.
 - When the main task finishes, the tasks still running are cancelled: each stops where it waits, running its `finally` blocks and cleanup, which `catch` and `try` do not stop. A task whose handle is dropped without a `join` is cancelled the same way (`W_UNUSED_TASK` warns of a handle dropped at once), and one that has not started never runs; `detach(task)` lets a task run on until the main task ends. A task that fails without being joined is reported and makes the program fail. `os.exit` in any task ends the whole program in order.
 
-Tasks run on one thread, so values they share through `Shared` and `Cell` never change under them in the middle of an operation; running tasks in parallel on several threads arrives with `Mutex` in this milestone. Compiled programs can run tasks on Windows so far.
+Tasks started with `spawn` run on one thread, so values they share through `Shared` and `Cell` never change under them in the middle of an operation. Compiled programs can run tasks on Windows so far.
+
+### Tasks on threads of their own
+
+`threads.spawn_parallel(function)` starts a task on a thread of its own, which runs at the same time as the program's other tasks, on another processor when there is one. Its handle is a `Task<T>` like any other, which `join` and `detach` take. Tasks on different threads share data through a `Mutex<T>`:
+
+```sayon
+threads = import("standard/threads.sayon")
+
+total = mutex(0)
+first = threads.spawn_parallel(function()
+    total.change(function(update value: integer) value += 1)
+)
+second = threads.spawn_parallel(function()
+    total.change(function(update value: integer) value += 2)
+)
+threads.join(first)
+threads.join(second)
+print(total.get())                    # 3
+```
+
+- What the function captures moves to the new thread, and the task's result moves back, so both must be *sendable*: they share nothing with the thread they left. Numbers, strings, arrays, dictionaries, structures, enums, errors, cells, and mutexes are sendable when what they hold is; `Shared` and `Weak` values, tasks, channels, views, and function values are not, since their handles are counted without the cost of making that safe across threads (`E_UNSUPPORTED_OPERATION`). The function is written at the call or named, so that its captures can be checked (`E_PARALLEL_FUNCTION`).
+- `mutex(value)` makes a `Mutex<T>`, a handle like a `Shared` value: copies of it refer to the same mutex, whose value lives until the last handle goes. Its value is used only under its lock, which one task holds at a time: `m.get()` copies the value out, `m.set(value)` replaces it, `m.replace(value)` replaces it and gives what it held, and `m.change(function)` calls the function with the value to change in place, holding the lock until it returns. A task that wants the lock while a task on another thread holds it waits for it; the lock is freed also when the function fails. A mutex's value must be sendable, and a constant cannot hold a mutex (`E_SHARED_CONSTANT`).
+- A task cannot wait for anything while it holds a lock: inside `change`, sending, receiving, joining, sleeping, `pause`, and taking the same mutex's lock again fail with `LockError`, and the value is put back as it was left. Keep the work under a lock short, and take the locks of several mutexes in the same order everywhere: two tasks that each hold one lock and want the other's wait forever.
+- A task on another thread runs the tasks it spawns on its own thread, and they end with it. When the main task finishes, the tasks on other threads are cancelled where they wait, like any other, and the program waits for their threads to finish; a task that fails there without being joined makes the program fail. `os.exit` in any task, on any thread, ends the whole program.
+- `print` and the other output functions write whole lines, so the lines of tasks on different threads do not mix, but their order depends on how the threads run.
 
 ### Networking
 
