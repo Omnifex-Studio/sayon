@@ -45,7 +45,7 @@ pub enum Value {
     Weak(std::rc::Weak<RefCell<Value>>),
     Task(TaskHandle),
     /// A channel handle; cloning the value retains it.
-    Channel(Rc<RefCell<ChannelState>>),
+    Channel(Channel),
     /// A raw address.
     Pointer(usize),
     /// A C string: its bytes and the NUL after them, which stay where they
@@ -81,6 +81,56 @@ impl Drop for TaskHandle {
                 state.cancel = true;
             }
         }
+    }
+}
+
+/// A channel handle. Every copy refers to the same channel, which tasks on
+/// several threads can share.
+#[derive(Clone)]
+pub struct Channel(pub std::sync::Arc<ChannelCell>);
+
+pub struct ChannelCell {
+    state: std::sync::Mutex<ChannelState>,
+    /// Set once a task on another thread may hold the channel: from then on
+    /// each message is copied as it is sent, so that it shares nothing with
+    /// the sender's thread, and changes wake the other threads' schedulers.
+    pub crossed: std::sync::atomic::AtomicBool,
+}
+
+// SAFETY: the values of the interpreter count their references without
+// atomics, so a message must share no count with a value of another
+// thread. Until a channel crosses, only its own thread can reach it; when
+// it does, the messages waiting in it are copied (see `parallel`), and so
+// is each one sent after that.
+unsafe impl Send for ChannelCell {}
+unsafe impl Sync for ChannelCell {}
+
+impl Channel {
+    pub fn new(capacity: usize) -> Channel {
+        Channel(std::sync::Arc::new(ChannelCell {
+            state: std::sync::Mutex::new(ChannelState {
+                queue: std::collections::VecDeque::new(),
+                capacity,
+                closed: false,
+                sent: 0,
+                received: 0,
+            }),
+            crossed: std::sync::atomic::AtomicBool::new(false),
+        }))
+    }
+
+    pub fn state(&self) -> std::sync::MutexGuard<'_, ChannelState> {
+        self.0.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn crossed(&self) -> bool {
+        self.0.crossed.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+impl std::fmt::Debug for Channel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Channel")
     }
 }
 

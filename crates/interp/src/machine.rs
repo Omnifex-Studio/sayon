@@ -82,6 +82,11 @@ pub struct Machine<'m> {
     program: Arc<Program>,
     /// For the machine of a task on a thread of its own: the task.
     thread_task: Option<Arc<ParallelState>>,
+    /// The channels made on this thread that no task on another thread can
+    /// hold yet (see `parallel`), and the length at which to forget the
+    /// ones gone.
+    local_channels: Vec<std::sync::Weak<crate::value::ChannelCell>>,
+    prune_channels_at: usize,
 }
 
 /// The first step of `steps` through a view: its position, the viewed
@@ -190,6 +195,8 @@ impl<'m> Machine<'m> {
             foreign: Default::default(),
             program,
             thread_task: None,
+            local_channels: Vec::new(),
+            prune_channels_at: 64,
         }
     }
 
@@ -971,6 +978,8 @@ impl<'m> Machine<'m> {
             }
             Rvalue::MakeMutex { value, .. } => {
                 let value = self.take(value);
+                // Tasks on other threads may take the value out.
+                self.cross_channels();
                 Value::Mutex(MutexCell::new(&value))
             }
             Rvalue::Downgrade(shared) => {

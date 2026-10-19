@@ -1763,16 +1763,26 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     .line(format!("call void @sayon_channel_close(ptr {channel})"));
                 Some("0".to_string())
             }
-            Op::Select { channels } => {
-                let (channels, _) = self.pointer(channels);
+            Op::Select { channels, position } => {
+                let (channels, channels_ty) = self.pointer(channels);
+                let (position, _) = self.place_ptr(position);
                 let out = match dest {
                     Some(place) => self.place_ptr(place).0,
-                    None => self.body.alloca("i64"),
+                    None => {
+                        let Type::Array(channel) = &channels_ty else {
+                            panic!("select over {channels_ty}")
+                        };
+                        let Type::Wrapper(_, element) = &**channel else {
+                            panic!("select over {channels_ty}")
+                        };
+                        let llvm = self.cg.llvm(element);
+                        self.body.alloca(&llvm)
+                    }
                 };
                 let location = self.cg.location(span);
                 let status = self.body.tmp();
                 self.body.line(format!(
-                    "{status} = call i32 @sayon_channel_select(ptr {err}, ptr {channels}, ptr {out}, ptr {location})"
+                    "{status} = call i32 @sayon_channel_select(ptr {err}, ptr {channels}, ptr {position}, ptr {out}, ptr {location})"
                 ));
                 Some(status)
             }
@@ -2792,7 +2802,7 @@ declare void @sayon_channel_release(ptr)
 declare i32 @sayon_channel_send(ptr, ptr, ptr, i1, ptr)
 declare i32 @sayon_channel_receive(ptr, ptr, ptr, ptr)
 declare void @sayon_channel_close(ptr)
-declare i32 @sayon_channel_select(ptr, ptr, ptr, ptr)
+declare i32 @sayon_channel_select(ptr, ptr, ptr, ptr, ptr)
 declare void @sayon_stream_clone(ptr, ptr)
 declare void @sayon_error_clone(ptr, ptr)
 declare void @sayon_error_message(ptr, ptr)

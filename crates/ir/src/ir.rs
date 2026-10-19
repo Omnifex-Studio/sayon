@@ -516,10 +516,13 @@ pub enum Op {
     Close {
         channel: Operand,
     },
-    /// The position of a channel of the array that has a message or is
-    /// closed, once one has.
+    /// Receives from the first channel of the array, round from the one
+    /// after the last chosen, that has a message, once one has, and stores
+    /// its position at `position`. Fails when the channel it chose is
+    /// closed and empty.
     Select {
         channels: Operand,
+        position: Place,
     },
     /// Exchanges two elements of an array; fails outside the array.
     Swap {

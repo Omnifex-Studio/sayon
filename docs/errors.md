@@ -590,7 +590,7 @@ The system could not start a thread for `threads.spawn_parallel`, for example be
 
 ### DeadlockError
 
-A task waited for something no task could ever provide: every task was waiting, and none on a timer. For example, a `threads.receive` from a channel nothing else sends on, or a `join` of tasks that wait for each other.
+A task waited for something no task could ever provide: every task was waiting, and none on a timer. For example, a `threads.receive` from a channel nothing else sends on, or a `join` of tasks that wait for each other. While tasks run on other threads, waiting for a channel they may hold is not a deadlock, since they may yet send on it; the program waits for them instead.
 
 ### DecodeError
 

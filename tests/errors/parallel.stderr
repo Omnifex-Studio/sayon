@@ -13,10 +13,10 @@ error[E_UNSUPPORTED_OPERATION]: Shared<_> does not support being sent to another
  7 |     return settings.value
    |            ^^^^^^^^ a task on another thread takes what its function captured
 
-error[E_UNSUPPORTED_OPERATION]: Channel<integer> does not support being sent to another thread
+error[E_UNSUPPORTED_OPERATION]: Shared<integer> does not support being sent to another thread
    --> parallel.sayon:11:18
     |
- 11 |     threads.send(channel, 1)
+ 11 |     threads.send(channel, share(1))
     |                  ^^^^^^^ a task on another thread takes what its function captured
 
 error[E_UNSUPPORTED_OPERATION]: Shared<integer> does not support being sent to another thread

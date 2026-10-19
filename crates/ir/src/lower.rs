@@ -3078,7 +3078,8 @@ impl<'l, 'p> FnLower<'l, 'p> {
             }
             Builtin::ChannelSelect => {
                 let channels = self.operand(&args[0].expr, Want::Read);
-                self.op(Op::Select { channels }, Some(dest), span);
+                let position = self.place_of(&args[1].expr, Want::Mut);
+                self.op(Op::Select { channels, position }, Some(dest), span);
             }
             Builtin::SplitView => {
                 let view = self.place_of(&args[0].expr, Want::Mut);

@@ -1779,7 +1779,8 @@ impl<'a> Checker<'a> {
             | Builtin::Remove
             | Builtin::SplitView
             | Builtin::ChannelSend
-            | Builtin::ChannelSendResult => (2, 2),
+            | Builtin::ChannelSendResult
+            | Builtin::ChannelSelect => (2, 2),
             Builtin::TaskYield => (0, 0),
             Builtin::RawRead => (2, 2),
             Builtin::RawWrite => (3, 3),
@@ -2112,7 +2113,20 @@ impl<'a> Checker<'a> {
                         Type::Nothing
                     }
                     Builtin::ChannelReceive => message,
-                    Builtin::ChannelSelect => Type::INTEGER,
+                    // The message, and the position of its channel.
+                    Builtin::ChannelSelect => {
+                        let position = self.check_expr_as(
+                            cx,
+                            &args[1],
+                            &Type::INTEGER,
+                            "the position of the channel",
+                        );
+                        checked.push(Arg {
+                            expr: position,
+                            mode: ParamMode::Update,
+                        });
+                        message
+                    }
                     _ => Type::Nothing,
                 };
                 (checked, ty)

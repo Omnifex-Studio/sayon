@@ -6,9 +6,9 @@ settings = share(1)
 reader = threads.spawn_parallel(function() -> integer
     return settings.value
 )
-channel: Channel<integer> = threads.new_channel()
+channel: Channel<Shared<integer>> = threads.new_channel()
 sender = threads.spawn_parallel(function()
-    threads.send(channel, 1)
+    threads.send(channel, share(1))
 )
 handle = threads.spawn_parallel(function() -> Shared<integer>
     return share(2)

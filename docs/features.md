@@ -106,8 +106,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `standard/network`: TCP connections and listeners, UDP datagrams, address resolution, timeouts; waiting for sockets lets other tasks run | experimental | M3 |
 | `standard/network` HTTP/1.1 client: `get`, `post`, `request`, chunked and sized bodies, redirects, body size limits | experimental | M3 |
 | TLS (`https://`) with certificate verification, streaming HTTP bodies | planned | M3 |
-| Tasks on threads of their own (`threads.spawn_parallel`), with their own tasks, cancellation, and `os.exit` across threads; native on Windows | experimental | M3 |
-| Channels between threads | planned | M3 |
+| Tasks on threads of their own (`threads.spawn_parallel`), with their own tasks, cancellation, and `os.exit` across threads; channels and `select` between threads; native on Windows | experimental | M3 |
 | `standard.graphics` | planned | M4 baseline |
 
 ## Platforms

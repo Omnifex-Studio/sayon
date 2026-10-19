@@ -1,0 +1,125 @@
+# Channels between tasks on different threads
+threads = import("standard/threads.sayon")
+time = import("standard/time.sayon")
+
+# A producer on another thread; the main task receives at once.
+numbers: Channel<integer> = threads.new_channel(4)
+producer = threads.spawn_parallel(function()
+    for n in range(10)
+        threads.send(numbers, n)
+    threads.close(numbers)
+)
+received: Array<integer> = []
+while true
+    match threads.receive_result(numbers)
+        case message(n)
+            push(received, n)
+        case closed
+            break
+threads.join(producer)
+print(received)
+
+# A pool of workers takes jobs from one channel and sends results on another.
+type Job = [number: integer, text: string]
+
+jobs: Channel<Job> = threads.new_channel()
+results: Channel<integer> = threads.new_unbounded_channel()
+workers: Array<Task<integer>> = []
+for _ in range(4)
+    push(workers, threads.spawn_parallel(function() -> integer
+        done = 0
+        while true
+            match threads.receive_result(jobs)
+                case message(job)
+                    threads.send(results, job.number * length(job.text))
+                    done += 1
+                case closed
+                    return done
+    ))
+for n in range(100)
+    threads.send(jobs, Job(number = n, text = "ab"))
+threads.close(jobs)
+jobs_done = 0
+while length(workers) > 0
+    worker = pop(workers)
+    if worker != nothing
+        jobs_done += threads.join(worker)
+total = 0
+for _ in range(100)
+    total += threads.receive(results)
+print("jobs", jobs_done, "total", total)
+
+# A rendezvous: each send waits for its receive on the other thread.
+meeting: Channel<string> = threads.new_channel(0)
+sender = threads.spawn_parallel(function() -> integer
+    for word in ["one", "two", "three"]
+        threads.send(meeting, clone(word))
+    return 3
+)
+for _ in range(3)
+    print("met", threads.receive(meeting))
+print("sent", threads.join(sender))
+
+# Select takes what tasks on two threads send.
+left: Channel<integer> = threads.new_channel()
+right: Channel<integer> = threads.new_channel()
+left_sender = threads.spawn_parallel(function()
+    for n in range(20)
+        threads.send(left, 1)
+)
+right_sender = threads.spawn_parallel(function()
+    for n in range(20)
+        threads.send(right, 100)
+)
+sum = mutex(0)
+counts = mutex([0, 0])
+for _ in range(40)
+    threads.select([left, right], function(own value: integer, position: integer)
+        sum.change(function(update total: integer) total += value)
+        counts.change(function(update tally: Array<integer>) tally[position] += 1)
+    )
+threads.join(left_sender)
+threads.join(right_sender)
+print("selected", sum.get(), counts.get())
+
+# Requests carry the channel to answer on.
+type Request = [question: string, answer: Channel<string>]
+
+requests: Channel<Request> = threads.new_channel()
+server = threads.spawn_parallel(function()
+    while true
+        match threads.receive_result(requests)
+            case message(request)
+                threads.send(request.answer, "answer to {request.question}")
+            case closed
+                return
+)
+for question in ["first", "second"]
+    reply: Channel<string> = threads.new_channel(1)
+    threads.send(requests, Request(question = clone(question), answer = reply))
+    print(threads.receive(reply))
+threads.close(requests)
+threads.join(server)
+
+# A channel made after the other thread started stays this thread's own:
+# waiting for it alone is still a deadlock.
+sleeper = threads.spawn_parallel(function()
+    time.sleep(time.milliseconds(50))
+)
+mine: Channel<integer> = threads.new_channel()
+stuck = try threads.receive(mine)
+if stuck is error
+    print(stuck.code)
+threads.join(sleeper)
+
+# Once the tasks on other threads have finished, waiting for a channel they
+# held is a deadlock again.
+shared: Channel<integer> = threads.new_channel()
+finished = threads.spawn_parallel(function()
+    threads.send(shared, 1)
+)
+print(threads.receive(shared))
+threads.join(finished)
+late = try threads.receive(shared)
+if late is error
+    print(late.code)

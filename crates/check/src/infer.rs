@@ -477,14 +477,14 @@ impl Unifier {
                     return Ok(());
                 }
                 Type::Named(named) => return self.fields_support(named, &ty, one),
-                // A mutex is shared between threads by design, and a cell
-                // goes with its value.
-                Type::Wrapper(Wrapper::Mutex | Wrapper::Cell, inner) => {
+                // Mutexes and channels are shared between threads by
+                // design, and a cell goes with its value.
+                Type::Wrapper(Wrapper::Mutex | Wrapper::Channel | Wrapper::Cell, inner) => {
                     return self.require_trait(inner, Traits::SEND);
                 }
-                // Shared handles, tasks, and channels belong to the tasks
-                // of one thread; views borrow from it, and a function value
-                // may have captured any of them.
+                // Shared handles and tasks belong to the tasks of one
+                // thread; views borrow from it, and a function value may
+                // have captured any of them.
                 Type::Wrapper(..) | Type::View(..) | Type::Function(_) => false,
                 Type::Param(index) => {
                     self.record_param_trait(*index, one);

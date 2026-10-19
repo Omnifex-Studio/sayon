@@ -11,7 +11,6 @@
 
 use super::*;
 use sayon_runtime::network::{self, BLOCKED_CODE, IoWait};
-use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 pub(super) struct Fiber {
@@ -50,12 +49,12 @@ impl Fiber {
 
 /// What a waiting task waits for.
 pub(super) enum Wait {
-    Receive(Rc<RefCell<ChannelState>>),
-    Send(Rc<RefCell<ChannelState>>),
+    Receive(Channel),
+    Send(Channel),
     /// The message sent as number `.1` to have been received.
-    Rendezvous(Rc<RefCell<ChannelState>>, u64),
+    Rendezvous(Channel, u64),
     Join(Rc<RefCell<TaskState>>),
-    Select(Vec<Rc<RefCell<ChannelState>>>),
+    Select(Vec<Channel>),
     Sleep(Instant),
     Yield,
     /// A socket, or a connection being made, until a deadline after which
@@ -70,11 +69,11 @@ pub(super) enum Wait {
 impl Wait {
     fn ready(&self, now: Instant) -> bool {
         match self {
-            Wait::Receive(channel) => channel.borrow().receivable(),
-            Wait::Send(channel) => channel.borrow().has_room(),
-            Wait::Rendezvous(channel, number) => channel.borrow().received >= *number,
+            Wait::Receive(channel) => channel.state().receivable(),
+            Wait::Send(channel) => channel.state().has_room(),
+            Wait::Rendezvous(channel, number) => channel.state().received >= *number,
             Wait::Join(task) => task.borrow().result.is_some(),
-            Wait::Select(channels) => channels.iter().any(|c| c.borrow().receivable()),
+            Wait::Select(channels) => channels.iter().any(|c| c.state().receivable()),
             Wait::Sleep(until) => now >= *until,
             Wait::Yield => true,
             Wait::Io { wait, deadline, .. } => {
@@ -103,10 +102,54 @@ pub(super) enum Progress {
     Wait(Wait),
 }
 
-fn channel_of(value: &Value) -> Rc<RefCell<ChannelState>> {
+impl Wait {
+    /// Whether a task on another thread could end the wait: it is for a
+    /// channel that crossed.
+    fn elsewhere(&self) -> bool {
+        match self {
+            Wait::Receive(channel) | Wait::Send(channel) | Wait::Rendezvous(channel, _) => {
+                channel.crossed()
+            }
+            Wait::Select(channels) => channels.iter().any(Channel::crossed),
+            _ => false,
+        }
+    }
+}
+
+fn channel_of(value: &Value) -> Channel {
     match value {
         Value::Channel(channel) => channel.clone(),
         other => panic!("channel operation on {other:?}"),
+    }
+}
+
+/// What taking a message from a channel found.
+enum Taken {
+    Message(Value),
+    Empty,
+    /// The channel is closed and has no messages left.
+    Closed,
+}
+
+fn take(channel: &Channel) -> Taken {
+    let mut state = channel.state();
+    match state.queue.pop_front() {
+        Some(value) => {
+            state.received += 1;
+            drop(state);
+            changed(channel);
+            Taken::Message(value)
+        }
+        None if state.closed => Taken::Closed,
+        None => Taken::Empty,
+    }
+}
+
+/// Wakes the schedulers of other threads, when a task there may wait for
+/// the channel.
+fn changed(channel: &Channel) {
+    if channel.crossed() {
+        network::wake();
     }
 }
 
@@ -277,13 +320,9 @@ impl<'m> Machine<'m> {
                         span,
                     ));
                 }
-                Progress::Done(Value::Channel(Rc::new(RefCell::new(ChannelState {
-                    queue: VecDeque::new(),
-                    capacity: capacity as usize,
-                    closed: false,
-                    sent: 0,
-                    received: 0,
-                }))))
+                let channel = Channel::new(capacity as usize);
+                self.local_channel(&channel);
+                Progress::Done(Value::Channel(channel))
             }
             Op::Send {
                 channel,
@@ -293,15 +332,15 @@ impl<'m> Machine<'m> {
                 let source = self.source(channel);
                 let channel = self.with_source(&source, channel_of);
                 if let Some(Resume::Rendezvous(number)) = resume {
-                    return if channel.borrow().received >= number {
+                    return if channel.state().received >= number {
                         Progress::Done(Value::Nothing)
                     } else {
                         Progress::Wait(Wait::Rendezvous(channel, number))
                     };
                 }
-                let (closed, room, capacity) = {
-                    let state = channel.borrow();
-                    (state.closed, state.has_room(), state.capacity)
+                let (closed, room) = {
+                    let state = channel.state();
+                    (state.closed, state.has_room())
                 };
                 if closed {
                     // The message is destroyed with the failure, unless the
@@ -318,14 +357,38 @@ impl<'m> Machine<'m> {
                 if !room {
                     return Progress::Wait(Wait::Send(channel));
                 }
-                let value = self.take_place(message);
+                let mut value = self.take_place(message);
+                if channel.crossed() {
+                    // The message goes to another thread, perhaps with
+                    // channels of this one.
+                    self.cross_channels();
+                    value = parallel::isolate(&value);
+                }
                 let number = {
-                    let mut state = channel.borrow_mut();
+                    let mut state = channel.state();
+                    // Another thread may have filled or closed it meanwhile.
+                    if state.closed || !state.has_room() {
+                        let closed = state.closed;
+                        drop(state);
+                        if closed {
+                            if *keep {
+                                self.write(message, value);
+                            }
+                            return Progress::Failed(self.task_error(
+                                "ChannelClosedError",
+                                "cannot send on a closed channel".to_string(),
+                                span,
+                            ));
+                        }
+                        self.write(message, value);
+                        return Progress::Wait(Wait::Send(channel));
+                    }
                     state.queue.push_back(value);
                     state.sent += 1;
                     state.sent
                 };
-                if capacity == 0 {
+                changed(&channel);
+                if channel.state().capacity == 0 {
                     Progress::Wait(Wait::Rendezvous(channel, number))
                 } else {
                     Progress::Done(Value::Nothing)
@@ -334,35 +397,29 @@ impl<'m> Machine<'m> {
             Op::Receive { channel } => {
                 let source = self.source(channel);
                 let channel = self.with_source(&source, channel_of);
-                let mut state = channel.borrow_mut();
-                if let Some(value) = state.queue.pop_front() {
-                    state.received += 1;
-                    return Progress::Done(value);
-                }
-                if state.closed {
-                    drop(state);
-                    return Progress::Failed(self.task_error(
+                match take(&channel) {
+                    Taken::Message(value) => Progress::Done(value),
+                    Taken::Closed => Progress::Failed(self.task_error(
                         "ChannelClosedError",
                         "the channel is closed and has no more messages".to_string(),
                         span,
-                    ));
+                    )),
+                    Taken::Empty => Progress::Wait(Wait::Receive(channel)),
                 }
-                drop(state);
-                Progress::Wait(Wait::Receive(channel))
             }
             Op::Close { channel } => {
                 let source = self.source(channel);
                 let channel = self.with_source(&source, channel_of);
-                channel.borrow_mut().closed = true;
+                channel.state().closed = true;
+                changed(&channel);
                 Progress::Done(Value::Nothing)
             }
-            Op::Select { channels } => {
+            Op::Select { channels, position } => {
                 let source = self.source(channels);
-                let channels: Vec<Rc<RefCell<ChannelState>>> =
-                    self.with_source(&source, |value| match value {
-                        Value::Array(items) => items.iter().map(channel_of).collect(),
-                        other => panic!("select over {other:?}"),
-                    });
+                let channels: Vec<Channel> = self.with_source(&source, |value| match value {
+                    Value::Array(items) => items.iter().map(channel_of).collect(),
+                    other => panic!("select over {other:?}"),
+                });
                 if channels.is_empty() {
                     return Progress::Failed(self.task_error(
                         "ValueError",
@@ -373,11 +430,23 @@ impl<'m> Machine<'m> {
                 let count = channels.len();
                 let start = self.fibers[self.current].cursor;
                 for offset in 0..count {
-                    let position = (start + offset) % count;
-                    if channels[position].borrow().receivable() {
-                        self.fibers[self.current].cursor = position + 1;
-                        return Progress::Done(Value::Int(position as i128));
+                    let chosen = (start + offset) % count;
+                    // Taking the message is the choice, so that a task on
+                    // another thread cannot take it in between.
+                    let taken = take(&channels[chosen]);
+                    if matches!(taken, Taken::Empty) {
+                        continue;
                     }
+                    self.fibers[self.current].cursor = chosen + 1;
+                    self.write(position, Value::Int(chosen as i128));
+                    return match taken {
+                        Taken::Message(value) => Progress::Done(value),
+                        _ => Progress::Failed(self.task_error(
+                            "ChannelClosedError",
+                            "the channel is closed and has no more messages".to_string(),
+                            span,
+                        )),
+                    };
                 }
                 Progress::Wait(Wait::Select(channels))
             }
@@ -418,7 +487,9 @@ impl<'m> Machine<'m> {
             }
             let mut wake: Option<Instant> = None;
             let mut sockets = Vec::new();
+            let mut elsewhere = false;
             for fiber in self.fibers.iter().filter(|fiber| !fiber.done) {
+                elsewhere |= fiber.wait.as_ref().is_some_and(Wait::elsewhere);
                 let until = match &fiber.wait {
                     Some(Wait::Sleep(until)) => Some(*until),
                     Some(Wait::Io { wait, deadline, .. }) => {
@@ -435,6 +506,10 @@ impl<'m> Machine<'m> {
             let timeout = wake.map(|w| w.saturating_duration_since(now));
             if !sockets.is_empty() {
                 network::wait_any(&sockets, timeout);
+            } else if elsewhere && self.others_run() {
+                // A task on another thread can let one go on, and wakes
+                // this thread when it may have.
+                network::wait_any(&[], timeout);
             } else if network::has_waker() {
                 // Another thread can end the wait early, to cancel a task.
                 network::wait_any(&[], Some(timeout?));

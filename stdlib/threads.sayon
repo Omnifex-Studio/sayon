@@ -25,8 +25,9 @@
 # at the same time as the others, on another processor when there is one.
 # What its function captures moves to that thread, and its result moves
 # back, so both must be sendable: they share nothing with the thread they
-# left, which rules out `Shared` and `Weak` values, tasks, channels, views,
-# and functions. Tasks on different threads share data through a mutex:
+# left, which rules out `Shared` and `Weak` values, tasks, views, and
+# functions. Tasks on different threads send each other messages through
+# channels, as tasks of one thread do, and share data through a mutex:
 #
 #     total = mutex(0)
 #     first = threads.spawn_parallel(function()
@@ -45,6 +46,10 @@
 # in place. A task cannot wait for anything while it holds a lock, so the
 # function given to `change` cannot send, receive, join, sleep, or take the
 # lock of the same mutex again (LockError).
+#
+# While tasks run on other threads, a task that waits for a channel they
+# may hold waits for them to act instead of raising DeadlockError, so tasks
+# on different threads that wait for each other wait forever.
 #
 # The tasks a parallel task spawns run on its thread, and end with it.
 # When the main task finishes, the tasks on other threads are cancelled and
@@ -157,5 +162,6 @@ function close<T>(channel: Channel<T>)
 # are ready, the choice goes round, starting after the last one this task
 # chose.
 function select<T>(channels: Array<Channel<T>>, update handler: function(own T, integer))
-    position = channel_select(channels)
-    handler(channel_receive(channels[position]), position)
+    position = 0
+    message = channel_select(channels, position)
+    handler(message, position)

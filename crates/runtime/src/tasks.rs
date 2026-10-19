@@ -1,7 +1,7 @@
 //! Tasks and channels of compiled programs.
 //!
 //! Each task is an operating-system fiber with a stack of its own, and the
-//! tasks take turns on the program's one thread. A task waits inside one of
+//! tasks of a thread take turns on it. A task waits inside one of
 //! the functions here, such as `sayon_channel_receive`: it records what it
 //! waits for and switches to the next task that can go on, round the tasks
 //! in order, and when it is switched back to it looks again. The rules are
@@ -11,7 +11,8 @@
 //! Each thread that runs Sayon code has a scheduler of its own: the main
 //! thread's, and those of tasks started on threads of their own (see
 //! `parallel`). No reference into a scheduler is held across a switch
-//! between fibers.
+//! between fibers. Channels can be shared by tasks of several threads, so
+//! their state is behind a lock.
 
 // The functions called by generated code rely on the same conventions as
 // those of `ffi`, where their contracts are described.
@@ -20,10 +21,12 @@
 use crate::ffi::{DropFn, SayonArray, SayonError, allocated, released, set_error};
 use crate::host::{CANCELLED_CODE, EXIT_CODE, exit_status};
 use crate::network::{self, IoWait};
-use std::cell::UnsafeCell;
+use std::cell::{RefCell, UnsafeCell};
 use std::collections::VecDeque;
 use std::ffi::{c_char, c_void};
 use std::io::Write;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 // ----- fibers of the operating system ---------------------------------------------------------
@@ -122,23 +125,117 @@ enum Outcome {
 /// A channel: its messages, each in a buffer of whole words so that it can
 /// be dropped in place, and the count of handles to it.
 pub struct ChannelBlock {
-    references: usize,
+    references: AtomicUsize,
     capacity: usize,
-    closed: bool,
     element_size: usize,
     drop: DropFn,
+    /// Set once a task on another thread may hold the channel: from then on
+    /// its changes wake the schedulers of the other threads, and waiting
+    /// for it is no deadlock while tasks run on them.
+    crossed: AtomicBool,
+    state: Mutex<ChannelState>,
+}
+
+struct ChannelState {
     queue: VecDeque<Vec<u64>>,
+    closed: bool,
     sent: u64,
     received: u64,
 }
 
+/// What taking a message from a channel found.
+enum Taken {
+    Message,
+    Empty,
+    /// The channel is closed and has no messages left.
+    Closed,
+}
+
 impl ChannelBlock {
+    fn state(&self) -> MutexGuard<'_, ChannelState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn receivable(&self) -> bool {
-        !self.queue.is_empty() || self.closed
+        let state = self.state();
+        !state.queue.is_empty() || state.closed
     }
 
     fn has_room(&self) -> bool {
-        self.closed || self.queue.len() < self.capacity.max(1)
+        let state = self.state();
+        state.closed || state.queue.len() < self.capacity.max(1)
+    }
+
+    fn crossed(&self) -> bool {
+        self.crossed.load(Ordering::Acquire)
+    }
+
+    /// Wakes the schedulers of other threads, when a task there may wait
+    /// for this channel.
+    fn changed(&self) {
+        if self.crossed() {
+            network::wake();
+        }
+    }
+
+    /// Moves the next message into `out`, if there is one.
+    unsafe fn take(&self, out: *mut u8) -> Taken {
+        let mut state = self.state();
+        match state.queue.pop_front() {
+            Some(buffer) => {
+                state.received += 1;
+                drop(state);
+                // SAFETY: `out` has room for a message.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        buffer.as_ptr() as *const u8,
+                        out,
+                        self.element_size,
+                    );
+                }
+                self.changed();
+                Taken::Message
+            }
+            None if state.closed => Taken::Closed,
+            None => Taken::Empty,
+        }
+    }
+}
+
+thread_local! {
+    /// The channels made on this thread that no task on another thread can
+    /// hold yet.
+    static LOCAL_CHANNELS: RefCell<Vec<*mut ChannelBlock>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Counts every channel of this thread as one that tasks on other threads
+/// may hold. A channel handle can leave its thread only with a value that
+/// does: what a task on another thread captures or returns, the value of a
+/// mutex, or a message on a channel that crossed already. The runtime does
+/// not see inside those values, so each of them crosses all of the
+/// thread's channels.
+pub(crate) fn cross_channels() {
+    network::prepare_waking();
+    let _ = LOCAL_CHANNELS.try_with(|local| {
+        for channel in local.borrow_mut().drain(..) {
+            // SAFETY: a channel is in the list while it lives.
+            unsafe { (*channel).crossed.store(true, Ordering::Release) };
+        }
+    });
+}
+
+/// Whether a wait could end through a task on another thread: one waits
+/// for a channel that crossed, and tasks run on other threads.
+fn waits_elsewhere(wait: &Wait) -> bool {
+    // SAFETY: what a fiber waits for is kept alive while it waits.
+    unsafe {
+        match wait {
+            Wait::Receive(channel) | Wait::Send(channel) | Wait::Rendezvous(channel, _) => {
+                (**channel).crossed()
+            }
+            Wait::Select(channels) => channels.iter().any(|channel| (**channel).crossed()),
+            _ => false,
+        }
     }
 }
 
@@ -164,7 +261,7 @@ impl Wait {
                 Wait::None => false,
                 Wait::Receive(channel) => (**channel).receivable(),
                 Wait::Send(channel) => (**channel).has_room(),
-                Wait::Rendezvous(channel, number) => (**channel).received >= *number,
+                Wait::Rendezvous(channel, number) => (**channel).state().received >= *number,
                 Wait::Join(task) => !matches!((**task).outcome, Outcome::Running),
                 Wait::Select(channels) => channels.iter().any(|c| (**c).receivable()),
                 Wait::Sleep(until) => now >= *until,
@@ -309,7 +406,9 @@ fn next_fiber() -> Option<usize> {
         let waiting = scheduler().fibers.iter().filter(|fiber| !fiber.done);
         let mut wake: Option<Instant> = None;
         let mut sockets = Vec::new();
+        let mut elsewhere = false;
         for fiber in waiting {
+            elsewhere |= waits_elsewhere(&fiber.wait);
             let until = match &fiber.wait {
                 Wait::Sleep(until) => Some(*until),
                 Wait::Io(wait, deadline) => {
@@ -326,6 +425,10 @@ fn next_fiber() -> Option<usize> {
         let timeout = wake.map(|w| w.saturating_duration_since(now));
         if !sockets.is_empty() {
             network::wait_any(&sockets, timeout);
+        } else if elsewhere && crate::parallel::others_run() {
+            // A task on another thread can let one go on, and wakes this
+            // thread when it may have.
+            network::wait_any(&[], timeout);
         } else if network::has_waker() {
             // Another thread can end the wait early, to cancel a task.
             network::wait_any(&[], Some(timeout?));
@@ -806,16 +909,21 @@ pub unsafe extern "C" fn sayon_channel_new(
             );
         }
         allocated();
-        *out = Box::into_raw(Box::new(ChannelBlock {
-            references: 1,
+        let channel = Box::into_raw(Box::new(ChannelBlock {
+            references: AtomicUsize::new(1),
             capacity: capacity as usize,
-            closed: false,
             element_size: element_size as usize,
             drop,
-            queue: VecDeque::new(),
-            sent: 0,
-            received: 0,
+            crossed: AtomicBool::new(false),
+            state: Mutex::new(ChannelState {
+                queue: VecDeque::new(),
+                closed: false,
+                sent: 0,
+                received: 0,
+            }),
         }));
+        LOCAL_CHANNELS.with(|local| local.borrow_mut().push(channel));
+        *out = channel;
     }
     0
 }
@@ -827,7 +935,7 @@ pub unsafe extern "C" fn sayon_channel_clone(
 ) {
     // SAFETY: the source holds a live channel.
     unsafe {
-        (**src).references += 1;
+        (**src).references.fetch_add(1, Ordering::Relaxed);
         *dst = *src;
     }
 }
@@ -842,13 +950,17 @@ pub unsafe extern "C" fn sayon_channel_release(slot: *mut *mut ChannelBlock) {
             return;
         }
         *slot = std::ptr::null_mut();
-        (*channel).references -= 1;
-        if (*channel).references > 0 {
+        if (*channel).references.fetch_sub(1, Ordering::AcqRel) != 1 {
             return;
         }
-        let channel = Box::from_raw(channel);
+        // A channel no other thread can hold is in this thread's list.
+        if !(*channel).crossed() {
+            let _ = LOCAL_CHANNELS.try_with(|local| local.borrow_mut().retain(|c| *c != channel));
+        }
+        let mut channel = Box::from_raw(channel);
         if let Some(drop) = channel.drop {
-            for mut message in channel.queue {
+            let state = channel.state.get_mut().unwrap_or_else(|e| e.into_inner());
+            for mut message in state.queue.drain(..) {
                 drop(message.as_mut_ptr() as *mut u8);
             }
         }
@@ -869,15 +981,22 @@ pub unsafe extern "C" fn sayon_channel_send(
 ) -> i32 {
     // SAFETY: the slot holds a live channel; the message has its size.
     unsafe {
-        let channel = *slot;
-        loop {
-            if (*channel).closed {
+        let channel = &**slot;
+        let size = channel.element_size;
+        // What the message holds may go to another thread with it.
+        if channel.crossed() {
+            cross_channels();
+        }
+        let number = loop {
+            let mut state = channel.state();
+            if state.closed {
+                drop(state);
                 // The message is destroyed, unless the sender keeps it.
                 if !keep {
-                    if let Some(drop) = (*channel).drop {
+                    if let Some(drop) = channel.drop {
                         drop(message);
                     }
-                    std::ptr::write_bytes(message, 0, (*channel).element_size);
+                    std::ptr::write_bytes(message, 0, size);
                 }
                 return set_error(
                     err,
@@ -886,27 +1005,24 @@ pub unsafe extern "C" fn sayon_channel_send(
                     location,
                 );
             }
-            if (*channel).has_room() {
-                break;
+            if state.queue.len() < channel.capacity.max(1) {
+                let mut buffer = vec![0u64; size.div_ceil(8).max(1)];
+                std::ptr::copy_nonoverlapping(message, buffer.as_mut_ptr() as *mut u8, size);
+                std::ptr::write_bytes(message, 0, size);
+                state.queue.push_back(buffer);
+                state.sent += 1;
+                break state.sent;
             }
-            if let Err(why) = wait(Wait::Send(channel)) {
+            drop(state);
+            if let Err(why) = wait(Wait::Send(*slot)) {
                 return interrupted(err, why, location);
             }
-        }
-        let size = (*channel).element_size;
-        let mut buffer = vec![0u64; size.div_ceil(8).max(1)];
-        std::ptr::copy_nonoverlapping(message, buffer.as_mut_ptr() as *mut u8, size);
-        std::ptr::write_bytes(message, 0, size);
-        (*channel).queue.push_back(buffer);
-        (*channel).sent += 1;
-        let number = (*channel).sent;
+        };
+        channel.changed();
         // Other tasks receive while this one waits.
-        if (*channel).capacity == 0 {
-            loop {
-                if (*channel).received >= number {
-                    break;
-                }
-                if let Err(why) = wait(Wait::Rendezvous(channel, number)) {
+        if channel.capacity == 0 {
+            while channel.state().received < number {
+                if let Err(why) = wait(Wait::Rendezvous(*slot, number)) {
                     return interrupted(err, why, location);
                 }
             }
@@ -925,26 +1041,21 @@ pub unsafe extern "C" fn sayon_channel_receive(
 ) -> i32 {
     // SAFETY: the slot holds a live channel; `out` has room for a message.
     unsafe {
-        let channel = *slot;
+        let channel = &**slot;
         loop {
-            if let Some(buffer) = (*channel).queue.pop_front() {
-                (*channel).received += 1;
-                std::ptr::copy_nonoverlapping(
-                    buffer.as_ptr() as *const u8,
-                    out,
-                    (*channel).element_size,
-                );
-                return 0;
+            match channel.take(out) {
+                Taken::Message => return 0,
+                Taken::Closed => {
+                    return set_error(
+                        err,
+                        "ChannelClosedError",
+                        "the channel is closed and has no more messages".to_string(),
+                        location,
+                    );
+                }
+                Taken::Empty => {}
             }
-            if (*channel).closed {
-                return set_error(
-                    err,
-                    "ChannelClosedError",
-                    "the channel is closed and has no more messages".to_string(),
-                    location,
-                );
-            }
-            if let Err(why) = wait(Wait::Receive(channel)) {
+            if let Err(why) = wait(Wait::Receive(*slot)) {
                 return interrupted(err, why, location);
             }
         }
@@ -954,17 +1065,23 @@ pub unsafe extern "C" fn sayon_channel_receive(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sayon_channel_close(slot: *const *mut ChannelBlock) {
     // SAFETY: the slot holds a live channel.
-    unsafe { (**slot).closed = true }
+    unsafe {
+        let channel = &**slot;
+        channel.state().closed = true;
+        channel.changed();
+    }
 }
 
-/// The position, in an array of channel handles, of one that has a message
-/// or is closed, waiting until one is; the search starts after the one this
-/// task chose last.
+/// Receives from a channel of an array of channel handles that has a
+/// message or is closed, waiting until one is, and stores its position;
+/// the search starts after the one this task chose last. The message goes
+/// to `out`; a closed, empty channel fails.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sayon_channel_select(
     err: *mut *mut SayonError,
     channels: *const SayonArray,
-    out: *mut i64,
+    position_out: *mut i64,
+    out: *mut u8,
     location: *const c_char,
 ) -> i32 {
     // SAFETY: an array of channel handles.
@@ -987,11 +1104,23 @@ pub unsafe extern "C" fn sayon_channel_select(
             let start = scheduler().fibers[current].cursor;
             for offset in 0..count {
                 let position = (start + offset) % count;
-                if (*handles[position]).receivable() {
-                    scheduler().fibers[current].cursor = position + 1;
-                    *out = position as i64;
-                    return 0;
+                // Taking the message is the choice, so that a task on
+                // another thread cannot take it in between.
+                let taken = (*handles[position]).take(out);
+                if matches!(taken, Taken::Empty) {
+                    continue;
                 }
+                scheduler().fibers[current].cursor = position + 1;
+                *position_out = position as i64;
+                if matches!(taken, Taken::Closed) {
+                    return set_error(
+                        err,
+                        "ChannelClosedError",
+                        "the channel is closed and has no more messages".to_string(),
+                        location,
+                    );
+                }
+                return 0;
             }
             if let Err(why) = wait(Wait::Select(handles.clone())) {
                 return interrupted(err, why, location);

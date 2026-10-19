@@ -42,7 +42,7 @@ impl Sent {
 }
 
 /// A copy of a value with no part counted with the original.
-fn isolate(value: &Value) -> Value {
+pub(super) fn isolate(value: &Value) -> Value {
     match value {
         Value::Int(_)
         | Value::F64(_)
@@ -54,6 +54,10 @@ fn isolate(value: &Value) -> Value {
         | Value::Error(_)
         | Value::Stream(_)
         | Value::Mutex(_) => value.clone(),
+        Value::Channel(channel) => {
+            cross(channel);
+            value.clone()
+        }
         Value::Str(text) => Value::str(text),
         Value::CString(bytes) => Value::CString(bytes.to_vec().into()),
         Value::Array(items) => Value::Array(items.iter().map(isolate).collect()),
@@ -76,10 +80,54 @@ fn isolate(value: &Value) -> Value {
         | Value::Shared(_)
         | Value::Weak(_)
         | Value::Task(_)
-        | Value::Channel(_)
         | Value::ParallelTask(_) => {
             panic!("the checker lets only values that can be sent cross threads, not {value:?}")
         }
+    }
+}
+
+/// Lets a channel's handles go to other threads: from now on its messages
+/// are copied as they are sent, and the ones waiting in it are copied now,
+/// on the one thread that can reach it so far.
+fn cross(channel: &Channel) {
+    if channel.0.crossed.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    // Copied outside the lock, since a message may hold the channel itself.
+    let waiting = std::mem::take(&mut channel.state().queue);
+    let copied: std::collections::VecDeque<Value> = waiting.iter().map(isolate).collect();
+    channel.state().queue = copied;
+}
+
+impl<'m> Machine<'m> {
+    /// Records a channel made on this thread, which no task on another
+    /// thread can hold yet.
+    pub(super) fn local_channel(&mut self, channel: &Channel) {
+        if self.local_channels.len() >= self.prune_channels_at {
+            self.local_channels.retain(|weak| weak.strong_count() > 0);
+            self.prune_channels_at = (self.local_channels.len() * 2).max(64);
+        }
+        self.local_channels.push(Arc::downgrade(&channel.0));
+    }
+
+    /// Counts every channel of this thread as one that tasks on other
+    /// threads may hold. A channel handle can leave its thread only with a
+    /// value that does: what a task on another thread captures or returns,
+    /// the value of a mutex, or a message on a channel that crossed
+    /// already. As in compiled programs, which do not see inside those
+    /// values, each of them crosses all of the thread's channels.
+    pub(super) fn cross_channels(&mut self) {
+        network::prepare_waking();
+        for weak in std::mem::take(&mut self.local_channels) {
+            if let Some(cell) = weak.upgrade() {
+                cross(&Channel(cell));
+            }
+        }
+    }
+
+    /// Whether tasks run on threads other than this one.
+    pub(super) fn others_run(&self) -> bool {
+        self.thread_task.is_some() || self.program.running.load(Ordering::Acquire) > 0
     }
 }
 
@@ -150,6 +198,7 @@ impl<'m> Machine<'m> {
     /// Puts a mutex's value back and frees its lock.
     pub(super) fn mutex_put(&mut self, mutex: &Operand, value: &Operand) {
         let value = self.take(value);
+        self.cross_channels();
         let source = self.source(mutex);
         let cell = self.with_source(&source, |value| match value {
             Value::Mutex(cell) => cell.clone(),
@@ -222,6 +271,8 @@ pub struct Program {
     exiting: AtomicBool,
     /// Failures of tasks nothing joined, from the threads' own tasks.
     failures: Lock<Vec<ErrorValue>>,
+    /// The parallel tasks that have not finished.
+    pub(super) running: std::sync::atomic::AtomicUsize,
 }
 
 impl Program {
@@ -272,6 +323,8 @@ impl<'m> Machine<'m> {
             .iter()
             .map(|global| global.as_ref().map(Sent::new))
             .collect();
+        // The channels of this thread may go with what the task captured.
+        self.cross_channels();
         let state = Arc::new(ParallelState::default());
         let shared = state.clone();
         let module = self.module;
@@ -284,9 +337,14 @@ impl<'m> Machine<'m> {
             let mut machine = Machine::for_thread(module, sources, out, program, shared.clone());
             machine.globals = globals.into_iter().map(|g| g.map(Sent::take)).collect();
             let result = machine.run_thread(code, environment.take());
+            // The result may hold channels made on this thread.
+            machine.cross_channels();
             *lock(&shared.result) = Some(result.map(|value| Sent::new(&value)));
+            machine.program.running.fetch_sub(1, Ordering::AcqRel);
             network::wake();
         };
+        // Counted before the thread can finish.
+        self.program.running.fetch_add(1, Ordering::AcqRel);
         // SAFETY: the thread borrows the module, the sources, and the
         // output of this machine's run, and every thread of the program is
         // joined before that run returns (see `JoinThreads`).
@@ -301,11 +359,14 @@ impl<'m> Machine<'m> {
                 let handle = ParallelHandle(Arc::new(HandleState(state)));
                 Progress::Done(Value::ParallelTask(handle))
             }
-            Err(error) => Progress::Failed(self.error(
-                "ThreadError",
-                format!("no thread could be started for the task: {error}"),
-                span,
-            )),
+            Err(error) => {
+                self.program.running.fetch_sub(1, Ordering::AcqRel);
+                Progress::Failed(self.error(
+                    "ThreadError",
+                    format!("no thread could be started for the task: {error}"),
+                    span,
+                ))
+            }
         }
     }
 

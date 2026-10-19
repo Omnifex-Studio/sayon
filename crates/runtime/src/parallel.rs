@@ -92,6 +92,8 @@ static EXIT: Mutex<Option<i32>> = Mutex::new(None);
 static EXITING: AtomicBool = AtomicBool::new(false);
 /// Whether a task failed without being joined, on another thread.
 static FAILED: AtomicBool = AtomicBool::new(false);
+/// The parallel tasks that have not finished.
+static RUNNING: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     /// On a parallel task's thread: the task.
@@ -115,6 +117,11 @@ fn exit_with(status: i32) {
     lock(&EXIT).get_or_insert(status);
     EXITING.store(true, Ordering::Relaxed);
     network::wake();
+}
+
+/// Whether tasks run on threads other than this one.
+pub(crate) fn others_run() -> bool {
+    THREAD_TASK.with(|task| task.borrow().is_some()) || RUNNING.load(Ordering::Acquire) > 0
 }
 
 /// Whether the parallel task this thread runs is to stop.
@@ -151,7 +158,10 @@ pub unsafe extern "C" fn sayon_task_spawn_parallel(
             result_drop,
         });
         let worker = shared.clone();
-        network::prepare_waking();
+        // The channels of this thread may go with what the task captured.
+        crate::tasks::cross_channels();
+        // Counted before the thread can finish.
+        RUNNING.fetch_add(1, Ordering::AcqRel);
         let started = std::thread::Builder::new()
             .name("task".to_string())
             .spawn(move || run_thread(worker, code, environment));
@@ -163,6 +173,7 @@ pub unsafe extern "C" fn sayon_task_spawn_parallel(
                 0
             }
             Err(error) => {
+                RUNNING.fetch_sub(1, Ordering::AcqRel);
                 crate::tasks::destroy_function_environment(environment as *mut u8);
                 set_error(
                     err,
@@ -197,6 +208,8 @@ fn run_thread(shared: Arc<Shared>, code: usize, environment: usize) {
     if crate::tasks::finish_local_tasks(status != 0) > 0 {
         FAILED.store(true, Ordering::Relaxed);
     }
+    // The result may hold channels made here.
+    crate::tasks::cross_channels();
     if let Some(status) = crate::tasks::exit_requested() {
         exit_with(status);
     }
@@ -212,6 +225,7 @@ fn run_thread(shared: Arc<Shared>, code: usize, environment: usize) {
         Err(SentError(error))
     };
     *lock(&shared.outcome) = Some(outcome);
+    RUNNING.fetch_sub(1, Ordering::AcqRel);
     network::wake();
 }
 
@@ -368,6 +382,8 @@ pub unsafe extern "C" fn sayon_mutex_new(
 ) {
     let size = size.max(0) as usize;
     let mut words = vec![0u64; size.div_ceil(8).max(1)];
+    // Tasks on other threads may take the value out.
+    crate::tasks::cross_channels();
     // SAFETY: `value` holds `size` bytes of the value.
     unsafe {
         std::ptr::copy_nonoverlapping(value, words.as_mut_ptr() as *mut u8, size);
@@ -422,6 +438,7 @@ pub unsafe extern "C" fn sayon_mutex_take(
 /// Moves a value back into a mutex and frees its lock.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sayon_mutex_put(slot: *const *mut MutexBlock, value: *mut u8) {
+    crate::tasks::cross_channels();
     // SAFETY: the slot holds a live mutex whose lock the running task holds.
     unsafe {
         let mutex = &**slot;
