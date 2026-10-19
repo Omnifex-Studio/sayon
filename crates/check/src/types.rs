@@ -571,6 +571,52 @@ pub fn win64_in_register(size: u64) -> bool {
     matches!(size, 1 | 2 | 4 | 8)
 }
 
+/// The kind of register an eightbyte of a structure goes in, under the
+/// System V convention of x86-64 (Linux, macOS).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Eightbyte {
+    /// A general register: the eightbyte holds an integer or a pointer.
+    Integer,
+    /// A vector register: it holds only floats.
+    Sse,
+}
+
+/// How the System V convention of x86-64 passes and returns a structure:
+/// each of its eightbytes in a register of the kind it needs, or, for one
+/// of more than 16 bytes, in memory (`None`).
+pub fn sysv_eightbytes(types: &[TypeDef], ty: &Type) -> Option<Vec<Eightbyte>> {
+    fn visit(types: &[TypeDef], ty: &Type, offset: u64, classes: &mut [Option<Eightbyte>]) {
+        let class = match ty {
+            Type::Named(named) => {
+                for (field_offset, field) in c_layout(types, named).fields {
+                    visit(types, &field, offset + field_offset, classes);
+                }
+                return;
+            }
+            Type::Float(_) => Eightbyte::Sse,
+            _ => Eightbyte::Integer,
+        };
+        let slot = &mut classes[(offset / 8) as usize];
+        // An integer anywhere in an eightbyte makes it an integer one.
+        *slot = match (*slot, class) {
+            (Some(Eightbyte::Integer), _) | (_, Eightbyte::Integer) => Some(Eightbyte::Integer),
+            _ => Some(Eightbyte::Sse),
+        };
+    }
+    let (size, _) = c_size_align(types, ty);
+    if size > 16 {
+        return None;
+    }
+    let mut classes = vec![None; size.div_ceil(8) as usize];
+    visit(types, ty, 0, &mut classes);
+    Some(
+        classes
+            .into_iter()
+            .map(|class| class.unwrap_or(Eightbyte::Integer))
+            .collect(),
+    )
+}
+
 /// The size and alignment C gives a value of a type C functions take: a
 /// number, a pointer, or a `foreign type` structure. Pointers are 64 bits,
 /// as on every target so far.

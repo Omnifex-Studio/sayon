@@ -4,6 +4,7 @@ memory = import("standard/memory.sayon")
 foreign type Quotient = [quotient: c_int, remainder: c_int]
 foreign type LongQuotient = [quotient: integer64, remainder: integer64]
 foreign type Complex = [real: float, imaginary: float]
+foreign type SmallComplex = [real: float32, imaginary: float32]
 foreign type Point = [x: integer32, y: integer32]
 foreign type Rectangle = [left: integer32, top: integer32, right: integer32, bottom: integer32]
 foreign type Sample = [flag: integer8, value: float, corner: Point]
@@ -11,25 +12,23 @@ foreign type Sample = [flag: integer8, value: float, corner: Point]
 foreign "c"
     function div(numerator: c_int, denominator: c_int) -> Quotient
     function lldiv(numerator: integer64, denominator: integer64) -> LongQuotient
-    function _cabs(value: Complex) -> float
+    function cabs(value: Complex) -> float
+    function cabsf(value: SmallComplex) -> float32
     function malloc(size: c_size) -> pointer
     function free(address: pointer)
-
-foreign "user32"
-    function PtInRect(rectangle: pointer, point: Point) -> c_int
 
 # Given back in a register, and through an address C writes to.
 unsafe
     print(div(17, 5))
     print(lldiv(-9000000000, 7))
 
-# Taken by the address of a copy, and in a register.
-print(unsafe _cabs(Complex(real = 3.0, imaginary = 4.0)))
+# Taken by value: one of 16 bytes, and one of 8.
+print(unsafe cabs(Complex(real = 3.0, imaginary = 4.0)))
+print(unsafe cabsf(SmallComplex(real = 6.0, imaginary = 8.0)))
 unsafe
     area = malloc(c_size(memory.size<Rectangle>()))
     memory.write(area, Rectangle(left = 0, top = 0, right = 10, bottom = 5))
     print(memory.read<Rectangle>(area))
-    print(PtInRect(area, Point(x = 3, y = 4)), PtInRect(area, Point(x = 30, y = 4)))
     free(area)
 
 # Fields lie where C puts them, after the padding their alignment needs.

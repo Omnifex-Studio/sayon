@@ -977,7 +977,8 @@ mod platform {
     const WRITE: i16 = 0x0004;
 
     unsafe extern "C" {
-        fn poll(fds: *mut Entry, count: std::ffi::c_ulong, timeout: i32) -> i32;
+        #[link_name = "poll"]
+        fn system_poll(fds: *mut Entry, count: std::ffi::c_ulong, timeout: i32) -> i32;
     }
 
     pub fn raw(socket: &impl AsRawFd) -> u64 {
@@ -1002,7 +1003,7 @@ mod platform {
     pub fn poll(fds: &mut [Entry], timeout: Option<Duration>) -> i32 {
         // SAFETY: the entries name open sockets.
         unsafe {
-            poll(
+            system_poll(
                 fds.as_mut_ptr(),
                 fds.len() as std::ffi::c_ulong,
                 super::milliseconds(timeout),

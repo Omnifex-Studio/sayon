@@ -1,6 +1,7 @@
 //! TLS for connections, from the operating system: SChannel on Windows,
-//! whose certificate store decides which servers are trusted. The other
-//! systems' libraries are still to come.
+//! and OpenSSL on Linux and the other Unix systems that have it, loaded
+//! when first needed. The system's certificate store decides which servers
+//! are trusted.
 //!
 //! A session never touches the socket. The connection gives it what has
 //! arrived, and sends what it puts out, so that the handshake and every
@@ -74,7 +75,7 @@ impl Session {
                     Step::NeedMore => return Ok(Read::More),
                 }
             }
-            match self.inner.decrypt(&mut self.incoming, plain)? {
+            match self.inner.decrypt(&mut self.incoming, plain, output)? {
                 platform::Decrypted::More => return Ok(Read::More),
                 platform::Decrypted::Closed => return Ok(Read::Closed),
                 platform::Decrypted::HandshakeAgain => self.handshaking_again = true,
@@ -478,6 +479,7 @@ mod platform {
             &mut self,
             incoming: &mut Vec<u8>,
             plain: &mut Vec<u8>,
+            _output: &mut Vec<u8>,
         ) -> Result<Decrypted, HostError> {
             let sspi = sspi()?;
             loop {
@@ -727,7 +729,412 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(unix)]
+mod platform {
+    use super::Step;
+    use crate::host::HostError;
+    use std::ffi::{CStr, CString, c_char, c_int, c_long, c_void};
+    use std::sync::OnceLock;
+
+    type Pointer = *mut c_void;
+
+    /// The functions of OpenSSL's interface, from libssl and the libcrypto
+    /// it brings.
+    struct OpenSsl {
+        method: unsafe extern "C" fn() -> Pointer,
+        context_new: unsafe extern "C" fn(Pointer) -> Pointer,
+        context_free: unsafe extern "C" fn(Pointer),
+        default_paths: unsafe extern "C" fn(Pointer) -> c_int,
+        set_verify: unsafe extern "C" fn(Pointer, c_int, Pointer),
+        new: unsafe extern "C" fn(Pointer) -> Pointer,
+        free: unsafe extern "C" fn(Pointer),
+        set_host: unsafe extern "C" fn(Pointer, *const c_char) -> c_int,
+        control: unsafe extern "C" fn(Pointer, c_int, c_long, Pointer) -> c_long,
+        parameters: unsafe extern "C" fn(Pointer) -> Pointer,
+        set_ip: unsafe extern "C" fn(Pointer, *const c_char) -> c_int,
+        set_bio: unsafe extern "C" fn(Pointer, Pointer, Pointer),
+        connect_state: unsafe extern "C" fn(Pointer),
+        handshake: unsafe extern "C" fn(Pointer) -> c_int,
+        error: unsafe extern "C" fn(Pointer, c_int) -> c_int,
+        read: unsafe extern "C" fn(Pointer, *mut c_void, c_int) -> c_int,
+        write: unsafe extern "C" fn(Pointer, *const c_void, c_int) -> c_int,
+        shutdown: unsafe extern "C" fn(Pointer) -> c_int,
+        verify_result: unsafe extern "C" fn(Pointer) -> c_long,
+        bio_memory: unsafe extern "C" fn() -> Pointer,
+        bio_new: unsafe extern "C" fn(Pointer) -> Pointer,
+        bio_read: unsafe extern "C" fn(Pointer, *mut c_void, c_int) -> c_int,
+        bio_write: unsafe extern "C" fn(Pointer, *const c_void, c_int) -> c_int,
+        next_error: unsafe extern "C" fn() -> std::ffi::c_ulong,
+        error_text: unsafe extern "C" fn(std::ffi::c_ulong, *mut c_char, usize),
+        clear_errors: unsafe extern "C" fn(),
+    }
+
+    // SAFETY: the table holds addresses of functions, which any thread may
+    // call.
+    unsafe impl Send for OpenSsl {}
+    unsafe impl Sync for OpenSsl {}
+
+    const RTLD_NOW: c_int = 2;
+    const SSL_VERIFY_PEER: c_int = 1;
+    const SSL_CTRL_SET_TLSEXT_HOSTNAME: c_int = 55;
+    const TLSEXT_NAMETYPE_HOST_NAME: c_long = 0;
+    const SSL_ERROR_WANT_READ: c_int = 2;
+    const SSL_ERROR_WANT_WRITE: c_int = 3;
+    const SSL_ERROR_ZERO_RETURN: c_int = 6;
+
+    unsafe extern "C" {
+        fn dlopen(file: *const c_char, mode: c_int) -> Pointer;
+        fn dlsym(handle: Pointer, name: *const c_char) -> Pointer;
+    }
+
+    // Each symbol becomes the function type of the field it fills, which
+    // the table's declaration names.
+    #[allow(clippy::missing_transmute_annotations)]
+    fn openssl() -> Result<&'static OpenSsl, HostError> {
+        static OPENSSL: OnceLock<Option<OpenSsl>> = OnceLock::new();
+        OPENSSL
+            .get_or_init(|| {
+                // SAFETY: NUL-terminated names; each symbol, when found, has
+                // the type of OpenSSL's function of that name.
+                unsafe {
+                    let library = [
+                        "libssl.so.3",
+                        "libssl.so.1.1",
+                        "libssl.3.dylib",
+                        "libssl.so",
+                    ]
+                    .iter()
+                    .find_map(|name| {
+                        let name = CString::new(*name).ok()?;
+                        let handle = dlopen(name.as_ptr(), RTLD_NOW);
+                        (!handle.is_null()).then_some(handle)
+                    })?;
+                    let symbol = |name: &str| {
+                        let name = CString::new(name).ok()?;
+                        let address = dlsym(library, name.as_ptr());
+                        (!address.is_null()).then_some(address)
+                    };
+                    macro_rules! function {
+                        ($name:literal) => {
+                            std::mem::transmute::<Pointer, _>(symbol($name)?)
+                        };
+                    }
+                    Some(OpenSsl {
+                        method: function!("TLS_client_method"),
+                        context_new: function!("SSL_CTX_new"),
+                        context_free: function!("SSL_CTX_free"),
+                        default_paths: function!("SSL_CTX_set_default_verify_paths"),
+                        set_verify: function!("SSL_CTX_set_verify"),
+                        new: function!("SSL_new"),
+                        free: function!("SSL_free"),
+                        set_host: function!("SSL_set1_host"),
+                        control: function!("SSL_ctrl"),
+                        parameters: function!("SSL_get0_param"),
+                        set_ip: function!("X509_VERIFY_PARAM_set1_ip_asc"),
+                        set_bio: function!("SSL_set_bio"),
+                        connect_state: function!("SSL_set_connect_state"),
+                        handshake: function!("SSL_do_handshake"),
+                        error: function!("SSL_get_error"),
+                        read: function!("SSL_read"),
+                        write: function!("SSL_write"),
+                        shutdown: function!("SSL_shutdown"),
+                        verify_result: function!("SSL_get_verify_result"),
+                        bio_memory: function!("BIO_s_mem"),
+                        bio_new: function!("BIO_new"),
+                        bio_read: function!("BIO_read"),
+                        bio_write: function!("BIO_write"),
+                        next_error: function!("ERR_get_error"),
+                        error_text: function!("ERR_error_string_n"),
+                        clear_errors: function!("ERR_clear_error"),
+                    })
+                }
+            })
+            .as_ref()
+            .ok_or_else(|| {
+                (
+                    "TlsError",
+                    "TLS is not available: OpenSSL's libssl could not be loaded".to_string(),
+                )
+            })
+    }
+
+    pub(super) enum Decrypted {
+        More,
+        Closed,
+        /// OpenSSL takes a new handshake in its stride, inside its reads.
+        #[allow(dead_code)]
+        HandshakeAgain,
+    }
+
+    /// An OpenSSL session over two memory buffers: what arrived goes into
+    /// one, and what to send comes out of the other.
+    pub(super) struct Session {
+        context: Pointer,
+        ssl: Pointer,
+        incoming: Pointer,
+        outgoing: Pointer,
+        name: String,
+    }
+
+    // SAFETY: a session is used by one thread at a time, inside its
+    // connection's entry of the stream table.
+    unsafe impl Send for Session {}
+
+    impl Session {
+        pub(super) fn client(server: &str) -> Result<Session, HostError> {
+            let ssl_lib = openssl()?;
+            let name = CString::new(server)
+                .map_err(|_| ("TlsError", format!("{server} is not a server's name")))?;
+            // SAFETY: OpenSSL's documented calls, on objects made here.
+            unsafe {
+                (ssl_lib.clear_errors)();
+                let context = (ssl_lib.context_new)((ssl_lib.method)());
+                if context.is_null() {
+                    return Err(failure(ssl_lib, server, "TLS could not start"));
+                }
+                (ssl_lib.default_paths)(context);
+                (ssl_lib.set_verify)(context, SSL_VERIFY_PEER, std::ptr::null_mut());
+                let ssl = (ssl_lib.new)(context);
+                if ssl.is_null() {
+                    (ssl_lib.context_free)(context);
+                    return Err(failure(ssl_lib, server, "TLS could not start"));
+                }
+                // The name the certificate must be for; a numeric address
+                // is checked as one, and is not sent as a name.
+                if server.parse::<std::net::IpAddr>().is_ok() {
+                    (ssl_lib.set_ip)((ssl_lib.parameters)(ssl), name.as_ptr());
+                } else {
+                    (ssl_lib.set_host)(ssl, name.as_ptr());
+                    (ssl_lib.control)(
+                        ssl,
+                        SSL_CTRL_SET_TLSEXT_HOSTNAME,
+                        TLSEXT_NAMETYPE_HOST_NAME,
+                        name.as_ptr() as Pointer,
+                    );
+                }
+                let incoming = (ssl_lib.bio_new)((ssl_lib.bio_memory)());
+                let outgoing = (ssl_lib.bio_new)((ssl_lib.bio_memory)());
+                (ssl_lib.set_bio)(ssl, incoming, outgoing);
+                (ssl_lib.connect_state)(ssl);
+                Ok(Session {
+                    context,
+                    ssl,
+                    incoming,
+                    outgoing,
+                    name: server.to_string(),
+                })
+            }
+        }
+
+        /// Gives OpenSSL what has arrived.
+        fn feed(&mut self, ssl_lib: &OpenSsl, incoming: &mut Vec<u8>) {
+            let mut written = 0;
+            while written < incoming.len() {
+                let part = &incoming[written..];
+                // SAFETY: the bytes outlive the call.
+                let count = unsafe {
+                    (ssl_lib.bio_write)(self.incoming, part.as_ptr().cast(), part.len() as c_int)
+                };
+                if count <= 0 {
+                    break;
+                }
+                written += count as usize;
+            }
+            incoming.drain(..written);
+        }
+
+        /// Takes what OpenSSL has to send.
+        fn drain(&mut self, ssl_lib: &OpenSsl, output: &mut Vec<u8>) {
+            let mut buffer = [0u8; 16 * 1024];
+            loop {
+                // SAFETY: the buffer has room for what is asked.
+                let count = unsafe {
+                    (ssl_lib.bio_read)(
+                        self.outgoing,
+                        buffer.as_mut_ptr().cast(),
+                        buffer.len() as c_int,
+                    )
+                };
+                if count <= 0 {
+                    return;
+                }
+                output.extend_from_slice(&buffer[..count as usize]);
+            }
+        }
+
+        pub(super) fn handshake(
+            &mut self,
+            incoming: &mut Vec<u8>,
+            output: &mut Vec<u8>,
+        ) -> Result<Step, HostError> {
+            let ssl_lib = openssl()?;
+            self.feed(ssl_lib, incoming);
+            // SAFETY: the session's own object.
+            let result = unsafe { (ssl_lib.handshake)(self.ssl) };
+            self.drain(ssl_lib, output);
+            if result == 1 {
+                return Ok(Step::Done);
+            }
+            // SAFETY: as above.
+            match unsafe { (ssl_lib.error)(self.ssl, result) } {
+                SSL_ERROR_WANT_READ | SSL_ERROR_WANT_WRITE => Ok(Step::NeedMore),
+                _ => Err(self.handshake_failure(ssl_lib)),
+            }
+        }
+
+        pub(super) fn decrypt(
+            &mut self,
+            incoming: &mut Vec<u8>,
+            plain: &mut Vec<u8>,
+            output: &mut Vec<u8>,
+        ) -> Result<Decrypted, HostError> {
+            let ssl_lib = openssl()?;
+            self.feed(ssl_lib, incoming);
+            let mut buffer = [0u8; 16 * 1024];
+            loop {
+                // SAFETY: the buffer has room for what is asked.
+                let count = unsafe {
+                    (ssl_lib.read)(self.ssl, buffer.as_mut_ptr().cast(), buffer.len() as c_int)
+                };
+                if count > 0 {
+                    plain.extend_from_slice(&buffer[..count as usize]);
+                    continue;
+                }
+                // Reading can answer the other side, as TLS 1.3 does to a
+                // new key.
+                self.drain(ssl_lib, output);
+                // SAFETY: the session's own object.
+                return match unsafe { (ssl_lib.error)(self.ssl, count) } {
+                    SSL_ERROR_WANT_READ | SSL_ERROR_WANT_WRITE => Ok(Decrypted::More),
+                    SSL_ERROR_ZERO_RETURN => Ok(Decrypted::Closed),
+                    _ => Err(failure(
+                        ssl_lib,
+                        &self.name,
+                        "what came could not be decrypted",
+                    )),
+                };
+            }
+        }
+
+        pub(super) fn encrypt(
+            &mut self,
+            bytes: &[u8],
+            output: &mut Vec<u8>,
+        ) -> Result<(), HostError> {
+            let ssl_lib = openssl()?;
+            let mut written = 0;
+            while written < bytes.len() {
+                let part = &bytes[written..];
+                let length = part.len().min(1 << 30) as c_int;
+                // SAFETY: the bytes outlive the call; a memory buffer takes
+                // all of them.
+                let count = unsafe { (ssl_lib.write)(self.ssl, part.as_ptr().cast(), length) };
+                if count <= 0 {
+                    return Err(failure(
+                        ssl_lib,
+                        &self.name,
+                        "what was written could not be encrypted",
+                    ));
+                }
+                written += count as usize;
+                self.drain(ssl_lib, output);
+            }
+            Ok(())
+        }
+
+        pub(super) fn close(&mut self, output: &mut Vec<u8>) {
+            if let Ok(ssl_lib) = openssl() {
+                // SAFETY: the session's own object.
+                unsafe { (ssl_lib.shutdown)(self.ssl) };
+                self.drain(ssl_lib, output);
+            }
+        }
+
+        /// Why the handshake failed: the certificate, said as on Windows,
+        /// or the other side.
+        fn handshake_failure(&self, ssl_lib: &OpenSsl) -> HostError {
+            let name = &self.name;
+            // SAFETY: the session's own object.
+            let verified = unsafe { (ssl_lib.verify_result)(self.ssl) };
+            let message = match verified {
+                0 => {
+                    let reason = reason(ssl_lib);
+                    if reason.contains("wrong version number")
+                        || reason.contains("packet length too long")
+                        || reason.contains("record layer failure")
+                        || reason.contains("unexpected eof")
+                    {
+                        format!("{name} did not answer with TLS")
+                    } else if reason.contains("handshake failure")
+                        || reason.contains("unsupported protocol")
+                        || reason.contains("no protocols available")
+                    {
+                        format!("{name} and this computer have no version of TLS in common")
+                    } else {
+                        format!("TLS with {name} failed: {reason}")
+                    }
+                }
+                9 | 10 => format!("the certificate of {name} has expired, or is not valid yet"),
+                62 | 64 => format!("the certificate {name} gave is for another name"),
+                23 => format!("the certificate of {name} was revoked"),
+                2 | 18 | 19 | 20 | 21 | 27 => {
+                    format!(
+                        "the certificate of {name} is not from an authority this computer trusts"
+                    )
+                }
+                other => format!("the certificate of {name} could not be checked (error {other})"),
+            };
+            // SAFETY: clears this thread's queue of errors.
+            unsafe { (ssl_lib.clear_errors)() };
+            ("TlsError", message)
+        }
+    }
+
+    impl Drop for Session {
+        fn drop(&mut self) {
+            if let Ok(ssl_lib) = openssl() {
+                // SAFETY: objects of this session, freed once; freeing the
+                // session frees its buffers.
+                unsafe {
+                    (ssl_lib.free)(self.ssl);
+                    (ssl_lib.context_free)(self.context);
+                }
+            }
+        }
+    }
+
+    /// OpenSSL's reason for the last failure on this thread.
+    fn reason(ssl_lib: &OpenSsl) -> String {
+        let mut last = String::new();
+        loop {
+            // SAFETY: takes the oldest error of this thread's queue.
+            let code = unsafe { (ssl_lib.next_error)() };
+            if code == 0 {
+                return last;
+            }
+            let mut text = [0 as c_char; 256];
+            // SAFETY: the buffer's length bounds the text.
+            unsafe {
+                (ssl_lib.error_text)(code, text.as_mut_ptr(), text.len());
+                last = CStr::from_ptr(text.as_ptr()).to_string_lossy().into_owned();
+            }
+        }
+    }
+
+    fn failure(ssl_lib: &OpenSsl, name: &str, what: &str) -> HostError {
+        let reason = reason(ssl_lib);
+        if reason.is_empty() {
+            ("TlsError", format!("TLS with {name} failed: {what}"))
+        } else {
+            (
+                "TlsError",
+                format!("TLS with {name} failed: {what} ({reason})"),
+            )
+        }
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
 mod platform {
     use super::Step;
     use crate::host::HostError;
@@ -742,7 +1149,10 @@ mod platform {
 
     impl Session {
         pub(super) fn client(_server: &str) -> Result<Session, HostError> {
-            Err(("TlsError", "TLS is available on Windows so far".to_string()))
+            Err((
+                "TlsError",
+                "TLS is not available on this system yet".to_string(),
+            ))
         }
 
         pub(super) fn handshake(
@@ -757,6 +1167,7 @@ mod platform {
             &mut self,
             _incoming: &mut Vec<u8>,
             _plain: &mut Vec<u8>,
+            _output: &mut Vec<u8>,
         ) -> Result<Decrypted, HostError> {
             unreachable!("no session starts on this system")
         }

@@ -570,7 +570,7 @@ A host has no address the system can find, a port is already in use by another s
 
 ### TlsError
 
-TLS with a server failed. Most often the server's certificate is not one the system accepts: it has expired, it is for another name than the one connected to, or it does not come from an authority the system trusts; the message says which. TLS also fails when the other side does not answer in TLS, when the two sides share no version of it, and on systems that have no TLS for Sayon yet (so far, every system but Windows).
+TLS with a server failed. Most often the server's certificate is not one the system accepts: it has expired, it is for another name than the one connected to, or it does not come from an authority the system trusts; the message says which. TLS also fails when the other side does not answer in TLS, when the two sides share no version of it, and on systems where Sayon finds no TLS: one without OpenSSL's `libssl`, or one it does not support yet, such as macOS.
 
 ### TimeoutError
 
@@ -614,7 +614,7 @@ JSON did not fit the type `json.decode` or `json.from_json` was reading it into:
 
 ### ForeignError
 
-A C function could not be called: the library its `foreign` block names could not be loaded, or it has no function of that name. Compiled programs report this when they are linked instead. The interpreter calls C functions on Windows x64 so far; elsewhere, build the program with `sayon build`.
+A C function could not be called: the library its `foreign` block names could not be loaded, or it has no function of that name. Compiled programs report this when they are linked instead. The interpreter calls C functions on Windows x64 and Linux x86-64 so far; elsewhere, build the program with `sayon build`.
 
 ### NullPointerError
 

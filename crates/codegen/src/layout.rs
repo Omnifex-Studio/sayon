@@ -28,8 +28,8 @@
 //! receives a pointer to the environment structure before its arguments.
 
 use sayon_check::types::{
-    FloatType, IntType, NamedType, Type, TypeDef, Wrapper, c_size_align, structure_fields,
-    variant_fields, win64_in_register,
+    Eightbyte, FloatType, IntType, NamedType, Type, TypeDef, Wrapper, c_layout, c_size_align,
+    structure_fields, sysv_eightbytes, variant_fields, win64_in_register,
 };
 
 /// The bytes before the value in a shared value's block.
@@ -229,65 +229,225 @@ pub fn c_llvm(ty: &Type) -> &'static str {
     }
 }
 
-/// How a C function takes or gives a value, as Windows x64 passes it.
+/// How a C function takes or gives a value, under the target's convention.
 pub enum CPass {
     /// As the LLVM value of its C type.
     Value,
-    /// A structure of 1, 2, 4, or 8 bytes, in a register as an integer of
-    /// this many bits.
+    /// Windows x64: a structure of 1, 2, 4, or 8 bytes, in a register as an
+    /// integer of this many bits.
     Register(u64),
-    /// A structure by the address of a copy, or for a result, of where C
-    /// writes it.
+    /// Windows x64: a structure by the address of a copy. For a result, on
+    /// either convention: by the address of where C writes it.
     Address,
+    /// System V: a structure as one value for each of its eightbytes, in a
+    /// register of the kind it needs: its offset and LLVM type.
+    Pieces(Vec<(u64, String)>),
+    /// System V: a structure copied onto the stack.
+    Stack,
 }
 
-pub fn c_pass(types: &[TypeDef], ty: &Type) -> CPass {
-    match ty {
+/// How a C function is called: its result, each parameter, and the LLVM
+/// declaration's result type and parameters (each a type and its
+/// attributes).
+pub struct CPlan {
+    pub ret: CPass,
+    pub ret_llvm: String,
+    pub params: Vec<CPass>,
+    pub declared: Vec<(String, String)>,
+    pub variadic: bool,
+}
+
+impl CPlan {
+    /// The parameters of the declaration, with their attributes.
+    pub fn declaration(&self) -> Vec<String> {
+        let mut params: Vec<String> = self
+            .declared
+            .iter()
+            .map(|(ty, attributes)| {
+                if attributes.is_empty() {
+                    ty.clone()
+                } else {
+                    format!("{ty} {attributes}")
+                }
+            })
+            .collect();
+        if self.variadic {
+            params.push("...".to_string());
+        }
+        params
+    }
+
+    /// The function's type, for a call: the parameters' types alone.
+    pub fn function_type(&self) -> String {
+        let mut params: Vec<&str> = self.declared.iter().map(|(ty, _)| ty.as_str()).collect();
+        if self.variadic {
+            params.push("...");
+        }
+        format!("{} ({})", self.ret_llvm, params.join(", "))
+    }
+}
+
+/// Whether the target passes C structures as System V does on x86-64.
+const SYSTEM_V: bool = cfg!(all(unix, target_arch = "x86_64"));
+
+/// Whether compiled programs know how this target passes C structures.
+pub const STRUCTURES_SUPPORTED: bool = cfg!(all(windows, target_arch = "x86_64")) || SYSTEM_V;
+
+/// How the target's convention calls a C function. System V puts a
+/// structure's eightbytes in registers only when registers are left for
+/// all of them, which depends on the parameters before it.
+pub fn c_plan(types: &[TypeDef], function: &ForeignFunction) -> CPlan {
+    let mut declared = Vec::new();
+    let mut integers = 0;
+    let mut vectors = 0;
+    let (ret, ret_llvm) = match &function.ret {
         Type::Named(_) => {
-            let (size, _) = c_size_align(types, ty);
-            if win64_in_register(size) {
-                CPass::Register(size * 8)
+            let pass = if SYSTEM_V {
+                match sysv_eightbytes(types, &function.ret) {
+                    Some(classes) => CPass::Pieces(eightbyte_types(types, &function.ret, &classes)),
+                    None => CPass::Address,
+                }
             } else {
-                CPass::Address
-            }
+                let (size, _) = c_size_align(types, &function.ret);
+                if win64_in_register(size) {
+                    CPass::Register(size * 8)
+                } else {
+                    CPass::Address
+                }
+            };
+            let llvm = match &pass {
+                CPass::Register(bits) => format!("i{bits}"),
+                CPass::Pieces(pieces) if pieces.len() == 1 => pieces[0].1.clone(),
+                CPass::Pieces(pieces) => {
+                    let types: Vec<&str> = pieces.iter().map(|(_, ty)| ty.as_str()).collect();
+                    format!("{{ {} }}", types.join(", "))
+                }
+                _ => {
+                    let (size, align) = c_size_align(types, &function.ret);
+                    declared.push((
+                        "ptr".to_string(),
+                        format!("sret([{size} x i8]) align {align}"),
+                    ));
+                    integers += 1;
+                    "void".to_string()
+                }
+            };
+            (pass, llvm)
         }
-        _ => CPass::Value,
-    }
-}
-
-/// The LLVM signature of a C function: its result type, and its parameter
-/// types with their attributes, a result written by address first.
-pub fn c_signature(types: &[TypeDef], function: &ForeignFunction) -> (String, Vec<String>) {
-    let mut params = Vec::new();
-    let ret = match c_pass(types, &function.ret) {
-        CPass::Value => c_llvm(&function.ret).to_string(),
-        CPass::Register(bits) => format!("i{bits}"),
-        CPass::Address => {
-            params.push(c_result_address(types, &function.ret));
-            "void".to_string()
-        }
+        other => (CPass::Value, c_llvm(other).to_string()),
     };
+    let mut params = Vec::new();
     for param in &function.params {
-        params.push(match c_pass(types, param) {
-            CPass::Value => c_param(param),
-            CPass::Register(bits) => format!("i{bits}"),
-            CPass::Address => "ptr".to_string(),
-        });
+        let pass = match param {
+            Type::Named(_) if SYSTEM_V => {
+                let (size, align) = c_size_align(types, param);
+                let fits = |classes: &[Eightbyte]| {
+                    let needed = |kind| classes.iter().filter(|c| **c == kind).count();
+                    integers + needed(Eightbyte::Integer) <= 6
+                        && vectors + needed(Eightbyte::Sse) <= 8
+                };
+                match sysv_eightbytes(types, param) {
+                    Some(classes) if fits(&classes) => {
+                        let pieces = eightbyte_types(types, param, &classes);
+                        for ((_, ty), class) in pieces.iter().zip(&classes) {
+                            declared.push((ty.clone(), String::new()));
+                            match class {
+                                Eightbyte::Integer => integers += 1,
+                                Eightbyte::Sse => vectors += 1,
+                            }
+                        }
+                        CPass::Pieces(pieces)
+                    }
+                    _ => {
+                        declared.push((
+                            "ptr".to_string(),
+                            format!("byval([{size} x i8]) align {}", align.max(8)),
+                        ));
+                        CPass::Stack
+                    }
+                }
+            }
+            Type::Named(_) => {
+                let (size, _) = c_size_align(types, param);
+                if win64_in_register(size) {
+                    declared.push((format!("i{}", size * 8), String::new()));
+                    CPass::Register(size * 8)
+                } else {
+                    declared.push(("ptr".to_string(), String::new()));
+                    CPass::Address
+                }
+            }
+            other => {
+                match other {
+                    Type::Float(_) => vectors += 1,
+                    _ => integers += 1,
+                }
+                let full = c_param(other);
+                let (ty, attributes) = match full.split_once(' ') {
+                    Some((ty, attributes)) => (ty.to_string(), attributes.to_string()),
+                    None => (full, String::new()),
+                };
+                declared.push((ty, attributes));
+                CPass::Value
+            }
+        };
+        params.push(pass);
     }
-    if function.variadic {
-        params.push("...".to_string());
+    CPlan {
+        ret,
+        ret_llvm,
+        params,
+        declared,
+        variadic: function.variadic,
     }
-    (ret, params)
 }
 
-/// The hidden parameter where C writes a structure it gives back.
-pub fn c_result_address(types: &[TypeDef], ty: &Type) -> String {
-    let (size, align) = c_size_align(types, ty);
-    format!("ptr sret([{size} x i8]) align {align}")
+/// The LLVM type of each eightbyte of a structure, with its offset: an
+/// integer of the eightbyte's bytes, or the float, two floats, or double
+/// it holds.
+fn eightbyte_types(types: &[TypeDef], ty: &Type, classes: &[Eightbyte]) -> Vec<(u64, String)> {
+    fn scalars(types: &[TypeDef], ty: &Type, offset: u64, out: &mut Vec<(u64, Type)>) {
+        match ty {
+            Type::Named(named) => {
+                for (field_offset, field) in c_layout(types, named).fields {
+                    scalars(types, &field, offset + field_offset, out);
+                }
+            }
+            other => out.push((offset, other.clone())),
+        }
+    }
+    let (size, _) = c_size_align(types, ty);
+    let mut fields = Vec::new();
+    scalars(types, ty, 0, &mut fields);
+    classes
+        .iter()
+        .enumerate()
+        .map(|(index, class)| {
+            let start = index as u64 * 8;
+            let llvm = match class {
+                Eightbyte::Integer => format!("i{}", 8 * (size - start).min(8)),
+                Eightbyte::Sse => {
+                    let floats: Vec<&Type> = fields
+                        .iter()
+                        .filter(|(offset, _)| *offset >= start && *offset < start + 8)
+                        .map(|(_, ty)| ty)
+                        .collect();
+                    match floats.as_slice() {
+                        [Type::Float(FloatType::F32)] => "float".to_string(),
+                        [Type::Float(FloatType::F32), Type::Float(FloatType::F32)] => {
+                            "<2 x float>".to_string()
+                        }
+                        _ => "double".to_string(),
+                    }
+                }
+            };
+            (start, llvm)
+        })
+        .collect()
 }
 
 /// Whether a C function takes or gives a structure, which compiled programs
-/// pass only as Windows x64 does so far.
+/// pass only on the targets whose conventions they know.
 pub fn passes_structures(function: &ForeignFunction) -> bool {
     std::iter::once(&function.ret)
         .chain(&function.params)

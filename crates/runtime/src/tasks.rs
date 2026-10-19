@@ -69,12 +69,176 @@ mod os {
     }
 }
 
-#[cfg(not(windows))]
+/// Fibers on Linux for x86-64: each has a stack of its own, mapped with a
+/// page below it that stops a stack that grows too far, and switching saves
+/// the registers a function must keep (and the floating-point control
+/// words) on the running fiber's stack, takes the other's stack, and
+/// restores them from it.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod os {
+    use std::cell::Cell;
+    use std::ffi::c_void;
+
+    /// What a fiber needs to run: its stack, and where its stack pointer
+    /// was when it last switched away.
+    struct Fiber {
+        stack: *mut u8,
+        size: usize,
+        saved: usize,
+    }
+
+    /// The bytes of a fiber's stack, as Windows gives one by default.
+    const STACK: usize = 1 << 20;
+    const PAGE: usize = 4096;
+
+    const PROT_NONE: i32 = 0;
+    const PROT_READ: i32 = 1;
+    const PROT_WRITE: i32 = 2;
+    const MAP_PRIVATE: i32 = 0x02;
+    const MAP_ANONYMOUS: i32 = 0x20;
+    const MAP_NORESERVE: i32 = 0x4000;
+    const MAP_STACK: i32 = 0x20000;
+
+    unsafe extern "C" {
+        fn mmap(
+            address: *mut c_void,
+            length: usize,
+            protection: i32,
+            flags: i32,
+            fd: i32,
+            offset: i64,
+        ) -> *mut c_void;
+        fn mprotect(address: *mut c_void, length: usize, protection: i32) -> i32;
+        fn munmap(address: *mut c_void, length: usize) -> i32;
+        fn sayon_fiber_switch(save: *mut usize, to: usize);
+        fn sayon_fiber_entry();
+    }
+
+    // Saves rbp, rbx, r12 to r15, and the SSE and x87 control words below
+    // the return address, stores the stack pointer at `save` (rdi), and
+    // restores the same from the stack at `to` (rsi). A new fiber's stack
+    // is laid out so that the first switch to it returns into
+    // `sayon_fiber_entry`, which calls its start function (in r12) with its
+    // parameter (in r13).
+    std::arch::global_asm!(
+        ".text",
+        ".p2align 4",
+        ".globl sayon_fiber_switch",
+        "sayon_fiber_switch:",
+        "push rbp",
+        "push rbx",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        "sub rsp, 8",
+        "stmxcsr [rsp]",
+        "fnstcw [rsp + 4]",
+        "mov [rdi], rsp",
+        "mov rsp, rsi",
+        "ldmxcsr [rsp]",
+        "fldcw [rsp + 4]",
+        "add rsp, 8",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop rbx",
+        "pop rbp",
+        "ret",
+        ".p2align 4",
+        ".globl sayon_fiber_entry",
+        "sayon_fiber_entry:",
+        "mov rdi, r13",
+        "call r12",
+        "ud2",
+    );
+
+    thread_local! {
+        /// The fiber running on this thread.
+        static CURRENT: Cell<*mut Fiber> = const { Cell::new(std::ptr::null_mut()) };
+    }
+
+    /// Makes the thread a fiber, so that it can switch to others.
+    pub fn adopt_thread() -> *mut c_void {
+        let fiber = Box::into_raw(Box::new(Fiber {
+            stack: std::ptr::null_mut(),
+            size: 0,
+            saved: 0,
+        }));
+        CURRENT.with(|current| current.set(fiber));
+        fiber.cast()
+    }
+
+    pub fn create(start: unsafe extern "system" fn(*mut c_void), parameter: usize) -> *mut c_void {
+        let size = STACK + PAGE;
+        // SAFETY: a fresh private mapping; the lowest page is made
+        // inaccessible, and the frame written lies within the rest.
+        unsafe {
+            let stack = mmap(
+                std::ptr::null_mut(),
+                size,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_STACK,
+                -1,
+                0,
+            );
+            if stack as isize == -1 {
+                eprintln!("fatal error: no memory for a task's stack");
+                std::process::abort();
+            }
+            mprotect(stack, PAGE, PROT_NONE);
+            let stack = stack as *mut u8;
+            // The frame the first switch restores, from its lowest word: the
+            // control words, r15, r14, r13, r12, rbx, rbp, and the return
+            // address. The stack is 16-byte aligned once it has returned.
+            let top = stack.add(size) as usize;
+            let saved = top - 64;
+            let frame = saved as *mut u64;
+            let control_words: u64 = 0x1F80 | (0x037F << 32);
+            let words: [u64; 8] = [
+                control_words,
+                0,
+                0,
+                parameter as u64,
+                start as *const () as usize as u64,
+                0,
+                0,
+                sayon_fiber_entry as *const () as usize as u64,
+            ];
+            for (index, word) in words.iter().enumerate() {
+                frame.add(index).write(*word);
+            }
+            Box::into_raw(Box::new(Fiber { stack, size, saved })).cast()
+        }
+    }
+
+    pub fn switch(target: *mut c_void) {
+        let target = target as *mut Fiber;
+        let current = CURRENT.with(|current| current.replace(target));
+        // SAFETY: both fibers are this thread's and alive; the target's
+        // saved stack pointer was stored by a switch away from it, or laid
+        // out by `create`.
+        unsafe { sayon_fiber_switch(&mut (*current).saved, (*target).saved) }
+    }
+
+    pub fn delete(fiber: *mut c_void) {
+        // SAFETY: a fiber that is not running, deleted once.
+        unsafe {
+            let fiber = Box::from_raw(fiber as *mut Fiber);
+            if !fiber.stack.is_null() {
+                munmap(fiber.stack.cast(), fiber.size);
+            }
+        }
+    }
+}
+
+#[cfg(not(any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
 mod os {
     use std::ffi::c_void;
 
     fn unavailable() -> ! {
-        eprintln!("fatal error: compiled programs can run tasks only on Windows so far");
+        eprintln!("fatal error: compiled programs can run tasks only on Windows and Linux so far");
         std::process::abort()
     }
 
@@ -82,7 +246,7 @@ mod os {
         unavailable()
     }
 
-    pub fn create(_: unsafe extern "C" fn(*mut c_void), _: usize) -> *mut c_void {
+    pub fn create(_: unsafe extern "system" fn(*mut c_void), _: usize) -> *mut c_void {
         unavailable()
     }
 

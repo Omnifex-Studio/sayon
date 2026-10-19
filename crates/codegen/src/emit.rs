@@ -9,8 +9,8 @@
 
 use crate::layout::SHARED_HEADER;
 use crate::layout::{
-    CPass, Layouts, c_llvm, c_param, c_pass, c_result_address, c_signature, int_code, int_llvm,
-    needs_drop, passes_structures,
+    CPass, Layouts, STRUCTURES_SUPPORTED, c_llvm, c_param, c_plan, int_code, int_llvm, needs_drop,
+    passes_structures,
 };
 use sayon_check::types::{FloatType, IntType, Type, Wrapper};
 use sayon_ir::*;
@@ -306,12 +306,13 @@ impl<'m> Codegen<'m> {
             if !declared.insert(function.name.as_str()) {
                 continue;
             }
-            let (ret, params) = c_signature(&module.types, function);
+            let plan = c_plan(&module.types, function);
             let _ = writeln!(
                 out,
-                "declare {ret} @{}({})",
+                "declare {} @{}({})",
+                plan.ret_llvm,
                 function.name,
-                params.join(", ")
+                plan.declaration().join(", ")
             );
         }
         if module.foreign.iter().any(|f| f.library == "c") && !declared.contains("fflush") {
@@ -2418,11 +2419,11 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     declaration.library.clone(),
                     declaration.ret.clone(),
                 );
-                if passes_structures(declaration) && !cfg!(all(windows, target_arch = "x86_64")) {
+                if passes_structures(declaration) && !STRUCTURES_SUPPORTED {
                     let code = self.cg.c_string("ForeignError");
                     let message = self
                         .cg
-                        .c_string("compiled programs pass C structures only on Windows x64 so far");
+                        .c_string("compiled programs pass C structures only on x86-64 so far");
                     let location = self.cg.location(span);
                     let status = self.body.tmp();
                     self.body.line(format!(
@@ -2430,8 +2431,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     ));
                     return Some(status);
                 }
-                let (ret_llvm, params) = c_signature(&self.cg.module.types, declaration);
-                let ret_pass = c_pass(&self.cg.module.types, &ret);
+                let plan = c_plan(&self.cg.module.types, declaration);
                 // The function values C can call back, by parameter.
                 let callbacks = args.iter().any(|(_, ty)| matches!(ty, Type::Function(_)));
                 let frame = if callbacks {
@@ -2455,7 +2455,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 };
                 let mut values = Vec::new();
                 // Where C writes a structure it gives back by address.
-                let written = if let CPass::Address = ret_pass {
+                let written = if let CPass::Address = plan.ret {
                     let target = match dest {
                         Some(place) => self.place_ptr(place).0,
                         None => {
@@ -2463,14 +2463,15 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                             self.body.alloca(&llvm)
                         }
                     };
-                    let attributes = c_result_address(&self.cg.module.types, &ret);
-                    values.push(format!("{attributes} {target}"));
+                    let (ty, attributes) = &plan.declared[0];
+                    values.push(format!("{ty} {attributes} {target}"));
                     true
                 } else {
                     false
                 };
                 for (position, (operand, ty)) in args.iter().enumerate() {
-                    let value = match c_pass(&self.cg.module.types, ty) {
+                    let pass = plan.params.get(position).unwrap_or(&CPass::Value);
+                    let value = match pass {
                         CPass::Value if matches!(ty, Type::Function(_)) => {
                             format!("ptr @sayon.callback.{}.{position}", function.0)
                         }
@@ -2488,23 +2489,44 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                                 .line(format!("{bytes} = load i{bits}, ptr {structure}, align 1"));
                             format!("i{bits} {bytes}")
                         }
-                        CPass::Address => {
+                        CPass::Address | CPass::Stack => {
                             // C may change its copy.
                             let (llvm, value, _) = self.value(operand);
                             let copy = self.body.alloca(&llvm);
                             self.body.line(format!("store {llvm} {value}, ptr {copy}"));
-                            format!("ptr {copy}")
+                            match pass {
+                                CPass::Stack => {
+                                    let (size, align) =
+                                        sayon_check::types::c_size_align(&self.cg.module.types, ty);
+                                    format!(
+                                        "ptr byval([{size} x i8]) align {} {copy}",
+                                        align.max(8)
+                                    )
+                                }
+                                _ => format!("ptr {copy}"),
+                            }
+                        }
+                        CPass::Pieces(pieces) => {
+                            let (structure, _) = self.pointer(operand);
+                            let mut loaded = Vec::new();
+                            for (offset, llvm) in pieces {
+                                let at = self.offset_pointer(&structure, *offset);
+                                let piece = self.body.tmp();
+                                self.body
+                                    .line(format!("{piece} = load {llvm}, ptr {at}, align 1"));
+                                loaded.push(format!("{llvm} {piece}"));
+                            }
+                            loaded.join(", ")
                         }
                     };
                     values.push(value);
                 }
-                // The function's type names its parameters' types alone.
-                let types: Vec<&str> = params
-                    .iter()
-                    .map(|param| param.split(' ').next().unwrap_or(param))
-                    .collect();
-                let signature = format!("({})", types.join(", "));
-                let call = format!("call {ret_llvm} {signature} @{name}({})", values.join(", "));
+                let ret_llvm = plan.ret_llvm.clone();
+                let call = format!(
+                    "call {} @{name}({})",
+                    plan.function_type(),
+                    values.join(", ")
+                );
                 if ret_llvm == "void" {
                     self.body.line(call);
                     if !written && let Some(place) = dest {
@@ -2516,8 +2538,23 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     self.body.line(format!("{result} = {call}"));
                     if let Some(place) = dest {
                         let (target, _) = self.place_ptr(place);
-                        self.body
-                            .line(format!("store {ret_llvm} {result}, ptr {target}, align 1"));
+                        match &plan.ret {
+                            // Each eightbyte where it lies in the structure.
+                            CPass::Pieces(pieces) if pieces.len() > 1 => {
+                                for (index, (offset, llvm)) in pieces.iter().enumerate() {
+                                    let piece = self.body.tmp();
+                                    self.body.line(format!(
+                                        "{piece} = extractvalue {ret_llvm} {result}, {index}"
+                                    ));
+                                    let at = self.offset_pointer(&target, *offset);
+                                    self.body
+                                        .line(format!("store {llvm} {piece}, ptr {at}, align 1"));
+                                }
+                            }
+                            _ => self
+                                .body
+                                .line(format!("store {ret_llvm} {result}, ptr {target}, align 1")),
+                        }
                     }
                 }
                 // What C prints comes out in order with what the program

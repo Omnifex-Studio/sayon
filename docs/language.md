@@ -744,7 +744,7 @@ unsafe
 - Its fields are numbers, `pointer`, and other `foreign type` structures, in C's order: each at the next multiple of its alignment, and the whole a multiple of the largest (`E_FOREIGN_TYPE` for anything else, and for type parameters). Text is a `pointer` to its bytes, a boolean a `c_int`, and a structure that points to another of its type does so with a `pointer`.
 - Otherwise it is an ordinary structure: built, read, changed, compared, and shown as any other, and copied, since every field is.
 - A variadic C function takes a structure by its address, as a `pointer`.
-- Structures go to C and come back as the target's C convention passes them; compiled programs pass them on Windows x64 so far, and report `ForeignError` elsewhere.
+- Structures go to C and come back as the target's C convention passes them; compiled programs and the interpreter pass them as Windows x64 and Linux x86-64 do, and compiled programs report `ForeignError` on other targets.
 
 ### Functions that C calls back
 
@@ -766,7 +766,7 @@ unsafe
 - Its failure cannot pass through C. The first one is kept, and C gets 0 (or `null_pointer`) from that call and from every later one, without the function running again; once C returns, the call of the C function fails with the error.
 - A function that C calls can call C functions too, which can call back in turn.
 
-Compiled programs call C functions on every target. The interpreter calls them on Windows x64 so far, loading each library and finding each function the first time the program calls one; elsewhere it reports `ForeignError`, and a program built with `sayon build` calls them. The interpreter has room for functions for 64 different parameters of C functions.
+Compiled programs call C functions on every target. The interpreter calls them on Windows x64 and Linux x86-64 so far, loading each library and finding each function the first time the program calls one; elsewhere it reports `ForeignError`, and a program built with `sayon build` calls them. The interpreter has room for functions for 64 different parameters of C functions.
 
 ## Built-in functions
 
@@ -988,7 +988,7 @@ threads.join(sender)
 - `after(delay, message)` is a timer: a channel that receives `message` once `delay` has passed. Selecting it with other channels waits for their messages or for too long, as with `select([events, threads.after(time.seconds(5), timeout)], handler)` for an enum `Event` with a `timeout` variant.
 - When the main task finishes, the tasks still running are cancelled: each stops where it waits, running its `finally` blocks and cleanup, which `catch` and `try` do not stop. A task whose handle is dropped without a `join` is cancelled the same way (`W_UNUSED_TASK` warns of a handle dropped at once), and one that has not started never runs; `detach(task)` lets a task run on until the main task ends. A task that fails without being joined is reported and makes the program fail. `os.exit` in any task ends the whole program in order.
 
-Tasks started with `spawn` run on one thread, so values they share through `Shared` and `Cell` never change under them in the middle of an operation. Compiled programs can run tasks on Windows so far.
+Tasks started with `spawn` run on one thread, so values they share through `Shared` and `Cell` never change under them in the middle of an operation. Compiled programs can run tasks on Windows and on Linux x86-64 so far.
 
 ### Tasks on threads of their own
 
@@ -1042,7 +1042,7 @@ threads.join(server)
 
 - A `Connection` reads and writes like a file: `read_line`, `lines`, `read` (everything until the other side finishes), `read_bytes` (as many bytes as have arrived, up to a count), `write`, `write_line`, `write_bytes`, `flush`, `close`. `finish_sending()` ends what this side sends while it can still read, and `local_address()` and `peer_address()` give `Address` values with a `host` and a `port`.
 - `network.listen(host, port)` gives a `Listener`, whose `accept()` waits for the next connection; `network.bind(host, port)` gives a `DatagramSocket`, which `send`s datagrams to a host and `receive`s them as a `Datagram` of `bytes` and its `sender`. `network.resolve(host)` gives a host's numeric addresses.
-- `network.connect_secure(host, port)` connects and starts TLS, and `connection.secure(name)` starts it on a connection made already, for protocols that begin in plain text. The system's TLS checks the server's certificate against the certificates it trusts, and that it is for the name given, which also goes to the server; a failure is a `TlsError` that says what was wrong, such as an expired certificate or one for another name. What the connection reads and writes after that is encrypted, with every operation the same. TLS comes from SChannel on Windows so far; elsewhere it fails with `TlsError`.
+- `network.connect_secure(host, port)` connects and starts TLS, and `connection.secure(name)` starts it on a connection made already, for protocols that begin in plain text. The system's TLS checks the server's certificate against the certificates it trusts, and that it is for the name given, which also goes to the server; a failure is a `TlsError` that says what was wrong, such as an expired certificate or one for another name. What the connection reads and writes after that is encrypted, with every operation the same. TLS comes from the system: SChannel on Windows, and OpenSSL's `libssl` on Linux; where there is neither, it fails with `TlsError`.
 - A host with several addresses is connected on the first that answers: attempts start a quarter of a second apart, between IPv6 and IPv4 by turns, so that a kind of address that does not work on a network costs little.
 - Waiting for the network lets other tasks run, so one program can be both a server and its client. `connect` takes a `timeout` (30 seconds unless given), and `set_timeout(duration)` gives a connection, listener, or datagram socket one for each of its operations; an operation that waits longer fails with `TimeoutError`. Other failures are `ConnectionError`, `AddressError`, `TlsError`, and `NetworkError`.
 - What a connection writes goes out as the other side takes it; a write waits only when a megabyte is still waiting to go, and `flush` and `close` wait until all of it has gone.

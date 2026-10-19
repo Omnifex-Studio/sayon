@@ -51,14 +51,15 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `Shared<T>`, `Weak<T>`, `Cell<T>`: `share`, `cell`, `.value`, `.weak()`, `.upgrade()`, `.get()`, `.set()`, `.replace()` | experimental | M3 |
 | `Mutex<T>`: `mutex`, `.get()`, `.set()`, `.replace()`, `.change()`; sendable values checked where a task crosses threads; `LockError` for waiting under a lock | experimental | M3 |
 | C functions: `foreign` blocks, variadic calls, the target's C types, `pointer` and `null_pointer`, `c_string`; `unsafe` blocks, expressions, and functions; `standard/memory` | experimental | M3 |
-| C functions in the interpreter on Linux and macOS | planned | with each platform's validation |
-| C structures (`foreign type`): C layout, by value in C calls, in C memory with `memory.read`, `write`, and `size`; compiled programs on Windows x64 | experimental | M3 |
-| C structures by value in compiled programs on Linux and macOS | planned | with each platform's validation |
-| C callbacks: Sayon function values, with what they captured, as parameters of C functions that call them during the call; failures raised once C returns; compiled programs on every target, the interpreter on Windows x64 | experimental | M3 |
+| C functions in the interpreter on Linux x86-64 (System V), with C structures and callbacks | experimental | M3 |
+| C functions in the interpreter on macOS and on ARM64 | planned | with each platform's validation |
+| C structures (`foreign type`): C layout, by value in C calls, in C memory with `memory.read`, `write`, and `size`; Windows x64 and System V x86-64 (Linux) | experimental | M3 |
+| C structures by value on ARM64 | planned | with each platform's validation |
+| C callbacks: Sayon function values, with what they captured, as parameters of C functions that call them during the call; failures raised once C returns; compiled programs on every target, the interpreter on Windows x64 and Linux x86-64 | experimental | M3 |
 | C callbacks that C keeps and calls after the call, or on other threads | planned | M4 |
 | Finally functions: a structure's own destruction, wherever its values are destroyed; never copied, cannot wait, failures fatal | experimental | M3 |
-| Tasks (fibers) and channels: `standard/threads` `spawn`, `join`, `detach`, `pause`, bounded, unbounded, and rendezvous channels, `receive_result`, `recoverable_send`, `select`; cancellation with cleanup, shutdown of tasks at the end of `main`, deadlock detection; native on Windows | experimental | M3 |
-| Native tasks on Linux and macOS | planned | with each platform's validation |
+| Tasks (fibers) and channels: `standard/threads` `spawn`, `join`, `detach`, `pause`, bounded, unbounded, and rendezvous channels, `receive_result`, `recoverable_send`, `select`; cancellation with cleanup, shutdown of tasks at the end of `main`, deadlock detection; native on Windows and Linux x86-64 | experimental | M3 |
+| Native tasks on macOS and on ARM64 | planned | with each platform's validation |
 | Compile-time `platform` branches | planned | M4 |
 | `async`/`await`, hygienic macros | planned | M8 |
 
@@ -68,7 +69,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 |---|---|---|
 | `sayon run` (interpreter) | experimental | M1 |
 | `sayon check` | experimental | M1 |
-| `sayon build`, `sayon run --native` on Windows x64 | experimental | M1 |
+| `sayon build`, `sayon run --native` on Windows x64 (M1) and Linux x86-64 (M3) | experimental | M1, M3 |
 | Diagnostics with stable codes and source excerpts | experimental | M1 |
 | VS Code syntax highlighting and file icon | experimental | M1 |
 | `sayon test` with `test` blocks (interpreter) | experimental | M1 |
@@ -110,10 +111,11 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `standard/network`: TCP connections and listeners, UDP datagrams, address resolution, timeouts; waiting for sockets lets other tasks run | experimental | M3 |
 | `standard/network` HTTP/1.1 client: `get`, `post`, `request`, chunked and sized bodies, redirects, body size limits | experimental | M3 |
 | TLS from the system, with its certificate checks: `network.connect_secure`, `connection.secure`, `https://` in the HTTP client; Windows (SChannel) | experimental | M3 |
-| TLS on Linux and macOS | planned | with each platform's validation |
+| TLS on Linux from OpenSSL (`libssl`, loaded when first needed) | experimental | M3 |
+| TLS on macOS | planned | with its validation |
 | Connecting on the first of a host's addresses that answers, IPv6 and IPv4 by turns (RFC 8305) | experimental | M3 |
 | Streaming HTTP bodies; TLS servers and client certificates | planned | M4 |
-| Tasks on threads of their own (`threads.spawn_parallel`), with their own tasks, cancellation, and `os.exit` across threads; channels and `select` between threads; native on Windows | experimental | M3 |
+| Tasks on threads of their own (`threads.spawn_parallel`), with their own tasks, cancellation, and `os.exit` across threads; channels and `select` between threads; native on Windows and Linux x86-64 | experimental | M3 |
 | `standard.graphics` | planned | M4 baseline |
 
 ## Platforms
@@ -121,7 +123,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Target | Specified | Buildable | Executed | Release-qualified |
 |---|---|---|---|---|
 | Windows x64 (`x86_64-pc-windows-msvc`) | yes | yes | yes, development machine | no |
-| Linux x64 | yes | no | no | no |
+| Linux x64 (`x86_64-unknown-linux-gnu`) | yes | yes | yes, Ubuntu 26.04 under WSL 2 | no |
 | Windows and Linux ARM64 | yes | no | no | no |
 | Android, browser WebAssembly, WASI | yes | no | no | no |
 | macOS, iOS | yes | no | no | no |

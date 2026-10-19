@@ -14,9 +14,7 @@ foreign "c"
     function memcpy(target: pointer, source: pointer, count: c_size) -> pointer
     function sprintf(buffer: pointer, format: c_string, ...) -> c_int
     function strtol(text: c_string, end: pointer, base: c_int) -> c_long
-
-foreign "kernel32"
-    function GetCurrentProcessId() -> c_uint
+    function atoi(text: c_string) -> c_int
 
 # A safe function made of unsafe parts: it vouches for its C calls once,
 # and its callers need no `unsafe`.
@@ -83,7 +81,7 @@ unsafe
         return integer(strlen(c_string(text)))
     print(measure("four"))
 
-print(unsafe GetCurrentProcessId() > 0)
+print(unsafe atoi(c_string("2048 bytes")) > 0)
 
 outcome = try c_string("a\0b")
 if outcome is error

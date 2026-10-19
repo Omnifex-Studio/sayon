@@ -43,7 +43,7 @@ Sayon is in early development and not ready for real programs. What works today:
 - `test` blocks and the `sayon test` runner, and the `sayon fmt` formatter
 - Projects with a `sayon.toml` manifest, and the `run`, `build`, `check`, `test`, `fmt`, `init`, `clean`, `doctor`, `lint`, and `explain` commands
 
-Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Validating Linux and macOS, with their native tasks, C structures by value, and TLS, comes next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
+Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Linux x86-64 now passes every test in both modes, as Windows does; macOS and ARM64 come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
 
 ## Installing
 
