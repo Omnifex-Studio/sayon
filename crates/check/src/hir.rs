@@ -35,6 +35,8 @@ pub struct Program {
     pub json: Option<JsonSupport>,
     /// The C functions of `foreign` blocks, indexed by `ForeignId`.
     pub foreign: Vec<ForeignFunction>,
+    /// Each structure that a `finally function` destroys, with the function.
+    pub finally: Vec<(crate::types::TypeId, FuncId)>,
 }
 
 /// A C function declared in a `foreign` block.

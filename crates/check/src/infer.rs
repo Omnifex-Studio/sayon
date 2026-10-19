@@ -213,6 +213,8 @@ pub struct Unifier {
     pub enum_types: HashSet<u32>,
     /// The declared types that are C structures (`foreign type`).
     pub foreign_types: HashSet<u32>,
+    /// The declared structures destroyed by a `finally function`.
+    pub finally_types: HashSet<u32>,
     /// `standard/json`'s `Json`, which stands for any JSON value.
     pub json_type: Option<u32>,
 }
@@ -404,6 +406,8 @@ impl Unifier {
                     }
                     return Ok(());
                 }
+                // A copy would be destroyed again.
+                Type::Named(named) if self.finally_types.contains(&named.id.0) => false,
                 Type::Named(named) => return self.fields_support(named, &ty, one),
                 // An open file is closed once, so it has one owner, and a
                 // C string's buffer is released once.

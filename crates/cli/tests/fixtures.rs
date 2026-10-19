@@ -170,6 +170,10 @@ fn native_programs_match_the_interpreter() {
             read_expectation(&source.with_extension("stdin")).as_deref(),
         );
         const REPORT: &str = "sayon: allocations live at exit: ";
+        // A program stopped by a fatal error releases nothing, and reports
+        // nothing.
+        let fatal = read_expectation(&source.with_extension("status"))
+            .is_some_and(|status| status.trim() == "3");
         let mut stderr_lines: Vec<&str> = outcome.stderr.lines().collect();
         match stderr_lines
             .iter()
@@ -182,6 +186,7 @@ fn native_programs_match_the_interpreter() {
                 }
                 stderr_lines.remove(index);
             }
+            None if fatal => {}
             None => failures.push(format!("{name}: no allocation report\n{}", outcome.stderr)),
         }
         outcome.stderr = stderr_lines

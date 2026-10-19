@@ -341,7 +341,7 @@ An owned element cannot be moved out of an array or dictionary, which still hold
 
 ### E_MOVE_OUT_OF_FIELD
 
-An owned field cannot be moved out of a structure held by a variable or constant, which would leave the structure incomplete. Clone the field, or move the whole structure. A field of a computed value, such as `make_person().name`, can be taken.
+An owned field cannot be moved out of a structure held by a variable or constant, which would leave the structure incomplete. Clone the field, or move the whole structure. A field of a computed value, such as `make_person().name`, can be taken, unless the structure has a finally function, which gets the whole structure.
 
 ### E_MOVE_CAPTURED
 
@@ -395,6 +395,10 @@ A shared value is changed, borrowed for changes, or taken out of its handle. Eve
 ### E_SHARED_CONSTANT
 
 A constant would hold a `Shared`, `Weak`, `Cell`, or `Mutex` value. A constant is one value for the whole program and never changes; make the shared value in `main` or a function and pass it where it is needed.
+
+### E_FINALLY_FUNCTION
+
+A `finally function` is declared or used wrongly. It takes one parameter, the value being destroyed, as `update`, with the type of a structure declared in the same module, without type parameters, and not a `foreign type`; it has no type parameters of its own and gives nothing back; and a structure has at most one. The program never calls it, nor uses it as a value: it runs when a value of its structure is destroyed. To destroy a value early, move it into a function that does nothing with it.
 
 ### E_PARALLEL_FUNCTION
 
@@ -587,6 +591,10 @@ A task waited for something while it held a mutex's lock: inside `mutex.change(.
 ### CallbackError
 
 A function that C called back waited: it sent, received, joined, slept, paused, or waited for a socket. Its task cannot leave the C function in the middle of its call, so the function fails instead, and the call of the C function fails with this error once C returns. Do the waiting before or after the call.
+
+### FinallyError
+
+A finally function waited: it sent, received, joined, slept, paused, or waited for a socket. A finally function runs where a value is destroyed, which cannot wait for other tasks. The finally function can catch this error with `try`; one that escapes it stops the program.
 
 ### ThreadError
 

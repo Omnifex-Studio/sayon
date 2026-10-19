@@ -7,9 +7,10 @@
 //! and an error successor; on failure the error is stored in the function's
 //! error slot.
 
-use sayon_check::types::{FloatType, IntType, Type, TypeDef, Wrapper};
+use sayon_check::types::{FloatType, IntType, Type, TypeDef, TypeId, Wrapper};
 use sayon_syntax::Span;
 use sayon_syntax::ast::ParamMode;
+use std::collections::HashMap;
 
 /// Whether a parameter receives a reference to the caller's value: update
 /// parameters always do, so changes reach the caller; read parameters do
@@ -53,6 +54,8 @@ pub struct Module {
     pub types: Vec<TypeDef>,
     /// The C functions of `foreign` blocks, indexed by `ForeignId`.
     pub foreign: Vec<ForeignFunction>,
+    /// The function that destroys each structure with a `finally function`.
+    pub finally: HashMap<TypeId, FunctionId>,
 }
 
 pub use sayon_check::hir::{ForeignFunction, ForeignId};
@@ -60,6 +63,14 @@ pub use sayon_check::hir::{ForeignFunction, ForeignId};
 impl Module {
     pub fn function(&self, id: FunctionId) -> &Function {
         &self.functions[id.0 as usize]
+    }
+
+    /// The finally function of a structure, if it has one.
+    pub fn finally_of(&self, ty: &Type) -> Option<FunctionId> {
+        match ty {
+            Type::Named(named) => self.finally.get(&named.id).copied(),
+            _ => None,
+        }
     }
 
     pub fn union_member(&self, tag: u32) -> Option<&Type> {

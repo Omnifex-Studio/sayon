@@ -404,12 +404,61 @@ impl<'m> Codegen<'m> {
                 body.line(format!("store {llvm} zeroinitializer, ptr %p"));
             }
             Type::Named(named) => {
+                let Some(function) = self.module.finally_of(ty) else {
+                    let parts = self.parts(named, None);
+                    self.drop_parts(body, "%p", &parts);
+                    body.line("ret void");
+                    return;
+                };
+                // An empty place has nothing to destroy.
+                let flag = offset_pointer(body, "%p", self.layouts.live_offset(named));
+                let live = body.tmp();
+                body.line(format!("{live} = load i8, ptr {flag}"));
+                let holds = body.tmp();
+                body.line(format!("{holds} = icmp ne i8 {live}, 0"));
+                let destroy = body.label("destroy");
+                let empty = body.label("empty");
+                body.line(format!("br i1 {holds}, label %{destroy}, label %{empty}"));
+                body.start(&destroy);
+                self.call_finally(body, function);
                 let parts = self.parts(named, None);
                 self.drop_parts(body, "%p", &parts);
+                let flag = offset_pointer(body, "%p", self.layouts.live_offset(named));
+                body.line(format!("store i8 0, ptr {flag}"));
+                body.line(format!("br label %{empty}"));
+                body.start(&empty);
             }
             _ => {}
         }
         body.line("ret void");
+    }
+
+    /// Calls a structure's finally function with the value at `%p`, which
+    /// cannot wait, and whose failure ends the program.
+    fn call_finally(&mut self, body: &mut Body, function: sayon_ir::FunctionId) {
+        let result = body.alloca("i8");
+        let err = body.alloca("ptr");
+        body.line(format!("store ptr null, ptr {err}"));
+        body.line("call void @sayon_finally_enter()");
+        let status = body.tmp();
+        body.line(format!(
+            "{status} = call i32 @sayon.fn.{}(ptr {result}, ptr {err}, i64 1, ptr %p)",
+            function.0
+        ));
+        body.line("call void @sayon_finally_leave()");
+        let failed = body.tmp();
+        body.line(format!("{failed} = icmp ne i32 {status}, 0"));
+        let fail = body.label("finally_failed");
+        let done = body.label("finally_done");
+        body.line(format!("br i1 {failed}, label %{fail}, label %{done}"));
+        body.start(&fail);
+        let name = self.module.function(function).name.clone();
+        let name = self.c_string(&name);
+        body.line(format!(
+            "call void @sayon_finally_failed(ptr {err}, ptr {name})"
+        ));
+        body.line("unreachable");
+        body.start(&done);
     }
 
     fn clone_body(&mut self, body: &mut Body, ty: &Type) {

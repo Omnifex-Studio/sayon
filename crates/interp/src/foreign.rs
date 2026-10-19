@@ -22,7 +22,7 @@
 //! cannot wait, and its first failure is kept for the call to raise once C
 //! returns, C getting 0 from it and from every later call meanwhile.
 
-use crate::value::{ErrorValue, Ref, Value};
+use crate::value::{ErrorValue, Fields, Ref, Value};
 use sayon_check::types::{
     FloatType, FunctionType, Type, TypeDef, c_layout, c_size_align, win64_in_register,
 };
@@ -370,12 +370,12 @@ pub unsafe fn read(address: usize, ty: &Type, types: &[TypeDef]) -> Value {
     unsafe {
         match ty {
             Type::Named(named) => {
-                let fields = c_layout(types, named)
+                let fields: Vec<Value> = c_layout(types, named)
                     .fields
                     .iter()
                     .map(|(offset, field)| read(address + *offset as usize, field, types))
                     .collect();
-                Value::Record(named.id, fields)
+                Value::Record(named.id, Fields::from(fields))
             }
             Type::Int(int) => Value::Int(match int {
                 IntType::I8 => (p as *const i8).read_unaligned() as i128,
@@ -407,7 +407,7 @@ pub unsafe fn write(address: usize, value: &Value, ty: &Type, types: &[TypeDef])
         match (ty, value) {
             (Type::Named(named), Value::Record(_, fields)) => {
                 let layout = c_layout(types, named);
-                for ((offset, field_ty), field) in layout.fields.iter().zip(fields) {
+                for ((offset, field_ty), field) in layout.fields.iter().zip(fields.iter()) {
                     write(address + *offset as usize, field, field_ty, types);
                 }
             }

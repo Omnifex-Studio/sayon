@@ -226,6 +226,11 @@ impl<'m> Machine<'m> {
                 | Op::Detach { .. }
         );
         if waits && self.cancelled() {
+            // A task that cannot wait at all says so first, as when it
+            // would wait.
+            if let Some((code, message)) = self.refusal() {
+                return Progress::Failed(self.task_error(code, message.to_string(), span));
+            }
             return Progress::Failed(self.task_error(
                 CANCELLED_CODE,
                 "the task was cancelled".to_string(),
@@ -362,7 +367,7 @@ impl<'m> Machine<'m> {
                     // The message goes to another thread, perhaps with
                     // channels of this one.
                     self.cross_channels();
-                    value = parallel::isolate(&value);
+                    value = parallel::isolate_moved(value);
                 }
                 let number = {
                     let mut state = channel.state();
@@ -579,6 +584,10 @@ impl<'m> Machine<'m> {
         match self.host(function, args, tags, span) {
             Err(problem) if problem.code == BLOCKED_CODE => {
                 let blocked = network::take_blocked().expect("what the primitive waits for");
+                if let Some((code, message)) = self.refusal() {
+                    self.fibers[self.current].io_started = None;
+                    return Progress::Failed(self.task_error(code, message.to_string(), span));
+                }
                 if self.cancelled() {
                     self.fibers[self.current].io_started = None;
                     return Progress::Failed(self.task_error(

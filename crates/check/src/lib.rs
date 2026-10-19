@@ -113,6 +113,7 @@ pub fn check_program(modules: &[ModuleSource], entry: usize, span: Span) -> Chec
         .collect();
     let json = checker.json_support();
     let foreign = checker.foreign_functions();
+    let finally = checker.finally_functions();
     let mut program = hir::Program {
         functions,
         constants,
@@ -122,6 +123,7 @@ pub fn check_program(modules: &[ModuleSource], entry: usize, span: Span) -> Chec
         types: std::mem::take(&mut checker.type_defs),
         json,
         foreign,
+        finally,
     };
 
     let components = checker.scc_order.clone();

@@ -1116,6 +1116,11 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     let target = self.offset_pointer(dest, offset);
                     self.store_operand(operand, &target, field_ty);
                 }
+                if self.cg.layouts.is_finally(named) {
+                    let offset = self.cg.layouts.live_offset(named);
+                    let flag = self.offset_pointer(dest, offset);
+                    self.body.line(format!("store i8 1, ptr {flag}"));
+                }
             }
             Rvalue::MakeVariant {
                 ty,
@@ -2934,6 +2939,9 @@ declare void @sayon_builder_pointer(ptr, i64)
 declare void @sayon_task_spawn(ptr, i64, ptr, ptr)
 declare i32 @sayon_task_spawn_parallel(ptr, ptr, i64, ptr, ptr, ptr)
 declare void @sayon_callbacks_enter(i32, ptr)
+declare void @sayon_finally_enter()
+declare void @sayon_finally_leave()
+declare void @sayon_finally_failed(ptr, ptr)
 declare ptr @sayon_callbacks_function(i32, i32)
 declare void @sayon_callbacks_failed(i32, ptr)
 declare i32 @sayon_callbacks_leave(ptr)

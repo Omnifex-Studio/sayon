@@ -555,6 +555,9 @@ impl<'s> Printer<'s> {
 
     fn function_header(&self, function: &Function) -> String {
         let mut header = visibility(function.visibility).to_string();
+        if function.is_finally {
+            header.push_str("finally ");
+        }
         if function.is_unsafe {
             header.push_str("unsafe ");
         }
@@ -1117,9 +1120,10 @@ fn function_print(function: &Function, source: &str, out: &mut String) {
         .unwrap_or("");
     let _ = write!(
         out,
-        "function {:?} {} {name} {} (",
+        "function {:?} {} {} {name} {} (",
         function.visibility,
         function.is_unsafe,
+        function.is_finally,
         generic_list(&function.generics)
     );
     for param in &function.params {

@@ -476,6 +476,9 @@ pub struct TypeDef {
     pub copy: bool,
     /// A structure declared with `foreign type`, laid out as C lays it out.
     pub foreign: bool,
+    /// A structure with a `finally function`, which runs when a value of it
+    /// is destroyed: it is neither Copy nor cloned, and is destroyed whole.
+    pub finally: bool,
 }
 
 #[derive(Clone, Debug)]

@@ -1180,6 +1180,7 @@ impl<'a> Checker<'a> {
                         .help("a function value can be called anywhere, so wrap the call in a function literal with an `unsafe` inside it"),
                     );
                 }
+                self.refuse_finally(id, span);
                 self.function_value(id, span)
             }
             Item::Type(id) => self.type_as_value(id, span),
@@ -1435,6 +1436,7 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> hir::Expr {
         self.unsafe_call(cx, id, name);
+        self.refuse_finally(id, name.span);
         let explicit: Vec<Type> = generic_args
             .iter()
             .map(|g| self.resolve_type(cx.module, g, &cx.generics))
@@ -1514,6 +1516,26 @@ impl<'a> Checker<'a> {
         }
     }
 
+    /// A `finally function` runs when its value is destroyed, and only then,
+    /// so that it runs once.
+    fn refuse_finally(&mut self, id: hir::FuncId, span: Span) {
+        if !self.functions[id.0 as usize]
+            .ast
+            .is_some_and(|f| f.is_finally)
+        {
+            return;
+        }
+        let name = self.functions[id.0 as usize].name.clone();
+        self.error(
+            Diagnostic::error(
+                "E_FINALLY_FUNCTION",
+                format!("the finally function `{name}` runs when its value is destroyed, and cannot be called"),
+            )
+            .primary(span, "")
+            .help("to destroy a value now, let it go: move it into a function that does nothing with it"),
+        );
+    }
+
     /// Requires unsafe code around a call of an `unsafe function`.
     pub(crate) fn unsafe_call(&mut self, cx: &mut FnCtx, id: hir::FuncId, name: &ast::Ident) {
         if self.functions[id.0 as usize]
@@ -1558,6 +1580,7 @@ impl<'a> Checker<'a> {
             );
         }
         self.unsafe_call(cx, id, name);
+        self.refuse_finally(id, name.span);
         let explicit: Vec<Type> = generic_args
             .iter()
             .map(|g| self.resolve_type(cx.module, g, &cx.generics))

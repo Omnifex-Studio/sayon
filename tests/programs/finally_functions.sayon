@@ -1,0 +1,89 @@
+# Finally functions: what runs when a value of a structure is destroyed
+memory = import("standard/memory.sayon")
+threads = import("standard/threads.sayon")
+
+foreign "c"
+    function malloc(size: c_size) -> pointer
+    function free(address: pointer)
+
+# A buffer of C memory, released when the buffer is destroyed.
+type Buffer = [name: string, address: pointer, size: integer]
+
+finally function release(update buffer: Buffer)
+    print("release", buffer.name, buffer.size)
+    unsafe free(buffer.address)
+
+function buffer(own name: string, size: integer) -> Buffer
+    return Buffer(name = name, address = unsafe malloc(c_size(size)), size = size)
+
+# A finally function runs before the fields are destroyed.
+type Pair = [first: Buffer, second: Buffer]
+
+finally function pair_release(update pair: Pair)
+    print("pair of", pair.first.name, "and", pair.second.name)
+
+enum Slot
+    empty
+    holding(buffer: Buffer)
+
+constant SCRATCH = buffer("constant", 64)
+
+function scoped()
+    inner = buffer("scoped", 8)
+    unsafe memory.write<integer32>(inner.address, 7)
+    print("in scoped", unsafe memory.read<integer32>(inner.address))
+
+function main()
+    scoped()
+
+    # Replacing a value destroys the one it held.
+    kept = buffer("kept", 16)
+    kept = buffer("replacement", 32)
+
+    # In collections, unions, and enums.
+    many = [buffer("a", 1), buffer("b", 2), buffer("c", 3)]
+    pop(many)
+    either: Buffer or nothing = buffer("union", 4)
+    either = nothing
+    slot = Slot.holding(buffer("enum", 5))
+    slot = Slot.empty
+    named = ["first" = buffer("dictionary", 6)]
+    named["first"] = buffer("dictionary replacement", 7)
+
+    # Moving a value hands its destruction on; nothing runs.
+    moved = kept
+    print("moved", moved.name)
+
+    # The last handle of a shared value destroys it.
+    shared = share(buffer("shared", 8))
+    other = shared
+    shared = share(buffer("second shared", 9))
+    print("one handle left")
+    other = share(buffer("third shared", 10))
+
+    # A match lends the parts of the structure it destroys whole.
+    match Pair(first = buffer("left", 1), second = buffer("right", 2))
+        case Pair(first = left, second = right)
+            print("matched", left.name, right.name)
+
+    # A closure destroys what it captured.
+    captured = buffer("captured", 11)
+    closure = function()
+        print("closure sees", captured.name)
+    closure()
+    closure = function()
+        print("another closure")
+
+    # Channels, mutexes, and tasks on other threads move values on.
+    channel: Channel<Buffer> = threads.new_channel()
+    threads.send(channel, buffer("sent", 12))
+    received = threads.receive(channel)
+    threads.send(channel, buffer("left in the channel", 13))
+    guarded = mutex(buffer("in a mutex", 14))
+    old = guarded.replace(buffer("mutex replacement", 15))
+    worker = threads.spawn_parallel(function() -> Buffer
+        return buffer("from a thread", 16)
+    )
+    from_thread = threads.join(worker)
+
+    print("end of main:", received.name, old.name, from_thread.name, SCRATCH.name)

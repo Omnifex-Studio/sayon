@@ -75,10 +75,13 @@ impl Layouts {
                 if let Some(name) = self.names.get(ty) {
                     return name.clone();
                 }
-                let fields: Vec<String> = structure_fields(&self.types, named)
+                let mut fields: Vec<String> = structure_fields(&self.types, named)
                     .iter()
                     .map(|field| self.llvm(field))
                     .collect();
+                if self.is_finally(named) {
+                    fields.push("i8".to_string());
+                }
                 let name = format!("%sayon.record.{}", self.names.len());
                 self.definitions
                     .push(format!("{name} = type {{ {} }}", fields.join(", ")));
@@ -104,6 +107,27 @@ impl Layouts {
 
     pub fn is_enum(&self, named: &NamedType) -> bool {
         self.types[named.id.0 as usize].is_enum()
+    }
+
+    /// Whether a structure has a finally function, and so a byte after its
+    /// fields that tells a value from an empty place: 1 from when the value
+    /// is made, and 0 once it has moved away or been destroyed.
+    pub fn is_finally(&self, named: &NamedType) -> bool {
+        self.types[named.id.0 as usize].finally
+    }
+
+    /// The offset of that byte.
+    pub fn live_offset(&self, named: &NamedType) -> u64 {
+        self.record_layout(&structure_fields(&self.types, named)).1
+    }
+
+    /// The types a structure's memory holds: its fields, and that byte.
+    fn stored_fields(&self, named: &NamedType) -> Vec<Type> {
+        let mut fields = structure_fields(&self.types, named);
+        if self.is_finally(named) {
+            fields.push(Type::Int(IntType::U8));
+        }
+        fields
     }
 
     fn payload_words(&self, ty: &Type) -> u64 {
@@ -140,7 +164,7 @@ impl Layouts {
             Type::Union(_) => 8 + 8 * self.payload_words(ty),
             Type::Named(named) if self.is_enum(named) => 8 + 8 * self.payload_words(ty),
             Type::Named(named) => {
-                let (_, size, align) = self.record_layout(&structure_fields(&self.types, named));
+                let (_, size, align) = self.record_layout(&self.stored_fields(named));
                 size.next_multiple_of(align)
             }
             Type::Param(_) | Type::Var(_) => 8,
@@ -155,7 +179,7 @@ impl Layouts {
             Type::Float(FloatType::F32) => 4,
             Type::Boolean | Type::Nothing | Type::Unknown => 1,
             Type::Named(named) if !self.is_enum(named) => {
-                self.record_layout(&structure_fields(&self.types, named)).2
+                self.record_layout(&self.stored_fields(named)).2
             }
             Type::Wrapper(Wrapper::Cell, inner) => self.align_of(inner),
             _ => 8,
@@ -377,6 +401,7 @@ mod tests {
                 ]),
                 copy: true,
                 foreign: false,
+                finally: false,
             },
             TypeDef {
                 name: "Shape".into(),
@@ -393,6 +418,7 @@ mod tests {
                 ]),
                 copy: false,
                 foreign: false,
+                finally: false,
             },
         ];
         let mut layouts = Layouts::new(types);

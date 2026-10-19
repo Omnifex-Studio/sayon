@@ -1,0 +1,18 @@
+error[E_MOVE_OUT_OF_FIELD]: cannot transfer the string out of the field `name` of Note, which its finally function destroys whole
+   --> finally_ownership.sayon:10:9
+    |
+ 10 | taken = make().name
+    |         ^^^^^^^^^^^ the field stays owned by its structure
+    |
+    = help: use clone(...) for a copy of the field
+
+error[E_MOVE_OUT_OF_FIELD]: cannot transfer the string out of the field `name` of Note, which its finally function destroys whole
+   --> finally_ownership.sayon:12:8
+    |
+ 12 | held = note.name
+    |        ^^^^^^^^^ the field stays owned by its structure
+    |
+    = help: use clone(...) for a copy of the field
+
+2 errors found; nothing was run
+run `sayon explain E_MOVE_OUT_OF_FIELD` to learn more about an error

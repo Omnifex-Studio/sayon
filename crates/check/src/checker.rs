@@ -311,6 +311,8 @@ pub(crate) struct Checker<'a> {
     pub functions: Vec<FunctionEntry<'a>>,
     pub constants: Vec<ConstantEntry<'a>>,
     pub foreign: Vec<ForeignEntry<'a>>,
+    /// Each structure that a `finally function` destroys, with the function.
+    pub finally_functions: Vec<(TypeId, FuncId)>,
     pub types: Vec<TypeEntry<'a>>,
     /// The resolved definitions of `types`, indexed by `TypeId`.
     pub type_defs: Vec<TypeDef>,
@@ -370,6 +372,7 @@ impl<'a> Checker<'a> {
             functions: Vec::new(),
             constants: Vec::new(),
             foreign: Vec::new(),
+            finally_functions: Vec::new(),
             types: vec![TypeEntry {
                 module: PRELUDE,
                 name: "Outcome".to_string(),
@@ -569,8 +572,16 @@ impl<'a> Checker<'a> {
                 };
                 ("E_UNSUPPORTED_OPERATION", error.describe(), Some(help.to_string()))
             }
-            UnifyError::Unsupported { ty, .. } => {
+            UnifyError::Unsupported { ty, traits } => {
                 let help = match ty {
+                    Type::Named(named)
+                        if *traits == Traits::CLONE
+                            && self.type_defs[named.id.0 as usize].finally =>
+                    {
+                        Some(format!(
+                            "its finally function destroys a {ty} once, so there is only ever one of each; pass it on with `move`, or lend it with a read parameter"
+                        ))
+                    }
                     Type::Union(members) if members.contains(&Type::Nothing) => Some(
                         "the value might be nothing; check first, for example `if value != nothing`".to_string(),
                     ),
@@ -1421,6 +1432,7 @@ impl<'a> Checker<'a> {
                 kind: TypeDefKind::Structure(Vec::new()),
                 copy: true,
                 foreign: matches!(entry.source, TypeSource::Foreign(_)),
+                finally: false,
             })
             .collect();
         for index in 0..self.types.len() {
@@ -1494,6 +1506,7 @@ impl<'a> Checker<'a> {
             self.type_defs[index].kind = kind;
         }
 
+        self.resolve_finally_functions();
         // A definition is Copy when all its fields are; decreasing to a fixed point.
         loop {
             let mut changed = false;
@@ -1531,6 +1544,9 @@ impl<'a> Checker<'a> {
             .collect();
         self.unifier.foreign_types = (0..self.type_defs.len() as u32)
             .filter(|&index| self.type_defs[index as usize].foreign)
+            .collect();
+        self.unifier.finally_types = (0..self.type_defs.len() as u32)
+            .filter(|&index| self.type_defs[index as usize].finally)
             .collect();
         self.check_foreign_types();
         self.unifier.json_type =
@@ -1575,6 +1591,89 @@ impl<'a> Checker<'a> {
                 );
             }
         }
+    }
+
+    /// Finds each `finally function`'s structure, which it must have been
+    /// declared beside, and marks the structure as one destroyed by it.
+    fn resolve_finally_functions(&mut self) {
+        for index in 0..self.functions.len() {
+            let Some(ast) = self.functions[index].ast else {
+                continue;
+            };
+            if !ast.is_finally {
+                continue;
+            }
+            let module = self.functions[index].module;
+            let span = ast.header_span;
+            let problem = |message: &str, help: &str| {
+                Diagnostic::error("E_FINALLY_FUNCTION", message.to_string())
+                    .primary(span, "")
+                    .help(help.to_string())
+            };
+            let shape = "write it as `finally function release(update value: Name)` for a structure `Name` of this module";
+            if !ast.generics.is_empty() || ast.ret.is_some() || ast.params.len() != 1 {
+                let message = if !ast.generics.is_empty() {
+                    "a finally function has no type parameters"
+                } else if ast.ret.is_some() {
+                    "a finally function gives nothing back"
+                } else {
+                    "a finally function takes the value being destroyed, and nothing else"
+                };
+                self.error(problem(message, shape));
+                continue;
+            }
+            let param = &ast.params[0];
+            if !matches!(param.mode, Some((ast::ParamMode::Update, _))) {
+                self.error(problem(
+                    "a finally function takes the value being destroyed as `update`",
+                    shape,
+                ));
+                continue;
+            }
+            let Some(annotation) = &param.ty else {
+                self.error(problem(
+                    "a finally function names the type it destroys",
+                    shape,
+                ));
+                continue;
+            };
+            let ty = self.resolve_type(module, annotation, &HashMap::new());
+            let structure = match &ty {
+                Type::Named(named)
+                    if !self.type_defs[named.id.0 as usize].is_enum()
+                        && self.types[named.id.0 as usize].module == module
+                        && self.type_defs[named.id.0 as usize].generics == 0
+                        && !self.type_defs[named.id.0 as usize].foreign =>
+                {
+                    named.id
+                }
+                Type::Unknown => continue,
+                _ => {
+                    self.error(problem(
+                        &format!("a finally function cannot destroy {ty}"),
+                        "a finally function destroys a structure declared in its module, without type parameters, other than a `foreign type`",
+                    ));
+                    continue;
+                }
+            };
+            if self.type_defs[structure.0 as usize].finally {
+                let name = self.type_defs[structure.0 as usize].name.clone();
+                self.error(problem(
+                    &format!("`{name}` has a finally function already"),
+                    "one function destroys each structure; do all of its work there",
+                ));
+                continue;
+            }
+            self.type_defs[structure.0 as usize].finally = true;
+            self.type_defs[structure.0 as usize].copy = false;
+            self.finally_functions
+                .push((structure, FuncId(index as u32)));
+        }
+    }
+
+    /// The `finally function` of each structure that has one.
+    pub fn finally_functions(&self) -> Vec<(TypeId, FuncId)> {
+        self.finally_functions.clone()
     }
 
     /// A `foreign type` holds only what C structures hold, and has no type

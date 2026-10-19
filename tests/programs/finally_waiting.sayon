@@ -1,0 +1,16 @@
+# A finally function cannot wait, and one that fails ends the program
+threads = import("standard/threads.sayon")
+
+type Note = [name: string]
+
+finally function note_release(update note: Note)
+    waited = try threads.pause()
+    if waited is error
+        print(note.name, "cannot wait:", waited.code, waited.message)
+    if note.name == "broken"
+        error("cannot release {note.name}")
+
+function main()
+    first = Note(name = "first")
+    second = Note(name = "broken")
+    print("before the end")

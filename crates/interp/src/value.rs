@@ -24,7 +24,7 @@ pub enum Value {
     /// A union value: member tag (starting at 1) and payload.
     Union(u32, Box<Value>),
     /// A structure value: its type and fields in declaration order.
-    Record(TypeId, Vec<Value>),
+    Record(TypeId, Fields),
     /// An enum value: its type, variant index, and the variant's fields.
     Variant(TypeId, u32, Vec<Value>),
     Error(Box<ErrorValue>),
@@ -186,11 +186,105 @@ impl Drop for StreamRef {
     }
 }
 
-/// Where a value is stored: a frame's slot, or a module constant.
+/// Where a value is stored: a frame's slot, a module constant, or the
+/// place a finally function's value is held while it runs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Root {
     Slot { frame: usize, slot: usize },
     Global(usize),
+    Held(usize),
+}
+
+/// The fields of a structure value. Those of a value of a structure with a
+/// finally function carry a token, which queues the value for its finally
+/// function when the value is destroyed, wherever that happens; the copies
+/// the interpreter makes to read a value carry none.
+#[derive(Debug, Default)]
+pub struct Fields {
+    values: Vec<Value>,
+    finally: Option<TypeId>,
+}
+
+impl Fields {
+    /// The fields of a value of a structure that `finally` destroys.
+    pub fn destroyed_by_finally(ty: TypeId, values: Vec<Value>) -> Fields {
+        Fields {
+            values,
+            finally: Some(ty),
+        }
+    }
+
+    /// The same fields after `f`, carrying the token on.
+    pub fn map(mut self, f: impl FnMut(Value) -> Value) -> Fields {
+        let values = std::mem::take(&mut self.values);
+        Fields {
+            values: values.into_iter().map(f).collect(),
+            finally: self.finally.take(),
+        }
+    }
+}
+
+impl From<Vec<Value>> for Fields {
+    fn from(values: Vec<Value>) -> Fields {
+        Fields {
+            values,
+            finally: None,
+        }
+    }
+}
+
+impl Clone for Fields {
+    fn clone(&self) -> Fields {
+        self.values.clone().into()
+    }
+}
+
+impl std::ops::Deref for Fields {
+    type Target = Vec<Value>;
+
+    fn deref(&self) -> &Vec<Value> {
+        &self.values
+    }
+}
+
+impl std::ops::DerefMut for Fields {
+    fn deref_mut(&mut self) -> &mut Vec<Value> {
+        &mut self.values
+    }
+}
+
+impl Drop for Fields {
+    fn drop(&mut self) {
+        if let Some(ty) = self.finally.take() {
+            let values = std::mem::take(&mut self.values);
+            DESTROYED.with(|destroyed| destroyed.borrow_mut().push_back((ty, values)));
+            WAITING_FINALLY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+}
+
+thread_local! {
+    /// The values of structures with finally functions destroyed on this
+    /// thread, for the machine to run their finally functions on, in order.
+    static DESTROYED: RefCell<std::collections::VecDeque<(TypeId, Vec<Value>)>> =
+        const { RefCell::new(std::collections::VecDeque::new()) };
+}
+
+/// How many destroyed values wait for their finally functions, on any
+/// thread: a check that costs little between instructions.
+static WAITING_FINALLY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Whether a value may wait for its finally function.
+pub fn finally_waiting() -> bool {
+    WAITING_FINALLY.load(std::sync::atomic::Ordering::Relaxed) > 0
+}
+
+/// The values of this thread waiting for their finally functions, in the
+/// order they were destroyed.
+pub fn take_destroyed() -> std::collections::VecDeque<(TypeId, Vec<Value>)> {
+    let taken = DESTROYED.with(|destroyed| std::mem::take(&mut *destroyed.borrow_mut()));
+    WAITING_FINALLY.fetch_sub(taken.len(), std::sync::atomic::Ordering::Relaxed);
+    taken
 }
 
 /// One step from a value into a part of it.
@@ -397,7 +491,7 @@ pub fn display(value: &Value, out: &mut String, nested: bool, types: &[TypeDef])
             let def = &types[id.0 as usize];
             out.push_str(&def.name);
             out.push('(');
-            for (index, (field, value)) in def.fields().iter().zip(fields).enumerate() {
+            for (index, (field, value)) in def.fields().iter().zip(fields.iter()).enumerate() {
                 if index > 0 {
                     out.push_str(", ");
                 }
@@ -494,7 +588,7 @@ pub fn values_equal(a: &Value, b: &Value) -> bool {
         }
         (Value::Union(t1, p1), Value::Union(t2, p2)) => t1 == t2 && values_equal(p1, p2),
         (Value::Record(_, x), Value::Record(_, y)) => {
-            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| values_equal(p, q))
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(p, q)| values_equal(p, q))
         }
         (Value::Variant(_, v1, x), Value::Variant(_, v2, y)) => {
             v1 == v2 && x.len() == y.len() && x.iter().zip(y).all(|(p, q)| values_equal(p, q))

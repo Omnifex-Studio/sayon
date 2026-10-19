@@ -25,14 +25,22 @@ pub(super) fn lock<T>(mutex: &Lock<T>) -> MutexGuard<'_, T> {
 /// another thread.
 pub struct Sent(Value);
 
-// SAFETY: made only by `Sent::new`, which copies every part of the value
-// that counts references, so no count is shared with a value of another
-// thread; a mutex's or a parallel task's state is shared through an `Arc`.
+// SAFETY: made only by `Sent::new` and `Sent::moved`, which copy every part
+// of the value that counts references, so no count is shared with a value
+// of another thread; a mutex's or a parallel task's state is shared
+// through an `Arc`.
 unsafe impl Send for Sent {}
 
 impl Sent {
+    /// A copy of a value, which stays.
     pub fn new(value: &Value) -> Sent {
         Sent(isolate(value))
+    }
+
+    /// A value that moves to another thread, with what its destruction
+    /// will run there.
+    pub fn moved(value: Value) -> Sent {
+        Sent(isolate_moved(value))
     }
 
     /// The value, for the thread that receives it.
@@ -69,7 +77,10 @@ pub(super) fn isolate(value: &Value) -> Value {
             Value::Dict(Box::new(copy))
         }
         Value::Union(tag, payload) => Value::Union(*tag, Box::new(isolate(payload))),
-        Value::Record(id, fields) => Value::Record(*id, fields.iter().map(isolate).collect()),
+        Value::Record(id, fields) => {
+            let copied: Vec<Value> = fields.iter().map(isolate).collect();
+            Value::Record(*id, copied.into())
+        }
         Value::Variant(id, variant, fields) => {
             Value::Variant(*id, *variant, fields.iter().map(isolate).collect())
         }
@@ -86,6 +97,34 @@ pub(super) fn isolate(value: &Value) -> Value {
     }
 }
 
+/// A value made into one with no part counted with a value it shared one
+/// with; unlike a copy, it keeps what its destruction runs.
+pub(super) fn isolate_moved(value: Value) -> Value {
+    match value {
+        Value::Str(text) => Value::str(&text),
+        Value::CString(bytes) => Value::CString(bytes.to_vec().into()),
+        Value::Array(items) => Value::Array(items.into_iter().map(isolate_moved).collect()),
+        Value::Dict(mut dict) => {
+            let mut moved = Dict::default();
+            let keys = std::mem::take(&mut dict.keys);
+            let values = std::mem::take(&mut dict.values);
+            for (key, value) in keys.into_iter().zip(values) {
+                moved.set(isolate_moved(key), isolate_moved(value));
+            }
+            Value::Dict(Box::new(moved))
+        }
+        Value::Union(tag, payload) => Value::Union(tag, Box::new(isolate_moved(*payload))),
+        Value::Record(id, fields) => Value::Record(id, fields.map(isolate_moved)),
+        Value::Variant(id, variant, fields) => {
+            Value::Variant(id, variant, fields.into_iter().map(isolate_moved).collect())
+        }
+        Value::Function(code, environment) => {
+            Value::Function(code, Box::new(isolate_moved(*environment)))
+        }
+        other => isolate(&other),
+    }
+}
+
 /// Lets a channel's handles go to other threads: from now on its messages
 /// are copied as they are sent, and the ones waiting in it are copied now,
 /// on the one thread that can reach it so far.
@@ -95,8 +134,8 @@ fn cross(channel: &Channel) {
     }
     // Copied outside the lock, since a message may hold the channel itself.
     let waiting = std::mem::take(&mut channel.state().queue);
-    let copied: std::collections::VecDeque<Value> = waiting.iter().map(isolate).collect();
-    channel.state().queue = copied;
+    let moved: std::collections::VecDeque<Value> = waiting.into_iter().map(isolate_moved).collect();
+    channel.state().queue = moved;
 }
 
 impl<'m> Machine<'m> {
@@ -152,10 +191,10 @@ impl std::fmt::Debug for MutexCell {
 }
 
 impl MutexCell {
-    pub fn new(value: &Value) -> Arc<MutexCell> {
+    pub fn new(value: Value) -> Arc<MutexCell> {
         Arc::new(MutexCell {
             state: Lock::new(MutexState {
-                value: Some(Sent::new(value)),
+                value: Some(Sent::moved(value)),
                 holder: None,
             }),
             free: Condvar::new(),
@@ -205,7 +244,7 @@ impl<'m> Machine<'m> {
             other => panic!("unlock of {other:?}"),
         });
         let mut state = lock(&cell.state);
-        state.value = Some(Sent::new(&value));
+        state.value = Some(Sent::moved(value));
         state.holder = None;
         drop(state);
         cell.free.notify_one();
@@ -317,7 +356,7 @@ impl<'m> Machine<'m> {
             Value::Function(code, environment) => (code, *environment),
             other => panic!("spawn of {other:?}"),
         };
-        let environment = Sent::new(&environment);
+        let environment = Sent::moved(environment);
         let globals: Vec<Option<Sent>> = self
             .globals
             .iter()
@@ -339,7 +378,7 @@ impl<'m> Machine<'m> {
             let result = machine.run_thread(code, environment.take());
             // The result may hold channels made on this thread.
             machine.cross_channels();
-            *lock(&shared.result) = Some(result.map(|value| Sent::new(&value)));
+            *lock(&shared.result) = Some(result.map(Sent::moved));
             machine.program.running.fetch_sub(1, Ordering::AcqRel);
             network::wake();
         };
@@ -380,7 +419,14 @@ impl<'m> Machine<'m> {
             }
             Err(error) => Err(error),
         };
+        if let Err(RunError::Fatal(message)) = &result {
+            self.stop_fatally(message);
+        }
         self.shutdown();
+        // What the end of the task and its tasks destroyed.
+        if let Err(RunError::Fatal(message)) = self.run_finally() {
+            self.stop_fatally(&message);
+        }
         let failures = self.task_failures();
         lock(&self.program.failures).extend(failures);
         if let Some(status) = self.exit_status {
@@ -401,6 +447,14 @@ impl<'m> Machine<'m> {
                 location: None,
             }),
         }
+    }
+
+    /// Ends the whole program at a fatal error on a task's own thread, as a
+    /// compiled program does.
+    fn stop_fatally(&self, message: &str) -> ! {
+        let _ = self.output().flush();
+        eprintln!("fatal error: {message}");
+        std::process::exit(3)
     }
 
     /// The result of a parallel task, once it has one: its value, copied

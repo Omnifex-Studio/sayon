@@ -289,6 +289,8 @@ struct Fiber {
     /// The calls of C functions that can call back, which the task is in;
     /// it cannot wait meanwhile either.
     callbacks: usize,
+    /// The finally functions the task runs, which cannot wait.
+    finally: usize,
 }
 
 struct Scheduler {
@@ -323,6 +325,7 @@ fn scheduler() -> &'static mut Scheduler {
                 cursor: 0,
                 locks: 0,
                 callbacks: 0,
+                finally: 0,
             }],
             current: 0,
             stopping: false,
@@ -336,19 +339,32 @@ pub(crate) fn current_fiber() -> usize {
     scheduler().current
 }
 
+/// The running task's fiber; none while the tasks finish.
+fn running() -> Option<&'static mut Fiber> {
+    let s = scheduler();
+    s.fibers.get_mut(s.current)
+}
+
 /// Counts a mutex's lock the running task takes (1) or frees (-1).
 pub(crate) fn count_lock(change: isize) {
-    let s = scheduler();
-    let fiber = &mut s.fibers[s.current];
-    fiber.locks = fiber.locks.saturating_add_signed(change);
+    if let Some(fiber) = running() {
+        fiber.locks = fiber.locks.saturating_add_signed(change);
+    }
 }
 
 /// Counts a call of a C function that can call Sayon functions back,
 /// which the running task starts (1) or ends (-1).
 pub(crate) fn count_callbacks(change: isize) {
-    let s = scheduler();
-    let fiber = &mut s.fibers[s.current];
-    fiber.callbacks = fiber.callbacks.saturating_add_signed(change);
+    if let Some(fiber) = running() {
+        fiber.callbacks = fiber.callbacks.saturating_add_signed(change);
+    }
+}
+
+/// Counts a finally function the running task starts (1) or ends (-1).
+pub(crate) fn count_finally(change: isize) {
+    if let Some(fiber) = running() {
+        fiber.finally = fiber.finally.saturating_add_signed(change);
+    }
 }
 
 /// Why a task cannot wait at all.
@@ -358,6 +374,8 @@ pub(crate) enum Refusal {
     Locked,
     /// It runs a function that C called, whose caller cannot be left.
     Callback,
+    /// It runs a finally function, which destroys a value where it is.
+    Finally,
 }
 
 impl Refusal {
@@ -365,6 +383,7 @@ impl Refusal {
         match self {
             Refusal::Locked => "LockError",
             Refusal::Callback => "CallbackError",
+            Refusal::Finally => "FinallyError",
         }
     }
 
@@ -372,6 +391,7 @@ impl Refusal {
         match self {
             Refusal::Locked => "a task cannot wait while it holds a mutex's lock",
             Refusal::Callback => "a function that C calls cannot wait",
+            Refusal::Finally => "a finally function cannot wait",
         }
     }
 }
@@ -380,6 +400,8 @@ fn refusal(index: usize) -> Option<Refusal> {
     let fiber = &scheduler().fibers[index];
     if fiber.locks > 0 {
         Some(Refusal::Locked)
+    } else if fiber.finally > 0 {
+        Some(Refusal::Finally)
     } else if fiber.callbacks > 0 {
         Some(Refusal::Callback)
     } else {
@@ -715,6 +737,7 @@ pub unsafe extern "C" fn sayon_task_spawn(
             cursor: 0,
             locks: 0,
             callbacks: 0,
+            finally: 0,
         });
         *out = task;
     }
@@ -890,8 +913,10 @@ pub(crate) fn finish_local_tasks(main_failed: bool) -> i32 {
     }
     let _ = std::io::stdout().flush();
     let mut failed = false;
-    let fibers = std::mem::take(&mut scheduler().fibers);
-    for fiber in fibers.into_iter().skip(1) {
+    // The main task's fiber stays, for the finally functions that destroy
+    // the program's constants.
+    let fibers = scheduler().fibers.split_off(1);
+    for fiber in fibers {
         if !fiber.os.is_null() && fiber.started {
             os::delete(fiber.os);
         }

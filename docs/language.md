@@ -523,7 +523,7 @@ Each string, array, dictionary, and error, and each structure or enum value that
 - A collection cannot change while a `for` loop over it is running.
 - A loop variable over a collection of owned values borrows each element: copy it with `clone` to keep it.
 - Elements of a collection cannot be moved out; use `clone(...)` or `pop(...)`.
-- An owned field cannot be moved out of a structure held by a variable, which would leave it incomplete: clone the field, or move the whole structure. A field of a computed value, such as `make_person().name`, can be taken.
+- An owned field cannot be moved out of a structure held by a variable, which would leave it incomplete: clone the field, or move the whole structure. A field of a computed value, such as `make_person().name`, can be taken, unless the structure has a [finally function](#finally-functions).
 - Module constants cannot be moved or changed.
 - A closure takes the owned values it captures, and the variables it changes (see [Function values and closures](#function-values-and-closures)).
 
@@ -605,6 +605,28 @@ function attach(parent: Shared<Node>, child: Shared<Node>)
 ```
 
 - Handles cannot be compared, and a constant cannot hold one or a cell (`E_SHARED_CONSTANT`). They are for one thread; tasks on different threads share a `Mutex` instead (see [Tasks on threads of their own](#tasks-on-threads-of-their-own)).
+
+### Finally functions
+
+A structure that owns something outside the program, such as C memory or a handle of the system, releases it in a `finally function`, which runs when a value of the structure is destroyed:
+
+```sayon
+type Buffer = [address: pointer, size: integer]
+
+finally function release(update buffer: Buffer)
+    unsafe free(buffer.address)
+
+function scratch()
+    buffer = Buffer(address = unsafe malloc(64), size = 64)
+    # ...
+    # Here `buffer` is destroyed, and `release` frees its memory.
+```
+
+- It runs wherever a value is destroyed: at the end of its owner's scope, when a variable or an element is given another value, inside collections, unions, enums, closures, and channels, when the last handle of a `Shared` value or a mutex goes, and for module constants at the end of the program. A value that moves is not destroyed; its new owner destroys it once.
+- It takes the value as `update`, and runs before the value's fields are destroyed, so it can still use them. It is declared beside its structure, in the same module, and the structure has no type parameters and is not a `foreign type` (`E_FINALLY_FUNCTION`). Each structure has at most one.
+- The program never calls it: a call of it, or its use as a value, is `E_FINALLY_FUNCTION`. To destroy a value early, move it into a function that does nothing with it.
+- A value of such a structure is never copied: it is not Copy, cannot be cloned (so `mutex.get()` and `cell.get()` do not take one), and its fields cannot be moved out, not even of a computed value (`E_MOVE_OUT_OF_FIELD`). A `match` lends the fields to its names.
+- It cannot wait (`FinallyError`), and cannot fail: when an error escapes it, the program stops at once with a fatal error, which names the function, and status 3. Handle the errors it can meet with `try` inside it.
 
 ## Errors
 

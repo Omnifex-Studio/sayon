@@ -6,6 +6,7 @@
 pub mod callbacks;
 pub mod encodings;
 pub mod ffi;
+pub mod finally;
 pub mod graphemes;
 pub mod host;
 pub mod network;

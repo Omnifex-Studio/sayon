@@ -430,6 +430,14 @@ impl<'t> Parser<'t> {
             {
                 StmtKind::Function(Box::new(self.parse_function(Visibility::Default, true)?))
             }
+            TokenKind::Keyword(Keyword::Finally)
+                if matches!(
+                    self.peek_at(1).kind,
+                    TokenKind::Keyword(Keyword::Function | Keyword::Unsafe)
+                ) =>
+            {
+                StmtKind::Function(Box::new(self.parse_function(Visibility::Default, true)?))
+            }
             TokenKind::Keyword(Keyword::Async) | TokenKind::Keyword(Keyword::Await) => {
                 self.unavailable("async and await", "M8")
             }
@@ -496,6 +504,16 @@ impl<'t> Parser<'t> {
             TokenKind::Keyword(Keyword::Function) | TokenKind::Keyword(Keyword::Unsafe) => Ok(
                 StmtKind::Function(Box::new(self.parse_function(visibility, true)?)),
             ),
+            TokenKind::Keyword(Keyword::Finally)
+                if matches!(
+                    self.peek_at(1).kind,
+                    TokenKind::Keyword(Keyword::Function | Keyword::Unsafe)
+                ) =>
+            {
+                Ok(StmtKind::Function(Box::new(
+                    self.parse_function(visibility, true)?,
+                )))
+            }
             TokenKind::Keyword(Keyword::Constant) | TokenKind::Keyword(Keyword::Variable) => {
                 Ok(StmtKind::Declare(self.parse_declaration(visibility)?))
             }
@@ -744,13 +762,18 @@ impl<'t> Parser<'t> {
     }
 
     fn parse_function(&mut self, visibility: Visibility, named: bool) -> Result<Function> {
+        let finally_span = if named && self.check_keyword(Keyword::Finally) {
+            Some(self.advance().span)
+        } else {
+            None
+        };
         let unsafe_span = if named && self.check_keyword(Keyword::Unsafe) {
             Some(self.advance().span)
         } else {
             None
         };
         let function_span = self.expect_keyword(Keyword::Function)?;
-        let start = unsafe_span.unwrap_or(function_span);
+        let start = finally_span.or(unsafe_span).unwrap_or(function_span);
         let name = if named {
             Some(self.expect_ident("a function name")?)
         } else {
@@ -789,6 +812,7 @@ impl<'t> Parser<'t> {
             body,
             header_span,
             is_unsafe: unsafe_span.is_some(),
+            is_finally: finally_span.is_some(),
         })
     }
 

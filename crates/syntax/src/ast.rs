@@ -92,6 +92,9 @@ pub struct Function {
     /// `unsafe function`: its body is unsafe code, and it can only be called
     /// from unsafe code.
     pub is_unsafe: bool,
+    /// `finally function`: what runs when a value of its parameter's type
+    /// is destroyed.
+    pub is_finally: bool,
 }
 
 /// A C function declared in a `foreign` block: a signature without a body.

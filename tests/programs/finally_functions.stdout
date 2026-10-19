@@ -1,0 +1,29 @@
+in scoped 7
+release scoped 8
+release kept 16
+release c 3
+release union 4
+release enum 5
+release dictionary 6
+moved replacement
+one handle left
+release shared 8
+matched left right
+pair of left and right
+release left 1
+release right 2
+closure sees captured
+release captured 11
+end of main: sent in a mutex from a thread constant
+release from a thread 16
+release in a mutex 14
+release mutex replacement 15
+release sent 12
+release left in the channel 13
+release third shared 10
+release second shared 9
+release replacement 32
+release dictionary replacement 7
+release a 1
+release b 2
+release constant 64

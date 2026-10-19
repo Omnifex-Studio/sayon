@@ -1,0 +1,13 @@
+# The parts of a structure that its finally function destroys stay in it
+type Note = [name: string, size: integer]
+
+finally function release(update note: Note)
+    print("release", note.name)
+
+function make() -> Note
+    return Note(name = "made", size = 1)
+
+taken = make().name
+note = make()
+held = note.name
+size = note.size

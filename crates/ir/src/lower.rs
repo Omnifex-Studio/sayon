@@ -113,6 +113,12 @@ fn lower_program(program: &hir::Program, include_tests: bool) -> LowerOutput {
     } else {
         Vec::new()
     };
+    // The destruction of a structure calls its finally function.
+    let finally = program
+        .finally
+        .iter()
+        .map(|(ty, func)| (*ty, lowerer.instance(*func, Vec::new())))
+        .collect();
     while let Some((func, args, id)) = lowerer.queue.pop() {
         let source = program.function(func);
         let name = instance_name(&source.name, &args);
@@ -139,6 +145,7 @@ fn lower_program(program: &hir::Program, include_tests: bool) -> LowerOutput {
         tests,
         types: lowerer.types,
         foreign: program.foreign.clone(),
+        finally,
     };
     LowerOutput {
         module,
@@ -299,6 +306,7 @@ impl<'p> Lowerer<'p> {
                 kind: TypeDefKind::Structure(fields),
                 copy: false,
                 foreign: false,
+                finally: false,
             });
             Type::named(NamedType {
                 id,
@@ -1102,6 +1110,10 @@ impl<'l, 'p> FnLower<'l, 'p> {
             }
             hir::Pattern::Record { fields, .. } => {
                 let field_types = self.record_field_types(ty);
+                // A structure that its finally function destroys keeps its
+                // parts, and the names borrow them.
+                let take = take
+                    && !matches!(ty, Type::Named(named) if self.l.types[named.id.0 as usize].finally);
                 for (index, (field, field_ty)) in fields.iter().zip(&field_types).enumerate() {
                     let inner = place.project(Projection::Field(index as u32));
                     self.bind_pattern(&inner, field_ty, field, take, choices);

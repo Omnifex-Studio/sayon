@@ -1,0 +1,2 @@
+fatal error: the finally function `note_release` failed: UserError: cannot release broken
+  --> finally_waiting.sayon:11:9

@@ -1,0 +1,90 @@
+error[E_FINALLY_FUNCTION]: `Note` has a finally function already
+   --> finally_functions.sayon:12:1
+    |
+ 12 | finally function again(update note: Note)
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: one function destroys each structure; do all of its work there
+
+error[E_FINALLY_FUNCTION]: a finally function takes the value being destroyed as `update`
+   --> finally_functions.sayon:15:1
+    |
+ 15 | finally function reads(other: Other)
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: write it as `finally function release(update value: Name)` for a structure `Name` of this module
+
+error[E_FINALLY_FUNCTION]: a finally function gives nothing back
+   --> finally_functions.sayon:18:1
+    |
+ 18 | finally function gives(update other: Other) -> integer
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: write it as `finally function release(update value: Name)` for a structure `Name` of this module
+
+error[E_FINALLY_FUNCTION]: a finally function has no type parameters
+   --> finally_functions.sayon:21:1
+    |
+ 21 | finally function generic<T>(update other: Other)
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: write it as `finally function release(update value: Name)` for a structure `Name` of this module
+
+error[E_FINALLY_FUNCTION]: a finally function cannot destroy Box<integer>
+   --> finally_functions.sayon:24:1
+    |
+ 24 | finally function boxed(update box: Box<integer>)
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: a finally function destroys a structure declared in its module, without type parameters, other than a `foreign type`
+
+error[E_FINALLY_FUNCTION]: a finally function cannot destroy Kind
+   --> finally_functions.sayon:27:1
+    |
+ 27 | finally function kinds(update kind: Kind)
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: a finally function destroys a structure declared in its module, without type parameters, other than a `foreign type`
+
+error[E_FINALLY_FUNCTION]: a finally function cannot destroy Raw
+   --> finally_functions.sayon:30:1
+    |
+ 30 | finally function raw(update raw: Raw)
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: a finally function destroys a structure declared in its module, without type parameters, other than a `foreign type`
+
+error[E_FINALLY_FUNCTION]: the finally function `release` runs when its value is destroyed, and cannot be called
+   --> finally_functions.sayon:34:1
+    |
+ 34 | release(note)
+    | ^^^^^^^
+    |
+    = help: to destroy a value now, let it go: move it into a function that does nothing with it
+
+error[E_UNSUPPORTED_OPERATION]: Note does not support cloning
+   --> finally_functions.sayon:35:14
+    |
+ 35 | copy = clone(note)
+    |              ^^^^ an open file has one owner; pass it with `update` instead
+    |
+    = help: its finally function destroys a Note once, so there is only ever one of each; pass it on with `move`, or lend it with a read parameter
+
+error[E_FINALLY_FUNCTION]: the finally function `release` runs when its value is destroyed, and cannot be called
+   --> finally_functions.sayon:36:9
+    |
+ 36 | value = release
+    |         ^^^^^^^
+    |
+    = help: to destroy a value now, let it go: move it into a function that does nothing with it
+
+error[E_UNSUPPORTED_OPERATION]: Note does not support cloning
+   --> finally_functions.sayon:38:7
+    |
+ 38 | print(guarded.get())
+    |       ^^^^^^^ `get` copies the value
+    |
+    = help: its finally function destroys a Note once, so there is only ever one of each; pass it on with `move`, or lend it with a read parameter
+
+11 errors found; nothing was run
+run `sayon explain E_FINALLY_FUNCTION` to learn more about an error

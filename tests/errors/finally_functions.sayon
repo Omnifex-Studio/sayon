@@ -1,0 +1,38 @@
+# Finally functions declared or used wrongly
+type Note = [name: string, size: integer]
+type Other = [value: integer]
+type Box<T> = [value: T]
+enum Kind
+    one
+foreign type Raw = [address: pointer]
+
+finally function release(update note: Note)
+    print(note.name)
+
+finally function again(update note: Note)
+    print("twice")
+
+finally function reads(other: Other)
+    print(other.value)
+
+finally function gives(update other: Other) -> integer
+    return 1
+
+finally function generic<T>(update other: Other)
+    print("generic")
+
+finally function boxed(update box: Box<integer>)
+    print("box")
+
+finally function kinds(update kind: Kind)
+    print("kind")
+
+finally function raw(update raw: Raw)
+    print("raw")
+
+note = Note(name = "a", size = 1)
+release(note)
+copy = clone(note)
+value = release
+guarded = mutex(Note(name = "c", size = 3))
+print(guarded.get())

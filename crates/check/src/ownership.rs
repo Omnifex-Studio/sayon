@@ -1088,7 +1088,23 @@ impl<'p> Analyzer<'p> {
                     self.expr(value, Ctx::Read, state);
                     return;
                 }
-                if ctx == Ctx::Consume && !self.dup(&ty) && Self::is_place(value) {
+                if ctx == Ctx::Consume && !self.dup(&ty) && self.destroyed_whole(&value.ty) {
+                    // Its finally function gets the whole structure.
+                    let field_value = Analyzer::describe_value(&ty);
+                    let structure = value.ty.to_string();
+                    let name = name.clone();
+                    self.emit("E_MOVE_OUT_OF_FIELD", span, || {
+                        Diagnostic::error(
+                            "E_MOVE_OUT_OF_FIELD",
+                            format!(
+                                "cannot transfer {field_value} out of the field `{name}` of {structure}, which its finally function destroys whole"
+                            ),
+                        )
+                        .primary(span, "the field stays owned by its structure")
+                        .help("use clone(...) for a copy of the field")
+                    });
+                    self.expr(value, Ctx::Read, state);
+                } else if ctx == Ctx::Consume && !self.dup(&ty) && Self::is_place(value) {
                     // Taking one field would leave the structure incomplete.
                     let field_value = Analyzer::describe_value(&ty);
                     let owner = Self::root(value)
@@ -1636,6 +1652,34 @@ impl<'p> Analyzer<'p> {
         }
     }
 
+    /// Whether a value of the type is a structure that a `finally function`
+    /// destroys, which keeps its parts until then.
+    fn destroyed_whole(&self, ty: &Type) -> bool {
+        matches!(ty, Type::Named(named) if self.types[named.id.0 as usize].finally)
+    }
+
+    /// The bindings of a pattern that stand for parts of a structure its
+    /// finally function destroys.
+    fn kept_bindings(&self, pattern: &Pattern, inside: bool, out: &mut Vec<LocalId>) {
+        match pattern {
+            Pattern::Binding(local) if inside => out.push(*local),
+            Pattern::Record { ty, fields } => {
+                let inside = inside || self.destroyed_whole(ty);
+                fields
+                    .iter()
+                    .for_each(|field| self.kept_bindings(field, inside, out));
+            }
+            Pattern::Variant { fields, .. } => fields
+                .iter()
+                .for_each(|field| self.kept_bindings(field, inside, out)),
+            Pattern::Member { inner, .. } => self.kept_bindings(inner, inside, out),
+            Pattern::Or(alternatives) => alternatives
+                .iter()
+                .for_each(|alternative| self.kept_bindings(alternative, inside, out)),
+            Pattern::Binding(_) | Pattern::Wildcard | Pattern::Literal(_) => {}
+        }
+    }
+
     /// A match reads its value in place, binding parts by reference, unless
     /// it owns the value (a temporary or `move(...)`): then the bindings of
     /// arms without a guard own their parts. Copy values are matched on a
@@ -1664,10 +1708,15 @@ impl<'p> Analyzer<'p> {
             let mut arm_state = state.clone();
             let mut bindings = Vec::new();
             arm.pattern.bindings(&mut bindings);
+            // The parts of a structure that its finally function destroys
+            // stay in it.
+            let mut kept = Vec::new();
+            self.kept_bindings(&arm.pattern, false, &mut kept);
             let guarded = arm.guard.is_some();
             let mut borrows = false;
             for binding in bindings {
-                let borrowed = !self.copy(&self.local(binding).ty) && (!consuming || guarded);
+                let borrowed = !self.copy(&self.local(binding).ty)
+                    && (!consuming || guarded || kept.contains(&binding));
                 self.locals[binding.0 as usize].borrowed = borrowed;
                 borrows |= borrowed;
                 if let Some(map) = &mut arm_state {

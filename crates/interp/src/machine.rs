@@ -87,9 +87,18 @@ pub struct Machine<'m> {
     /// ones gone.
     local_channels: Vec<std::sync::Weak<crate::value::ChannelCell>>,
     prune_channels_at: usize,
-    /// The frame depth below each function that C called back and that
-    /// runs, the newest last.
-    callback_bases: Vec<usize>,
+    /// The frame depth below each function that runs inside an operation:
+    /// one that C called back, or a finally function; the newest last.
+    nested: Vec<(usize, Nested)>,
+    /// The values of finally functions that run.
+    held: Vec<Value>,
+}
+
+/// What runs inside an operation, from the frame below it.
+#[derive(Clone, Copy, PartialEq)]
+enum Nested {
+    Callback,
+    Finally,
 }
 
 /// The first step of `steps` through a view: its position, the viewed
@@ -131,9 +140,8 @@ fn write_steps<R>(current: &mut Value, steps: &[Step], f: impl FnOnce(&mut Value
         (Step::Index(i), Value::Array(items)) => &mut items[*i],
         (Step::DictValue(i), Value::Dict(dict)) => &mut dict.values[*i],
         (Step::Payload, Value::Union(_, payload)) => payload,
-        (Step::Field(i), Value::Record(_, fields) | Value::Variant(_, _, fields)) => {
-            &mut fields[*i]
-        }
+        (Step::Field(i), Value::Record(_, fields)) => &mut fields[*i],
+        (Step::Field(i), Value::Variant(_, _, fields)) => &mut fields[*i],
         (Step::Env, Value::Function(_, env)) => env,
         (step, value) => panic!("invalid mutable path step {step:?} into {value:?}"),
     };
@@ -147,7 +155,8 @@ fn step_into(step: Step, value: &Value) -> &Value {
         (Step::DictValue(i), Value::Dict(dict)) => &dict.values[i],
         (Step::DictKey(i), Value::Dict(dict)) => &dict.keys[i],
         (Step::Payload, Value::Union(_, payload)) => payload,
-        (Step::Field(i), Value::Record(_, fields) | Value::Variant(_, _, fields)) => &fields[i],
+        (Step::Field(i), Value::Record(_, fields)) => &fields[i],
+        (Step::Field(i), Value::Variant(_, _, fields)) => &fields[i],
         (Step::Env, Value::Function(_, env)) => env,
         (step, value) => panic!("invalid path step {step:?} into {value:?}"),
     }
@@ -200,7 +209,8 @@ impl<'m> Machine<'m> {
             thread_task: None,
             local_channels: Vec::new(),
             prune_channels_at: 64,
-            callback_bases: Vec::new(),
+            nested: Vec::new(),
+            held: Vec::new(),
         }
     }
 
@@ -253,8 +263,24 @@ impl<'m> Machine<'m> {
     where
         T: From<i32>,
     {
+        // Nothing more runs after a fatal error, as in compiled programs,
+        // which stop at once.
+        if let Err(RunError::Fatal(_)) = &result {
+            return result;
+        }
         self.shutdown();
         let thread_failures = self.finish_threads();
+        // Then the constants, in the reverse order of their initialization.
+        let module = self.module;
+        let mut destroyed = self.run_finally();
+        for (global, _) in module.initializers.iter().rev() {
+            drop(self.globals[global.0 as usize].take());
+            destroyed = destroyed.and_then(|_| self.run_finally());
+        }
+        let result = match (result, destroyed) {
+            (_, Err(fatal)) => Err(fatal),
+            (result, Ok(())) => result,
+        };
         let result = match result {
             Err(RunError::Uncaught(error)) if error.code == EXIT_CODE => {
                 Ok(T::from(exit_status(&error.message)))
@@ -345,6 +371,27 @@ impl<'m> Machine<'m> {
         machine.run_callback(reference, args)
     }
 
+    /// Why the running task cannot wait, as an error's code and message:
+    /// it holds a lock, or runs a finally function or a function C called.
+    pub(super) fn refusal(&self) -> Option<(&'static str, &'static str)> {
+        if self.fibers[self.current].locks > 0 {
+            Some((
+                "LockError",
+                "a task cannot wait while it holds a mutex's lock",
+            ))
+        } else if self
+            .nested
+            .iter()
+            .any(|(_, nested)| *nested == Nested::Finally)
+        {
+            Some(("FinallyError", "a finally function cannot wait"))
+        } else if !self.nested.is_empty() {
+            Some(("CallbackError", "a function that C calls cannot wait"))
+        } else {
+            None
+        }
+    }
+
     fn run_callback(&mut self, reference: &Ref, args: Vec<Value>) -> Result<Value, ErrorValue> {
         let mut env = reference.clone();
         let code = self.read(&env, |value| match value {
@@ -357,9 +404,9 @@ impl<'m> Machine<'m> {
         let base = self.frames.len();
         let result = match self.push_frame(code, values) {
             Ok(()) => {
-                self.callback_bases.push(base);
+                self.nested.push((base, Nested::Callback));
                 let result = self.execute(base);
-                self.callback_bases.pop();
+                self.nested.pop();
                 result
             }
             Err(error) => Err(error),
@@ -376,9 +423,58 @@ impl<'m> Machine<'m> {
         }
     }
 
+    /// Runs the finally functions of the values destroyed so far, in order,
+    /// each with the value held where it can change it. Then it destroys
+    /// the value's fields, and what that queues runs before the next value,
+    /// as in compiled programs. A failure ends the program.
+    pub(super) fn run_finally(&mut self) -> Result<(), RunError> {
+        for (ty, values) in crate::value::take_destroyed() {
+            let function = self.module.finally[&ty];
+            self.held.push(Value::Record(ty, values.into()));
+            let reference = Ref {
+                root: Root::Held(self.held.len() - 1),
+                path: Vec::new(),
+            };
+            let base = self.frames.len();
+            let result = match self.push_frame(function, vec![SlotValue::Ref(reference)]) {
+                Ok(()) => {
+                    self.nested.push((base, Nested::Finally));
+                    let result = self.execute(base);
+                    self.nested.pop();
+                    result
+                }
+                Err(error) => Err(error),
+            };
+            drop(self.held.pop());
+            if let Err(error) = result {
+                let name = &self.module.function(function).name;
+                let message = match error {
+                    RunError::Uncaught(problem) => {
+                        let mut message = format!(
+                            "the finally function `{name}` failed: {}: {}",
+                            problem.code, problem.message
+                        );
+                        if let Some(location) = problem.location {
+                            message.push_str(&format!("\n  --> {location}"));
+                        }
+                        message
+                    }
+                    RunError::Fatal(message) => message,
+                    RunError::TaskFailures(_) => format!("the finally function `{name}` failed"),
+                };
+                return Err(RunError::Fatal(message));
+            }
+            self.run_finally()?;
+        }
+        Ok(())
+    }
+
     fn execute(&mut self, base: usize) -> Result<Value, RunError> {
         let module = self.module;
         loop {
+            if crate::value::finally_waiting() {
+                self.run_finally()?;
+            }
             let frame = self.frames.last().expect("frame");
             let function = module.function(frame.function);
             let block = function.block(frame.block);
@@ -409,7 +505,12 @@ impl<'m> Machine<'m> {
                         _ => Value::Nothing,
                     };
                     if self.frames.len() == base {
-                        if self.current == 0 || self.callback_bases.last() == Some(&base) {
+                        if self.current == 0
+                            || self
+                                .nested
+                                .last()
+                                .is_some_and(|(nested, _)| *nested == base)
+                        {
                             return Ok(value);
                         }
                         // A task finished; another goes on.
@@ -438,7 +539,12 @@ impl<'m> Machine<'m> {
                         },
                     };
                     if self.frames.len() == base {
-                        if self.current == 0 || self.callback_bases.last() == Some(&base) {
+                        if self.current == 0
+                            || self
+                                .nested
+                                .last()
+                                .is_some_and(|(nested, _)| *nested == base)
+                        {
                             return Err(RunError::Uncaught(error));
                         }
                         if !self.finish_task(Err(error)) {
@@ -505,23 +611,9 @@ impl<'m> Machine<'m> {
                     }
                     // Another task runs now; this one runs the operation
                     // again when it is resumed.
-                    Progress::Wait(_)
-                        if self.fibers[self.current].locks > 0
-                            || !self.callback_bases.is_empty() =>
-                    {
-                        let problem = if self.fibers[self.current].locks > 0 {
-                            self.error(
-                                "LockError",
-                                "a task cannot wait while it holds a mutex's lock",
-                                *span,
-                            )
-                        } else {
-                            self.error(
-                                "CallbackError",
-                                "a function that C calls cannot wait",
-                                *span,
-                            )
-                        };
+                    Progress::Wait(_) if self.refusal().is_some() => {
+                        let (code, message) = self.refusal().expect("a refusal");
+                        let problem = self.error(code, message, *span);
                         let slot = function.error_slot.0 as usize;
                         self.top().slots[slot] = SlotValue::Value(Value::Error(Box::new(problem)));
                         self.jump(*error);
@@ -615,6 +707,7 @@ impl<'m> Machine<'m> {
                 other => panic!("read of a slot without a value: {other:?}"),
             },
             Root::Global(global) => self.globals[global].as_ref().expect("initialized global"),
+            Root::Held(index) => &self.held[index],
         }
     }
 
@@ -672,6 +765,7 @@ impl<'m> Machine<'m> {
                 other => panic!("write through a slot without a value: {other:?}"),
             },
             Root::Global(global) => self.globals[global].as_mut().expect("initialized global"),
+            Root::Held(index) => &mut self.held[index],
         };
         write_steps(root, &reference.path, f)
     }
@@ -684,6 +778,7 @@ impl<'m> Machine<'m> {
                     self.frames[frame].slots[slot] = SlotValue::Value(value)
                 }
                 Root::Global(global) => self.globals[global] = Some(value),
+                Root::Held(index) => self.held[index] = value,
             }
         } else {
             self.with_mut(&reference, |target| *target = value);
@@ -706,7 +801,10 @@ impl<'m> Machine<'m> {
                     };
                 }
                 match (last, parent) {
-                    (Step::Field(i), Value::Record(_, fields) | Value::Variant(_, _, fields)) => {
+                    (Step::Field(i), Value::Record(_, fields)) => {
+                        std::mem::replace(&mut fields[i], Value::Nothing)
+                    }
+                    (Step::Field(i), Value::Variant(_, _, fields)) => {
                         std::mem::replace(&mut fields[i], Value::Nothing)
                     }
                     (step, value) => panic!("cannot move out of {step:?} in {value:?}"),
@@ -717,7 +815,7 @@ impl<'m> Machine<'m> {
             Root::Slot { frame, slot } => {
                 std::mem::replace(&mut self.frames[frame].slots[slot], SlotValue::Empty)
             }
-            Root::Global(_) => panic!("cannot move out of a global"),
+            Root::Global(_) | Root::Held(_) => panic!("cannot move out of a global"),
         };
         let value = match taken {
             SlotValue::Value(value) => value,
@@ -742,6 +840,7 @@ impl<'m> Machine<'m> {
                 }
             }
             Root::Global(global) => self.globals[global] = None,
+            Root::Held(_) => {}
         }
     }
 
@@ -912,7 +1011,12 @@ impl<'m> Machine<'m> {
             Rvalue::MakeUnion { tag, value } => Value::Union(*tag, Box::new(self.take(value))),
             Rvalue::MakeRecord { ty, fields } => {
                 let id = ty.as_named().expect("structure type").id;
-                Value::Record(id, fields.iter().map(|field| self.take(field)).collect())
+                let values: Vec<Value> = fields.iter().map(|field| self.take(field)).collect();
+                if self.module.finally.contains_key(&id) {
+                    Value::Record(id, Fields::destroyed_by_finally(id, values))
+                } else {
+                    Value::Record(id, values.into())
+                }
             }
             Rvalue::MakeVariant {
                 ty,
@@ -1041,7 +1145,7 @@ impl<'m> Machine<'m> {
                 let value = self.take(value);
                 // Tasks on other threads may take the value out.
                 self.cross_channels();
-                Value::Mutex(MutexCell::new(&value))
+                Value::Mutex(MutexCell::new(value))
             }
             Rvalue::Downgrade(shared) => {
                 let source = self.source(shared);
@@ -1073,7 +1177,9 @@ impl<'m> Machine<'m> {
                 let env = match env {
                     Some(ty) => {
                         let id = ty.as_named().expect("environment structure").id;
-                        Value::Record(id, captures.iter().map(|value| self.take(value)).collect())
+                        let captured: Vec<Value> =
+                            captures.iter().map(|value| self.take(value)).collect();
+                        Value::Record(id, captured.into())
                     }
                     None => Value::Nothing,
                 };
