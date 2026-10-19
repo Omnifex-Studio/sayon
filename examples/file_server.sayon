@@ -1,0 +1,110 @@
+# Serves the files of a directory over HTTP, with a task for each
+# connection.
+#
+#     sayon run examples/file_server.sayon -- path/to/directory 8080
+#
+# Then open http://localhost:8080/ in a browser. Without a port it serves
+# on a free one, asks itself for a few pages, prints what came back, and
+# stops: a quick way to see it work.
+
+filesystem = import("standard/filesystem.sayon")
+io = import("standard/io.sayon")
+network = import("standard/network.sayon")
+os = import("standard/os.sayon")
+strings = import("standard/strings.sayon")
+threads = import("standard/threads.sayon")
+
+type Request = [method: string, path: string]
+
+# The request line, such as `GET /notes.txt HTTP/1.1`. The headers after it
+# are read and left unused.
+function read_request(update connection: network.Connection) -> Request or nothing
+    line = connection.read_line()
+    if line == nothing
+        return nothing
+    parts = strings.split(strings.trim(line), " ")
+    if length(parts) < 2
+        return nothing
+    while true
+        header = connection.read_line()
+        if header == nothing or strings.trim(header) == ""
+            break
+    return Request(method = clone(parts[0]), path = clone(parts[1]))
+
+function respond(update connection: network.Connection, status: string, kind: string, body: Array<byte>)
+    connection.write("HTTP/1.0 {status}\r\n")
+    connection.write("Content-Type: {kind}\r\n")
+    connection.write("Content-Length: {length(body)}\r\n")
+    connection.write("Connection: close\r\n\r\n")
+    connection.write_bytes(body)
+
+function kind_of(path: string) -> string
+    match filesystem.extension(path)
+        case "html"
+            return "text/html; charset=utf-8"
+        case "txt" or "md" or "sayon"
+            return "text/plain; charset=utf-8"
+        case "json"
+            return "application/json"
+        case _
+            return "application/octet-stream"
+
+# Answers one request: a file, the list of a directory's files, or an
+# error. The connection closes when its task ends.
+function answer(update connection: network.Connection, root: string)
+    request = read_request(connection)
+    if request == nothing
+        return
+    if request.method != "GET"
+        respond(connection, "405 Method Not Allowed", "text/plain", strings.bytes("only GET\n"))
+    elseif strings.contains(request.path, "..")
+        respond(connection, "403 Forbidden", "text/plain", strings.bytes("no way up\n"))
+    else
+        path = root + request.path
+        if filesystem.is_directory(path)
+            names = filesystem.list(path)
+            listing = strings.join(names, "\n") + "\n"
+            respond(connection, "200 OK", "text/plain; charset=utf-8", strings.bytes(listing))
+        elseif filesystem.is_file(path)
+            respond(connection, "200 OK", kind_of(path), io.read_file_bytes(path))
+        else
+            respond(connection, "404 Not Found", "text/plain", strings.bytes("not found\n"))
+
+# Accepts connections, each answered by a task of its own, `count` of them
+# or without end.
+function serve(update listener: network.Listener, root: string, count: integer or nothing)
+    served = 0
+    while count == nothing or served < count
+        connection = listener.accept()
+        folder = clone(root)
+        threads.detach(threads.spawn(function()
+            outcome = try answer(connection, folder)
+            if outcome is error
+                print("a request failed:", outcome.message)
+        ))
+        served += 1
+
+arguments = os.arguments()
+root = "."
+if length(arguments) > 0
+    root = clone(arguments[0])
+
+if length(arguments) > 1
+    port = tonumber(arguments[1])
+    if typeof(port) != "integer"
+        error("the port should be a whole number, not {arguments[1]}")
+    listener = network.listen("127.0.0.1", port)
+    print("serving {root} at http://localhost:{port}/")
+    serve(listener, root, nothing)
+else
+    listener = network.listen("127.0.0.1", 0)
+    port = listener.address().port
+    server = threads.spawn(function()
+        serve(listener, root, 4)
+    )
+    base = "http://127.0.0.1:{port}"
+    for path in ["/", "/file_server.sayon", "/missing.txt", "/../secret"]
+        response = network.get(base + path)
+        lines = strings.lines(response.text())
+        print(response.status, response.reason, path, "->", length(lines), "lines")
+    threads.join(server)

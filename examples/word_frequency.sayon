@@ -1,0 +1,94 @@
+# Counts the words of the text files under a directory, on several threads
+# at once, and prints the most frequent ones.
+#
+#     sayon run examples/word_frequency.sayon -- path/to/directory
+#
+# Workers on threads of their own take the files' paths from one channel,
+# count each file's words, and send the counts back on another; the main
+# task adds them up. Without a directory it counts the examples' own words.
+
+collections = import("standard/collections.sayon")
+filesystem = import("standard/filesystem.sayon")
+io = import("standard/io.sayon")
+math = import("standard/math.sayon")
+os = import("standard/os.sayon")
+strings = import("standard/strings.sayon")
+threads = import("standard/threads.sayon")
+
+constant WORKERS = 4
+constant SHOWN = 10
+
+type Count = [word: string, times: integer]
+
+# The words of a text, as runs of letters, in lowercase.
+function words_of(text: string) -> Dict<string, integer>
+    counts: Dict<string, integer> = []
+    word = ""
+    for character in strings.lower(text + " ")
+        if character >= "a" and character <= "z"
+            word += character
+        elseif word != ""
+            if haskey(counts, word)
+                counts[word] += 1
+            else
+                counts[word] = 1
+            word = ""
+    return counts
+
+function text_files(directory: string) -> Array<string>
+    found: Array<string> = []
+    for path in filesystem.walk(directory)
+        match filesystem.extension(path)
+            case "txt" or "md" or "sayon"
+                push(found, filesystem.join(directory, path))
+            case _
+                continue
+    return found
+
+arguments = os.arguments()
+directory = "examples"
+if length(arguments) > 0
+    directory = clone(arguments[0])
+files = text_files(directory)
+
+paths: Channel<string> = threads.new_unbounded_channel()
+results: Channel<Dict<string, integer>> = threads.new_unbounded_channel()
+workers: Array<Task<integer>> = []
+for _ in range(WORKERS)
+    push(workers, threads.spawn_parallel(function() -> integer
+        counted = 0
+        while true
+            match threads.receive_result(paths)
+                case message(path)
+                    threads.send(results, words_of(io.read_file(path)))
+                    counted += 1
+                case closed
+                    return counted
+    ))
+for path in files
+    threads.send(paths, clone(path))
+threads.close(paths)
+
+totals: Dict<string, integer> = []
+for _ in range(length(files))
+    counts = threads.receive(results)
+    for word, times in counts
+        if haskey(totals, word)
+            totals[word] += times
+        else
+            totals[word] = times
+counted = 0
+while length(workers) > 0
+    worker = pop(workers)
+    if worker != nothing
+        counted += threads.join(worker)
+
+ranking: Array<Count> = []
+for word, times in totals
+    push(ranking, Count(word = clone(word), times = times))
+collections.sort_by(ranking, function(a: Count, b: Count) -> boolean
+    return a.times > b.times or a.times == b.times and a.word < b.word
+)
+print("{counted} files, {length(totals)} different words")
+for index in range(math.min(SHOWN, length(ranking)))
+    print("{ranking[index].times}\t{ranking[index].word}")

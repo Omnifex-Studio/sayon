@@ -1,0 +1,96 @@
+# A growing list of numbers kept in C memory, which C sorts and searches,
+# and which gives its memory back by itself.
+#
+#     sayon run examples/c_numbers.sayon
+#
+# `Numbers` owns memory from `malloc`, and its finally function frees it
+# when the list is destroyed, however that happens. The functions here make
+# their C calls correct for every argument, checking positions, so the code
+# that uses them needs no `unsafe`.
+
+memory = import("standard/memory.sayon")
+strings = import("standard/strings.sayon")
+
+foreign "c"
+    function malloc(size: c_size) -> pointer
+    function realloc(address: pointer, size: c_size) -> pointer
+    function free(address: pointer)
+    function qsort(base: pointer, count: c_size, size: c_size, compare: function(pointer, pointer) -> c_int)
+    function bsearch(key: pointer, base: pointer, count: c_size, size: c_size, compare: function(pointer, pointer) -> c_int) -> pointer
+
+constant SIZE = 8
+
+type Numbers = [address: pointer, count: integer, capacity: integer]
+
+finally function numbers_release(update numbers: Numbers)
+    unsafe free(numbers.address)
+
+function new_numbers() -> Numbers
+    address = unsafe malloc(c_size(4 * SIZE))
+    if address == null_pointer
+        error("out of memory")
+    return Numbers(address = address, count = 0, capacity = 4)
+
+function numbers_push(update numbers: Numbers, value: integer64)
+    if numbers.count == numbers.capacity
+        capacity = numbers.capacity * 2
+        grown = unsafe realloc(numbers.address, c_size(capacity * SIZE))
+        if grown == null_pointer
+            error("out of memory")
+        numbers.address = grown
+        numbers.capacity = capacity
+    unsafe memory.write(numbers.address, value, numbers.count * SIZE)
+    numbers.count += 1
+
+function numbers_get(numbers: Numbers, position: integer) -> integer64
+    if position < 0 or position >= numbers.count
+        error("position {position} is outside the {numbers.count} numbers")
+    return unsafe memory.read<integer64>(numbers.address, position * SIZE)
+
+# Orders two numbers in C memory, as `qsort` and `bsearch` want.
+function compare(a: pointer, b: pointer) -> c_int
+    x = unsafe memory.read<integer64>(a)
+    y = unsafe memory.read<integer64>(b)
+    if x < y
+        return -1
+    if x > y
+        return 1
+    return 0
+
+function numbers_sort(update numbers: Numbers)
+    unsafe qsort(numbers.address, c_size(numbers.count), c_size(SIZE), compare)
+
+# Whether sorted numbers hold `value`.
+function numbers_contains(numbers: Numbers, value: integer64) -> boolean
+    key = unsafe malloc(c_size(SIZE))
+    unsafe memory.write(key, value)
+    found = unsafe bsearch(key, numbers.address, c_size(numbers.count), c_size(SIZE), compare)
+    unsafe free(key)
+    return found != null_pointer
+
+function numbers_text(numbers: Numbers) -> string
+    parts: Array<string> = []
+    for position in range(numbers.count)
+        push(parts, tostring(numbers.get(position)))
+    return "[{strings.join(parts, ", ")}]"
+
+numbers = new_numbers()
+for value in [42, 7, 19, 3, 88, 21, 64, 5, 13]
+    numbers.push(integer64(value))
+print(numbers.text(), "in", numbers.capacity, "places")
+numbers.sort()
+print(numbers.text())
+print("has 19:", numbers.contains(19), "has 20:", numbers.contains(20))
+outside = try numbers.get(9)
+if outside is error
+    print(outside.message)
+
+# A function literal can compare too, with what it captured.
+descending = true
+unsafe qsort(numbers.address, c_size(numbers.count), c_size(SIZE), function(a: pointer, b: pointer) -> c_int
+    order = compare(a, b)
+    if descending
+        return -order
+    return order
+)
+print(numbers.text())
