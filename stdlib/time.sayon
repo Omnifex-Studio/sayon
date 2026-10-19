@@ -236,6 +236,71 @@ function format(moment: DateTime) -> string
         fraction = "." + digits
     return "{date}T{clock}{fraction}Z"
 
+# ----- time zones -------------------------------------------------------------
+
+# A time zone of the IANA time zone database, such as "Europe/Paris", with
+# the rules the system has for its offsets from UTC.
+type Zone = [name: string]
+
+# A date and time as a zone's clocks show it: the local date and time, and
+# their offset from UTC.
+type ZonedTime = [local: DateTime, offset: Duration, zone: Zone]
+
+# A time zone by its name. Fails with TimeZoneError for a name the system's
+# time zone database does not have.
+function zone(name: string) -> Zone
+    host_zone_check(name)
+    return Zone(name = clone(name))
+
+# The system's own time zone, or UTC when it has none.
+function local_zone() -> Zone
+    return Zone(name = host_local_zone())
+
+# The version of the system's time zone database, such as "2025b", or
+# "unknown".
+function zones_version() -> string
+    return host_zones_version()
+
+# The zone's offset from UTC at a moment, positive east of UTC: one hour in
+# Paris in winter.
+function zone_offset(zone: Zone, moment: DateTime) -> Duration
+    return seconds(host_zone_offset(zone.name, to_unix(moment)))
+
+# A moment as the zone's clocks show it.
+function zone_at(zone: Zone, moment: DateTime) -> ZonedTime
+    offset = zone_offset(zone, moment)
+    return ZonedTime(local = shift(moment, offset), offset = offset, zone = clone(zone))
+
+# The moment that the zone's clocks show as a local date and time. A local
+# time in a gap, skipped when the clocks go forward, is read with the offset
+# before the gap, so it falls after it; one in an overlap, which the clocks
+# show twice, is the earlier of the two.
+function zone_moment(zone: Zone, local: DateTime) -> DateTime
+    wall = to_unix(local)
+    before = host_zone_offset(zone.name, wall - SECONDS_PER_DAY)
+    after = host_zone_offset(zone.name, wall + SECONDS_PER_DAY)
+    chosen = before
+    if host_zone_offset(zone.name, wall - before) != before and host_zone_offset(zone.name, wall - after) == after
+        chosen = after
+    return shift(local, seconds(-chosen))
+
+# The moment in UTC.
+function zoned_time_moment(time: ZonedTime) -> DateTime
+    return shift(time.local, Duration(nanoseconds = -time.offset.nanoseconds))
+
+# ISO 8601 text with the offset, such as `2026-10-18T11:30:00+02:00`.
+function zoned_time_format(time: ZonedTime) -> string
+    text = format(time.local)
+    total = time.offset.nanoseconds / NANOSECONDS_PER_SECOND
+    sign = "+"
+    if total < 0
+        sign = "-"
+        total = -total
+    offset = "{sign}{pad(total / 3_600, 2)}:{pad(total % 3_600 / 60, 2)}"
+    if total % 60 > 0
+        offset = offset + ":{pad(total % 60, 2)}"
+    return strings.slice(text, 0, length(text) - 1) + offset
+
 # Reads ISO 8601 text: a date, `2026-10-18`, or a date and time with `Z` or
 # an offset from UTC, `2026-10-18T09:30:00.5+02:00`. The result is in UTC.
 # Text that is not such a date raises a ParseError.

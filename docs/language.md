@@ -743,7 +743,7 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 | `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer`; typed values: `decode`, `encode_value`, `from_json`, `to_json`; streams: `items`, `lines`, `write_items` (an `ItemWriter` with `add`, `add_value`, `finish`) |
 | `standard/threads.sayon` | `spawn`, `join`, `detach`, `pause`, `new_channel`, `new_unbounded_channel`, `after`, `send`, `recoverable_send` (a `SendResult<T>`), `receive`, `receive_result` (a `ReceiveResult<T>`), `close`, `select`; see [Tasks and channels](#tasks-and-channels) |
 | `standard/network.sayon` | `connect` for a `Connection` (`read_line`, `lines`, `read`, `read_bytes`, `write`, `write_line`, `write_bytes`, `flush`, `finish_sending`, `set_timeout`, `local_address`, `peer_address`, `close`), `listen` for a `Listener` (`accept`, `address`, `set_timeout`, `close`), `bind` for a `DatagramSocket` (`send`, `receive`, `address`, `set_timeout`, `close`), `resolve`, `address_text`; HTTP: `get`, `post`, `request`, and `Response` (`text`, `header`, `succeeded`); see [Networking](#networking) |
-| `standard/time.sayon` | `Duration` (`nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `add`, `subtract`, `scale`, `in_seconds`, `in_milliseconds`, `describe`), the monotonic clock (`start`, `elapsed`, `between`, `sleep`), `deadline` for a `Deadline` (`remaining`, `passed`, `wait`), `ticker` for a `Ticker` (`wait`), and UTC dates (`DateTime`, `now`, `unix_seconds`, `from_unix`, `to_unix`, `shift`, `difference`, `weekday`, `is_leap_year`, `days_in_month`, `format` and `parse` for ISO 8601) |
+| `standard/time.sayon` | `Duration` (`nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `add`, `subtract`, `scale`, `in_seconds`, `in_milliseconds`, `describe`), the monotonic clock (`start`, `elapsed`, `between`, `sleep`), `deadline` for a `Deadline` (`remaining`, `passed`, `wait`), `ticker` for a `Ticker` (`wait`), and UTC dates (`DateTime`, `now`, `unix_seconds`, `from_unix`, `to_unix`, `shift`, `difference`, `weekday`, `is_leap_year`, `days_in_month`, `format` and `parse` for ISO 8601), time zones (`zone` for a `Zone` with `at`, `moment`, `offset`; `ZonedTime` with `format`, `moment`; `local_zone`, `zones_version`) |
 | `standard/collections.sayon` | `sort` and `sort_by` (stable), `reverse`; `Set<T>` with `new_set`, `set_add`, `set_contains`, `set_remove`, `set_size`, `set_values` (as methods: `set.add(value)`); `Queue<T>` with `new_queue`, `queue_add`, `queue_take`, `queue_size` |
 | `standard/memory.sayon` | `read`, `write`, `read_bytes`, `write_bytes`, `read_text`, `offset`, `address`; see [C functions and unsafe code](#c-functions-and-unsafe-code) |
 | `standard/math.sayon` | `PI`, `E`, `TAU`, `sqrt`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `exp`, `log`, `log10`, `log2`, `pow`, `floor`, `ceil`, `round`, `trunc`, `abs`, `min`, `max`, `clamp`, `random` |
@@ -870,7 +870,7 @@ file.close()
 
 ### Time
 
-The monotonic clock measures intervals and never goes backwards; the wall clock gives the date and time and can jump when the system clock is set. Dates and times are in UTC, on the Gregorian calendar extended backwards; time zones other than UTC are planned. Durations count whole nanoseconds, and their arithmetic is checked like any integer arithmetic.
+The monotonic clock measures intervals and never goes backwards; the wall clock gives the date and time and can jump when the system clock is set. Dates and times are in UTC, on the Gregorian calendar extended backwards, and time zones give them as a zone's clocks show them. Durations count whole nanoseconds, and their arithmetic is checked like any integer arithmetic.
 
 ```sayon
 time = import("standard/time.sayon")
@@ -881,6 +881,14 @@ print(time.describe(time.elapsed(start)))     # such as 50.12ms
 print(time.format(time.now()))                # such as 2026-10-18T09:30:00Z
 moment = time.parse("2026-10-18T09:30:00+02:00")
 print(time.format(moment), time.weekday(moment))   # 2026-10-18T07:30:00Z 7
+```
+
+`time.zone(name)` is a `Zone` of the IANA time zone database, such as `"Europe/Paris"`, and fails with `TimeZoneError` for a name the system does not know; `time.local_zone()` is the system's own. `zone.at(moment)` gives a `ZonedTime`: the `local` date and time the zone's clocks show, their `offset` from UTC, and the zone, whose `format()` writes ISO 8601 with the offset and whose `moment()` is the moment in UTC again. `zone.moment(local)` goes the other way, from a local date and time to its moment: a local time the clocks skip when they go forward falls after the gap, and one they show twice is the earlier. The rules come from the system: on Windows from the ICU library it ships, and elsewhere from `/usr/share/zoneinfo`, or the directory `TZDIR` names; `time.zones_version()` tells their version.
+
+```sayon
+paris = time.zone("Europe/Paris")
+print(paris.at(time.parse("2026-07-15T12:00:00Z")).format())   # 2026-07-15T14:00:00+02:00
+print(time.format(paris.moment(time.parse("2026-12-24T18:00:00Z"))))   # 2026-12-24T17:00:00Z
 ```
 
 `time.deadline(duration)` is a `Deadline` that long from now, whose `remaining()` is the time left (none once it has passed), `passed()` tells whether it has, and `wait()` waits for it. `time.ticker(interval)` is a `Ticker`, whose `wait()` waits for its next beat and gives how many beats have come: the beats keep to the interval however long the work between them takes, and when the work took longer than an interval, the beats missed count too.

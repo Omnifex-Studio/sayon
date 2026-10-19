@@ -175,6 +175,10 @@ hosts! {
     Resolve = "resolve"(String) -> StringArray;
     HttpFail = "http_fail"(String) -> Nothing;
     ValueFail = "value_fail"(String) -> Nothing;
+    ZoneOffset = "zone_offset"(String, Integer) -> Integer;
+    ZoneCheck = "zone_check"(String) -> Nothing;
+    LocalZone = "local_zone"() -> String;
+    ZonesVersion = "zones_version"() -> String;
 }
 
 impl Host {
@@ -593,6 +597,10 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
         Host::Resolve => crate::network::resolve(string(args, 0)).map(V::Strings),
         Host::HttpFail => Err(("HttpError", string(args, 0).to_string())),
         Host::ValueFail => Err(("ValueError", string(args, 0).to_string())),
+        Host::ZoneOffset => crate::zones::offset(string(args, 0), integer(args, 1)).map(V::Integer),
+        Host::ZoneCheck => crate::zones::check(string(args, 0)).map(|()| V::Nothing),
+        Host::LocalZone => Ok(V::String(crate::zones::local_zone())),
+        Host::ZonesVersion => Ok(V::String(crate::zones::version())),
         Host::StandardOutput => Ok(V::Stream(crate::streams::standard_output())),
         Host::StandardError => Ok(V::Stream(crate::streams::standard_error())),
         Host::Start => {

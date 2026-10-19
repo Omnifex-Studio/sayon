@@ -238,6 +238,10 @@ The HTTP client is Sayon code in `standard/network`, over connections.
 
 A program started with `os.start` has a pipe to each of its standard streams, and each pipe a thread of the runtime: one reads what the program writes into a buffer, waiting while a megabyte of it is unread, and one writes what is queued for the program's input. Another thread waits for the program to exit and records its status. An operation that must wait for one of them returns `Blocked` as a socket's does, and the threads wake the scheduler through its waking socket when they have done something a task may wait for. Reading all of either output at once lifts the limit on both, so that `os.run`, which reads one and then the other, never leaves the program waiting to write the second. Stopping a program uses its handle (`TerminateProcess`) or its number (`kill`), which stay its own until its status is recorded.
 
+## Time zones
+
+A zone's offset at a moment comes from the system's database. On Windows the runtime loads `icu.dll`, which Windows ships with the IANA database, checks the name with `ucal_getCanonicalTimeZoneID`, and reads the offsets of a calendar of the zone set to the moment. Elsewhere, or wherever `TZDIR` names a directory, it reads the zone's TZif file once: the transitions it lists, and the POSIX rule after them (such as `CET-1CEST,M3.5.0,M10.5.0/3`), which gives the offsets of the years past the last transition. A local time is turned into a moment in `standard/time` itself, from the offsets a day before and a day after it.
+
 ## Typed JSON
 
 `json.from_json<T>` and `json.to_json<T>` contain `typed_decode` and `typed_encode`, built-ins only `standard/json` can call. They require the `JSON` trait, which, like `CLONE`, is recorded on an explicit type parameter, so a call of `json.decode<T>` is checked against its caller's type. The trait holds for numbers, booleans, strings, `nothing`, arrays and string-keyed dictionaries of such types, structures and enums whose fields have it, and unions whose members read disjoint kinds of JSON value (an enum reads text and objects; `Json` reads every kind).

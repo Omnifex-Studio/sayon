@@ -548,6 +548,10 @@ A numeric conversion cannot represent its value, such as a float that is not fin
 
 Text could not be read as what was asked for: `tonumber(text)` was given text that is not a number (the whole text must be a number, without spaces), or `json.parse` was given text that is not JSON. A JSON error names the line and column where reading stopped.
 
+### TimeZoneError
+
+`time.zone` was given a name the system's time zone database does not have, such as a misspelled `"Europe/Pariss"`, or the system has no database at all. Names are those of the IANA database, such as `"America/New_York"` or `"UTC"`.
+
 ### ConnectionError
 
 A connection could not be made or went wrong: nothing accepted it on that port, the other side closed or reset it, or the network cannot reach the host. The message names the host and port.

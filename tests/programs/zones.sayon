@@ -1,0 +1,23 @@
+# Time zones of the IANA database, from the system.
+time = import("standard/time.sayon")
+
+paris = time.zone("Europe/Paris")
+for text in ["2026-01-15T12:00:00Z", "2026-07-15T12:00:00Z", "2026-03-29T00:59:59Z", "2026-03-29T01:00:00Z", "2026-10-25T00:59:59Z", "2026-10-25T01:00:00Z", "1950-06-01T00:00:00Z"]
+    moment = time.parse(text)
+    zoned = paris.at(moment)
+    print(text, zoned.format(), time.format(zoned.moment()) == time.format(moment))
+for name in ["America/New_York", "Asia/Kolkata", "Australia/Sydney", "Pacific/Chatham", "UTC", "America/St_Johns"]
+    zone = time.zone(name)
+    print(name, zone.at(time.parse("2026-07-01T12:00:00Z")).format(), zone.at(time.parse("2026-12-01T12:00:00Z")).format())
+
+# Local times in a gap and in an overlap.
+gap = paris.moment(time.parse("2026-03-29T02:30:00Z"))
+overlap = paris.moment(time.parse("2026-10-25T02:30:00Z"))
+print(time.format(gap), paris.at(gap).format())
+print(time.format(overlap), paris.at(overlap).format())
+print(time.format(paris.moment(time.parse("2026-06-01T09:15:00Z"))))
+
+bad = try time.zone("Mars/Olympus_Mons")
+if bad is error
+    print(bad.code, bad.message)
+print(length(time.zones_version()) > 0, length(time.local_zone().name) > 0)
