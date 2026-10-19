@@ -89,6 +89,23 @@ function from_bytes(bytes: Array<byte>) -> string
 function from_bytes_lossy(bytes: Array<byte>) -> string
     return host_from_bytes_lossy(bytes)
 
+# Text in an encoding: "utf-8", "utf-16" (little-endian after a byte-order
+# mark), "utf-16le", "utf-16be", "latin-1", "ascii", or "windows-1252".
+# Fails with EncodingError for a character the encoding has no form for.
+function encode(text: string, encoding: string) -> Array<byte>
+    return host_encode(text, encoding)
+
+# Bytes of an encoding as text; "utf-16" follows a byte-order mark, and is
+# little-endian without one. Fails with EncodingError for bytes that are not
+# valid in the encoding.
+function decode(bytes: Array<byte>, encoding: string) -> string
+    return host_decode(bytes, encoding)
+
+# Bytes of an encoding as text, with U+FFFD for the bytes that are not
+# valid in it.
+function decode_lossy(bytes: Array<byte>, encoding: string) -> string
+    return host_decode_lossy(bytes, encoding)
+
 # The Unicode code of a one-character string, such as 65 for "A".
 function code(character: string) -> integer
     return host_code(character)

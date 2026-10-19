@@ -1,0 +1,45 @@
+# Text in encodings other than UTF-8.
+filesystem = import("standard/filesystem.sayon")
+io = import("standard/io.sayon")
+strings = import("standard/strings.sayon")
+
+text = "café €5 ☕"
+for encoding in ["utf-8", "utf-16le", "utf-16be", "UTF-16"]
+    bytes = strings.encode(text, encoding)
+    print(encoding, length(bytes), strings.decode(bytes, encoding) == text)
+print(strings.encode("café", "latin-1"), strings.encode("€5", "windows-1252"))
+print(strings.decode([99, 97, 102, 233], "latin-1"), strings.decode([128, 147, 148], "windows-1252"))
+print(strings.decode([0xFE, 0xFF, 0, 104, 0, 105], "utf-16"), strings.decode([104, 0, 105, 0], "utf-16"))
+print(strings.decode_lossy([104, 0xFF, 105], "ascii"), strings.decode_lossy([0x41, 0, 0x00, 0xD8], "utf-16le"))
+
+for pair in [["€", "latin-1"], ["☕", "windows-1252"], ["x", "ebcdic"]]
+    encoded = try strings.encode(pair[0], pair[1])
+    if encoded is error
+        print(encoded.code, encoded.message)
+decoded = try strings.decode([104, 200], "ascii")
+if decoded is error
+    print(decoded.code, decoded.message)
+
+# Files in an encoding: lines and text read and written as usual.
+for encoding in ["utf-16", "latin-1", "windows-1252"]
+    file = io.open("encodings.tmp", "w", encoding)
+    file.write_line("first line: café")
+    file.write("second: ü")
+    file.close()
+    print(encoding, length(io.read_file_bytes("encodings.tmp")))
+    reading = io.open("encodings.tmp", "r", encoding)
+    print(reading.read_line())
+    print(reading.read())
+    reading.close()
+io.write_file_bytes("encodings.tmp", [104, 200, 105])
+wrong = io.open("encodings.tmp", "r", "ascii")
+outcome = try wrong.read()
+if outcome is error
+    print(outcome.code, outcome.message)
+wrong.close()
+writing = io.open("encodings.tmp", "w", "latin-1")
+failed = try writing.write("☕")
+if failed is error
+    print(failed.code, failed.message)
+writing.close()
+filesystem.remove("encodings.tmp")

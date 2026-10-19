@@ -10,6 +10,7 @@
 //! stream. Numbers are never reused, so a stale reference can never reach a
 //! different file.
 
+use crate::encodings::{DecodeReader, Encoding};
 use crate::host::{HostError, io_error};
 use crate::network::{BLOCKED_CODE, Connecting, Connection, Datagrams, Listener};
 use crate::processes::{PipeInput, PipeOutput, Process};
@@ -21,6 +22,8 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 
 enum Handle {
     Reader(BufReader<File>),
+    /// A file read in an encoding other than UTF-8, as UTF-8.
+    Decoded(BufReader<DecodeReader<File>>),
     Writer(BufWriter<File>),
     /// Standard input, read through the process's own buffer, which
     /// `io.read_line` shares.
@@ -50,6 +53,8 @@ struct Entry {
     handle: Handle,
     path: String,
     references: usize,
+    /// The encoding the text written to a file goes in.
+    encoding: Encoding,
 }
 
 #[derive(Default)]
@@ -84,6 +89,7 @@ fn reader<T>(
         .ok_or(("IOError", "the file is closed".to_string()))?;
     match &mut entry.handle {
         Handle::Reader(reader) => f(reader, &entry.path),
+        Handle::Decoded(reader) => f(reader, &entry.path),
         Handle::Input => {
             // What the program wrote shows before it waits for input.
             let _ = std::io::stdout().flush();
@@ -199,7 +205,7 @@ fn writer<T>(
         .ok_or(("IOError", "the file is closed".to_string()))?;
     match &mut entry.handle {
         Handle::Writer(writer) => f(writer, &entry.path),
-        Handle::Reader(_) => Err((
+        Handle::Reader(_) | Handle::Decoded(_) => Err((
             "IOError",
             format!("\"{}\" was opened for reading, not writing", entry.path),
         )),
@@ -225,6 +231,7 @@ fn insert(handle: Handle, path: &str) -> i64 {
             handle,
             path: path.to_string(),
             references: 1,
+            encoding: Encoding::Utf8,
         },
     );
     id
@@ -305,19 +312,31 @@ pub fn process_id(id: i64) -> Result<i64, HostError> {
 
 /// Opens a file: `"r"` to read, `"w"` to write from the start (creating or
 /// emptying it), `"a"` to write at its end (creating it when needed).
-pub fn open(path: &str, mode: &str) -> Result<i64, HostError> {
+pub fn open(path: &str, mode: &str, encoding_name: &str) -> Result<i64, HostError> {
+    let encoding = Encoding::by_name(encoding_name)?;
     let handle = match mode {
-        "r" => Handle::Reader(BufReader::new(
-            File::open(path).map_err(|e| io_error("open", path, &e))?,
-        )),
+        "r" => {
+            let file = File::open(path).map_err(|e| io_error("open", path, &e))?;
+            if encoding == Encoding::Utf8 {
+                Handle::Reader(BufReader::new(file))
+            } else {
+                Handle::Decoded(BufReader::new(DecodeReader::new(file, encoding)))
+            }
+        }
         "w" | "a" => {
-            let file = OpenOptions::new()
+            let mut file = OpenOptions::new()
                 .create(true)
                 .write(true)
                 .truncate(mode == "w")
                 .append(mode == "a")
                 .open(path)
                 .map_err(|e| io_error("open", path, &e))?;
+            // UTF-16 text starts with a byte-order mark.
+            let empty = file.metadata().map(|m| m.len() == 0).unwrap_or(false);
+            if encoding == Encoding::Utf16 && empty {
+                file.write_all(&[0xFF, 0xFE])
+                    .map_err(|e| io_error("write", path, &e))?;
+            }
             Handle::Writer(BufWriter::new(file))
         }
         _ => {
@@ -329,7 +348,15 @@ pub fn open(path: &str, mode: &str) -> Result<i64, HostError> {
             ));
         }
     };
-    Ok(insert(handle, path))
+    let id = insert(handle, path);
+    if let Some(entry) = table().entries.get_mut(&id) {
+        // What follows the byte-order mark is little-endian.
+        entry.encoding = match encoding {
+            Encoding::Utf16 => Encoding::Utf16Le,
+            other => other,
+        };
+    }
+    Ok(id)
 }
 
 fn port(value: i64) -> Result<u16, HostError> {
@@ -672,6 +699,20 @@ pub fn read_text(id: i64, count: i64) -> Result<String, HostError> {
     })
 }
 
+/// Writes text, in the encoding a file was opened with.
+pub fn write_text(id: i64, text: &str) -> Result<(), HostError> {
+    let encoding = table()
+        .entries
+        .get(&id)
+        .map(|entry| entry.encoding)
+        .unwrap_or(Encoding::Utf8);
+    if encoding == Encoding::Utf8 {
+        return write(id, text.as_bytes());
+    }
+    let bytes = crate::encodings::encode(text, encoding)?;
+    write(id, &bytes)
+}
+
 pub fn write(id: i64, bytes: &[u8]) -> Result<(), HostError> {
     if let Some(result) = connection(id, |connection| connection.write(bytes)) {
         return result;
@@ -734,6 +775,7 @@ pub fn position(id: i64) -> Result<i64, HostError> {
     let result = match &mut entry.handle {
         Handle::Reader(reader) => reader.stream_position(),
         Handle::Writer(writer) => writer.stream_position(),
+        Handle::Decoded(_) => return Err(unpositioned(&path)),
         Handle::Input
         | Handle::Output
         | Handle::Errors
@@ -766,6 +808,7 @@ pub fn seek(id: i64, position: i64) -> Result<(), HostError> {
     let result = match &mut entry.handle {
         Handle::Reader(reader) => reader.seek(target),
         Handle::Writer(writer) => writer.seek(target),
+        Handle::Decoded(_) => return Err(unpositioned(&path)),
         Handle::Input
         | Handle::Output
         | Handle::Errors
@@ -806,6 +849,7 @@ pub fn close(id: i64) -> Result<(), HostError> {
             .map(drop)
             .map_err(|e| io_error("write", &path, e.error())),
         Handle::Reader(_)
+        | Handle::Decoded(_)
         | Handle::Input
         | Handle::Output
         | Handle::Errors
@@ -832,6 +876,7 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
     let mut input;
     let reader: &mut dyn Read = match &mut source.handle {
         Handle::Reader(reader) => reader,
+        Handle::Decoded(reader) => reader,
         Handle::Input => {
             let _ = std::io::stdout().flush();
             input = std::io::stdin().lock();
@@ -855,7 +900,7 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
     };
     let writer = match &mut target.handle {
         Handle::Writer(writer) => writer,
-        Handle::Reader(_) | Handle::Input => {
+        Handle::Reader(_) | Handle::Decoded(_) | Handle::Input => {
             return Err((
                 "IOError",
                 format!("\"{}\" was opened for reading, not writing", target.path),

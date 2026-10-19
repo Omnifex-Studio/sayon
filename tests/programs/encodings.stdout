@@ -1,0 +1,23 @@
+utf-8 14 true
+utf-16le 18 true
+utf-16be 18 true
+UTF-16 20 true
+[99, 97, 102, 233] [128, 53]
+café €“”
+hi hi
+h�i A�
+EncodingError "€" has no Latin-1 form
+EncodingError "☕" has no Windows-1252 form
+ValueError "ebcdic" is not an encoding; use "utf-8", "utf-16", "utf-16le", "utf-16be", "latin-1", "ascii", or "windows-1252"
+EncodingError the bytes are not valid ASCII from byte 1
+utf-16 54
+first line: café
+second: ü
+latin-1 26
+first line: café
+second: ü
+windows-1252 26
+first line: café
+second: ü
+EncodingError "encodings.tmp": the bytes are not valid ASCII from byte 1
+EncodingError "☕" has no Latin-1 form

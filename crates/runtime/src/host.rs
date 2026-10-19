@@ -112,7 +112,7 @@ hosts! {
     Round = "round"(Float) -> Float;
     Trunc = "trunc"(Float) -> Float;
     Random = "random"() -> Float;
-    Open = "open"(String, String) -> Stream;
+    Open = "open"(String, String, String) -> Stream;
     StreamReadLine = "stream_read_line"(Stream, Integer) -> OptionalString;
     StreamRead = "stream_read"(Stream) -> String;
     StreamReadBytes = "stream_read_bytes"(Stream, Integer) -> Bytes;
@@ -151,6 +151,9 @@ hosts! {
     Bytes = "bytes"(String) -> Bytes;
     FromBytes = "from_bytes"(Bytes) -> String;
     FromBytesLossy = "from_bytes_lossy"(Bytes) -> String;
+    Encode = "encode"(String, String) -> Bytes;
+    Decode = "decode"(Bytes, String) -> String;
+    DecodeLossy = "decode_lossy"(Bytes, String) -> String;
     CString = "c_string"(String) -> CString;
     CStringAddress = "c_string_address"(CString) -> Pointer;
     ReadCString = "read_c_string"(Pointer) -> String;
@@ -283,6 +286,10 @@ pub fn set_arguments(arguments: Vec<String>) {
 }
 
 pub(crate) fn io_error(action: &str, path: &str, error: &std::io::Error) -> HostError {
+    // A file read in an encoding it is not in.
+    if error.kind() == std::io::ErrorKind::InvalidData {
+        return ("EncodingError", format!("\"{path}\": {error}"));
+    }
     let reason = match error.kind() {
         std::io::ErrorKind::NotFound => "it does not exist".to_string(),
         std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
@@ -503,7 +510,18 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
                 .map_err(|e| io_error("write", path, &e))?;
             Ok(V::Nothing)
         }
-        Host::Open => crate::streams::open(string(args, 0), string(args, 1)).map(V::Stream),
+        Host::Open => {
+            crate::streams::open(string(args, 0), string(args, 1), string(args, 2)).map(V::Stream)
+        }
+        Host::Encode => {
+            let encoding = crate::encodings::Encoding::by_name(string(args, 1))?;
+            crate::encodings::encode(string(args, 0), encoding).map(V::Bytes)
+        }
+        Host::Decode | Host::DecodeLossy => {
+            let encoding = crate::encodings::Encoding::by_name(string(args, 1))?;
+            crate::encodings::decode(bytes(args, 0), encoding, host == Host::DecodeLossy)
+                .map(V::String)
+        }
         Host::StreamReadLine => {
             crate::streams::read_line(stream(args, 0), integer(args, 1)).map(V::OptionalString)
         }
@@ -515,7 +533,7 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
             crate::streams::read_text(stream(args, 0), integer(args, 1)).map(V::String)
         }
         Host::StreamWrite => {
-            crate::streams::write(stream(args, 0), string(args, 1).as_bytes()).map(|()| V::Nothing)
+            crate::streams::write_text(stream(args, 0), string(args, 1)).map(|()| V::Nothing)
         }
         Host::StreamWriteBytes => {
             crate::streams::write(stream(args, 0), bytes(args, 1)).map(|()| V::Nothing)

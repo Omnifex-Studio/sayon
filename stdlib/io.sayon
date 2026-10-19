@@ -79,9 +79,13 @@ type File = [stream: HostStream, path: string, line_limit: integer]
 
 # Opens a file: with "r" to read it, "w" to write it from the start (creating
 # it, or emptying it first), or "a" to write at its end (creating it when
-# needed). Fails with IOError when the file cannot be opened.
-function open(path: string, mode = "r") -> File
-    return File(stream = host_open(path, mode), path = clone(path), line_limit = LINE_LIMIT)
+# needed). Its text is in `encoding`: UTF-8 unless given, or one of the
+# encodings of standard/strings's `encode`; in another than UTF-8, the file
+# has no positions to `seek` to, and its bytes are those of its text in
+# UTF-8. Fails with IOError when the file cannot be opened, and with
+# EncodingError when it does not hold text in its encoding.
+function open(path: string, mode = "r", encoding = "utf-8") -> File
+    return File(stream = host_open(path, mode, encoding), path = clone(path), line_limit = LINE_LIMIT)
 
 # The next line without its line ending (LF or CRLF), or nothing at the end
 # of the file. The last line need not end with a line ending.

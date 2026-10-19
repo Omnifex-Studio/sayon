@@ -95,7 +95,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `os.exit` (in order: `finally` blocks and cleanup run), `filesystem.walk`, `filesystem.is_link` | experimental | M2 |
 | Standard input as a file (`io.input`), running programs and capturing their output (`os.run`) | experimental | M2 |
 | Standard output and error as files (`io.output`, `io.errors`); programs started without waiting (`os.start`), streaming their input and output while other tasks run; input and environments for programs | experimental | M3 |
-| Text encodings other than UTF-8 | planned | M3 |
+| Text encodings other than UTF-8: `strings.encode` and `decode` for UTF-16, Latin-1, ASCII, and Windows-1252, and files opened with an encoding | experimental | M3 |
 | `standard/json`: `Json` values, parse with positions in errors, compact and pretty encoding, exact number text, duplicate-field and depth limits | experimental | M2 |
 | `standard/json` typed values: `decode`, `encode_value`, `from_json`, `to_json` for numbers, text, arrays, dictionaries, structures, enums, and unions, with paths in errors | experimental | M2 |
 | `standard/json` streams: the items of a large array (`items`), JSON Lines (`lines`), and writing an array an item at a time (`write_items`) | experimental | M3 |
