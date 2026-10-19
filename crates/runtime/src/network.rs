@@ -21,7 +21,7 @@ use std::cell::RefCell;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The code of the error an operation returns when it must wait.
 pub const BLOCKED_CODE: &str = "Blocked";
@@ -224,6 +224,10 @@ pub struct Connection {
     pub(crate) timeout: Option<Duration>,
     /// The other side's address, for messages.
     pub(crate) name: String,
+    /// The TLS session the connection's bytes go through, once it has one:
+    /// then `input` holds what was decrypted, and `output` what was
+    /// encrypted.
+    tls: Option<Box<crate::tls::Session>>,
 }
 
 impl Connection {
@@ -240,6 +244,48 @@ impl Connection {
             ended: false,
             timeout,
             name,
+            tls: None,
+        }
+    }
+
+    /// Makes the connection go through TLS with the server named `server`,
+    /// whose certificate the system must trust and must be for that name.
+    /// Runs again where it left off after waiting for the socket.
+    pub fn secure(&mut self, server: &str) -> Result<(), HostError> {
+        if self.tls.is_none() {
+            if !self.input.is_empty() {
+                return Err((
+                    "TlsError",
+                    format!("{} sent data before TLS started", self.what()),
+                ));
+            }
+            self.tls = Some(Box::new(crate::tls::Session::client(server)?));
+        }
+        loop {
+            self.send_some()?;
+            let session = self.tls.as_mut().expect("a session");
+            if session.established() {
+                return Ok(());
+            }
+            if let crate::tls::Step::Done = session.handshake(&mut self.output)? {
+                // What came after the handshake can be read.
+                if let crate::tls::Read::Closed =
+                    session.decrypt(&mut self.input, &mut self.output)?
+                {
+                    self.ended = true;
+                }
+                self.send_some()?;
+                return Ok(());
+            }
+            if self.ended {
+                return Err((
+                    "TlsError",
+                    format!("{} closed before TLS started", self.what()),
+                ));
+            }
+            if !self.receive()? {
+                return Err(self.wait_to_read());
+            }
         }
     }
 
@@ -271,22 +317,34 @@ impl Connection {
         Ok(())
     }
 
-    /// Takes in what has arrived. False when nothing has, yet.
+    /// Takes in what has arrived, decrypting it on a TLS connection. False
+    /// when nothing has, yet.
     fn receive(&mut self) -> Result<bool, HostError> {
         let mut buffer = [0u8; 16 * 1024];
-        match self.stream.read(&mut buffer) {
+        let count = match self.stream.read(&mut buffer) {
             Ok(0) => {
                 self.ended = true;
-                Ok(true)
+                return Ok(true);
             }
-            Ok(count) => {
-                self.input.extend_from_slice(&buffer[..count]);
-                Ok(true)
+            Ok(count) => count,
+            Err(e) if e.kind() == ErrorKind::WouldBlock => return Ok(false),
+            Err(e) if e.kind() == ErrorKind::Interrupted => return Ok(true),
+            Err(e) => return Err(failure(&e, &self.what())),
+        };
+        match &mut self.tls {
+            None => self.input.extend_from_slice(&buffer[..count]),
+            Some(session) => {
+                session.incoming.extend_from_slice(&buffer[..count]);
+                // During the handshake, `secure` gives SChannel what came.
+                if session.established()
+                    && let crate::tls::Read::Closed =
+                        session.decrypt(&mut self.input, &mut self.output)?
+                {
+                    self.ended = true;
+                }
             }
-            Err(e) if e.kind() == ErrorKind::WouldBlock => Ok(false),
-            Err(e) if e.kind() == ErrorKind::Interrupted => Ok(true),
-            Err(e) => Err(failure(&e, &self.what())),
         }
+        Ok(true)
     }
 
     fn wait_to_read(&self) -> HostError {
@@ -384,7 +442,10 @@ impl Connection {
                 return Err(self.wait_to_write());
             }
         }
-        self.output.extend_from_slice(bytes);
+        match &mut self.tls {
+            Some(session) => session.encrypt(bytes, &mut self.output)?,
+            None => self.output.extend_from_slice(bytes),
+        }
         self.send_some()
     }
 
@@ -400,6 +461,9 @@ impl Connection {
     /// Finishes sending, after the output has gone; the other side's reads
     /// then end.
     pub fn finish_sending(&mut self) -> Result<(), HostError> {
+        if let Some(session) = &mut self.tls {
+            session.close(&mut self.output);
+        }
         self.flush()?;
         match self.stream.shutdown(Shutdown::Write) {
             Err(e) if e.kind() != ErrorKind::NotConnected => Err(failure(&e, &self.what())),
@@ -437,6 +501,9 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        if let Some(session) = &mut self.tls {
+            session.close(&mut self.output);
+        }
         self.send_rest();
     }
 }
@@ -518,8 +585,8 @@ pub struct Connecting {
 }
 
 impl Connecting {
-    /// Starts connecting to a host, trying each of its addresses in turn,
-    /// for at most `timeout` each.
+    /// Starts connecting to a host, on the first of its addresses that
+    /// answers within `timeout`.
     pub fn start(host: &str, port: u16, timeout: Option<Duration>) -> Connecting {
         let job = Arc::new(Job {
             result: Mutex::new(None),
@@ -557,22 +624,71 @@ impl Connecting {
     }
 }
 
+/// How long an attempt to connect has before the next address is tried too.
+const STAGGER: Duration = Duration::from_millis(250);
+
+/// Connects to the first of a host's addresses that answers, within
+/// `timeout` in all. Attempts start a quarter of a second apart, going back
+/// and forth between IPv6 and IPv4 addresses, so that a family of addresses
+/// that does not work here costs little ("Happy Eyeballs", RFC 8305). The
+/// attempts that lose end on their own.
 fn connect(host: &str, port: u16, timeout: Option<Duration>) -> Result<TcpStream, HostError> {
     let what = format!("cannot connect to {host}:{port}");
-    let mut last = None;
-    for address in addresses(host, port)? {
-        let attempt = match timeout {
-            Some(timeout) => TcpStream::connect_timeout(&address, timeout),
-            None => TcpStream::connect(address),
+    let ordered = by_turns(addresses(host, port)?);
+    if ordered.is_empty() {
+        return Err(unknown_host(host));
+    }
+    let deadline = timeout.map(|timeout| Instant::now() + timeout);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let mut started = 0;
+    let mut finished = 0;
+    let mut last: Option<std::io::Error> = None;
+    while finished < ordered.len() {
+        if started < ordered.len() {
+            let address = ordered[started];
+            let sender = sender.clone();
+            let limit = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+            let attempt = std::thread::Builder::new()
+                .name("connect".to_string())
+                .spawn(move || {
+                    let result = match limit {
+                        Some(limit) if limit.is_zero() => Err(ErrorKind::TimedOut.into()),
+                        Some(limit) => TcpStream::connect_timeout(&address, limit),
+                        None => TcpStream::connect(address),
+                    };
+                    let _ = sender.send(result);
+                });
+            if let Err(e) = attempt {
+                finished += 1;
+                last = Some(e);
+            }
+            started += 1;
+        }
+        let wait = if started < ordered.len() {
+            STAGGER
+        } else {
+            match deadline {
+                Some(deadline) => deadline.saturating_duration_since(Instant::now()),
+                None => Duration::MAX,
+            }
         };
-        match attempt {
-            Ok(stream) => {
+        match receiver.recv_timeout(wait) {
+            Ok(Ok(stream)) => {
                 stream
                     .set_nonblocking(true)
                     .map_err(|e| failure(&e, &what))?;
                 return Ok(stream);
             }
-            Err(e) => last = Some(e),
+            Ok(Err(e)) => {
+                finished += 1;
+                last = Some(e);
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if started == ordered.len() => {
+                last = Some(ErrorKind::TimedOut.into());
+                break;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     Err(match last {
@@ -583,6 +699,22 @@ fn connect(host: &str, port: u16, timeout: Option<Duration>) -> Result<TcpStream
         Some(e) => failure(&e, &what),
         None => unknown_host(host),
     })
+}
+
+/// The addresses in turns of their families, starting with the first's.
+fn by_turns(found: Vec<SocketAddr>) -> Vec<SocketAddr> {
+    let Some(first) = found.first() else {
+        return found;
+    };
+    let ipv6 = first.is_ipv6();
+    let (mut same, mut other): (std::collections::VecDeque<SocketAddr>, _) =
+        found.iter().partition(|address| address.is_ipv6() == ipv6);
+    let mut ordered = Vec::with_capacity(found.len());
+    while !same.is_empty() || !other.is_empty() {
+        ordered.extend(same.pop_front());
+        ordered.extend(other.pop_front());
+    }
+    ordered
 }
 
 // ----- datagrams ---------------------------------------------------------------------------------

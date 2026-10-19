@@ -1,0 +1,40 @@
+# HTTPS with public servers, which needs the internet
+network = import("standard/network.sayon")
+strings = import("standard/strings.sayon")
+threads = import("standard/threads.sayon")
+
+page = network.get("https://example.com/")
+print(page.status, page.url, strings.contains(page.text(), "Example Domain"))
+
+# A redirect from http:// to https://.
+moved = network.get("http://github.com/")
+print(moved.status, moved.url)
+
+# Certificates the system does not accept.
+for host in ["expired.badssl.com", "wrong.host.badssl.com", "self-signed.badssl.com", "untrusted-root.badssl.com"]
+    outcome = try network.get("https://{host}/")
+    if outcome is error
+        print(host, outcome.code, outcome.message)
+    else
+        print(host, "accepted:", outcome.status)
+
+# Lines through TLS, on a connection of one's own.
+connection = network.connect_secure("example.com", 443)
+connection.write("GET / HTTP/1.1\r\nhost: example.com\r\nconnection: close\r\n\r\n")
+print(connection.read_line())
+count = 0
+for line in connection.lines()
+    count += 1
+print("more lines:", count > 10)
+connection.close()
+
+# A large body each way, in many records.
+text = strings.repeat("0123456789", 20000)
+echoed = network.post("https://httpbin.org/anything", text)
+print("echoed", echoed.status, strings.contains(echoed.text(), strings.repeat("0123456789", 100)))
+
+# A secure connection on another thread.
+worker = threads.spawn_parallel(function() -> integer
+    return network.get("https://example.com/").status
+)
+print("from a thread", threads.join(worker))

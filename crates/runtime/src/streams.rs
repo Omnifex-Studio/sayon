@@ -498,6 +498,11 @@ pub fn peer_address(id: i64) -> Result<String, HostError> {
     with_connection(id, |connection| connection.peer_address())
 }
 
+/// Makes a connection go through TLS with the server named `server`.
+pub fn secure(id: i64, server: &str) -> Result<(), HostError> {
+    with_connection(id, |connection| connection.secure(server))
+}
+
 pub fn finish_sending(id: i64) -> Result<(), HostError> {
     with_connection(id, |connection| connection.finish_sending())
 }

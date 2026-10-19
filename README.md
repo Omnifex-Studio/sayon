@@ -38,12 +38,12 @@ Sayon is in early development and not ready for real programs. What works today:
 - Modules: programs can be split across files with `import`, and projects can depend on other packages from local folders or pinned Git commits, locked by `sayon install`
 - Borrowed views of arrays and strings, shared values with weak handles and cells, and finally functions that release what a structure owns when it is destroyed
 - Tasks that take turns on a thread, channels and `select`, timers, and tasks on threads of their own that share data through channels and mutexes
-- TCP and UDP sockets and an HTTP client, other programs started with pipes to their streams, and C functions: calls, C structures by value, and Sayon functions that C calls back
+- TCP and UDP sockets, TLS from the system, and an HTTP client for `http://` and `https://`, other programs started with pipes to their streams, and C functions: calls, C structures by value, and Sayon functions that C calls back
 - Standard library modules for files, directories, streams and text encodings, JSON (typed values and streams), collections, time with time zones, processes, the network, threads, memory, text, and math
 - `test` blocks and the `sayon test` runner, and the `sayon fmt` formatter
 - Projects with a `sayon.toml` manifest, and the `run`, `build`, `check`, `test`, `fmt`, `init`, `clean`, `doctor`, `lint`, and `explain` commands
 
-Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. TLS for `https://`, and native tasks and C structures by value on Linux and macOS, come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
+Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Validating Linux and macOS, with their native tasks, C structures by value, and TLS, comes next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
 
 ## Installing
 

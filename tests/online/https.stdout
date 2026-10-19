@@ -1,0 +1,10 @@
+200 https://example.com/ true
+200 https://github.com/
+expired.badssl.com TlsError the certificate of expired.badssl.com has expired, or is not valid yet
+wrong.host.badssl.com TlsError the certificate wrong.host.badssl.com gave is for another name
+self-signed.badssl.com TlsError the certificate of self-signed.badssl.com is not from an authority this computer trusts
+untrusted-root.badssl.com TlsError the certificate of untrusted-root.badssl.com is not from an authority this computer trusts
+HTTP/1.1 200 OK
+more lines: true
+echoed 200 true
+from a thread 200

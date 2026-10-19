@@ -9,5 +9,5 @@ Hello, again
 ping true
 TimeoutError no answer within 50 milliseconds
 TimeoutError no answer within 50 milliseconds
-HttpError https://127.0.0.1/ needs TLS, which this release does not have yet
+HttpError gopher://127.0.0.1/ is not an http:// or https:// URL
 ValueError 70000 is not a port; ports are 0 to 65535

@@ -172,6 +172,7 @@ hosts! {
     LocalAddress = "local_address"(Stream) -> String;
     PeerAddress = "peer_address"(Stream) -> String;
     FinishSending = "finish_sending"(Stream) -> Nothing;
+    Secure = "secure"(Stream, String) -> Nothing;
     Resolve = "resolve"(String) -> StringArray;
     HttpFail = "http_fail"(String) -> Nothing;
     ValueFail = "value_fail"(String) -> Nothing;
@@ -209,6 +210,7 @@ impl Host {
                 | Host::DatagramSend
                 | Host::DatagramReceive
                 | Host::FinishSending
+                | Host::Secure
                 | Host::ProcessWait
         )
     }
@@ -572,6 +574,9 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
                 .map(V::Stream)
         }
         Host::ConnectFinish => crate::streams::connect_finish(stream(args, 0)).map(|()| V::Nothing),
+        Host::Secure => {
+            crate::streams::secure(stream(args, 0), string(args, 1)).map(|()| V::Nothing)
+        }
         Host::Listen => crate::streams::listen(string(args, 0), integer(args, 1)).map(V::Stream),
         Host::Accept => crate::streams::accept(stream(args, 0)).map(V::Stream),
         Host::DatagramBind => {

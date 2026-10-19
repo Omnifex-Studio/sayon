@@ -568,6 +568,10 @@ A connection could not be made or went wrong: nothing accepted it on that port, 
 
 A host has no address the system can find, a port is already in use by another socket, or an address is not one of this computer's (for `network.listen` or `network.bind`).
 
+### TlsError
+
+TLS with a server failed. Most often the server's certificate is not one the system accepts: it has expired, it is for another name than the one connected to, or it does not come from an authority the system trusts; the message says which. TLS also fails when the other side does not answer in TLS, when the two sides share no version of it, and on systems that have no TLS for Sayon yet (so far, every system but Windows).
+
 ### TimeoutError
 
 A network operation waited longer than its timeout: `network.connect`'s, or the one a connection, listener, or datagram socket was given with `set_timeout`. The message says how long it waited.
@@ -578,7 +582,7 @@ The system reported a network failure that is none of the others; the message ha
 
 ### HttpError
 
-An HTTP request went wrong in a way HTTP itself defines: the URL is not an `http://` URL (`https://` needs TLS, which is not available yet), the other side's answer is not HTTP, its body ended early or is longer than the request's limit, or it redirected more times than the request allows. A response with a failing status, such as 404, is not an error; `response.succeeded()` tells it apart.
+An HTTP request went wrong in a way HTTP itself defines: the URL is neither an `http://` nor an `https://` URL, the other side's answer is not HTTP, its body ended early or is longer than the request's limit, or it redirected more times than the request allows. A response with a failing status, such as 404, is not an error; `response.succeeded()` tells it apart.
 
 ### ChannelClosedError
 

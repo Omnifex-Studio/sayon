@@ -1,0 +1,28 @@
+# TLS that fails without another computer: a server that answers in plain
+# text, and a URL of neither http nor https
+network = import("standard/network.sayon")
+threads = import("standard/threads.sayon")
+
+listener = network.listen("127.0.0.1", 0)
+port = listener.address().port
+server = threads.spawn(function()
+    for _ in range(2)
+        connection = listener.accept()
+        # The client's first TLS message, then an answer that is not TLS.
+        connection.read_bytes(4096)
+        connection.write("this server answers in plain text, not in TLS\n")
+        connection.finish_sending()
+        while length(connection.read_bytes(4096)) > 0
+            continue
+)
+plain = try network.connect_secure("127.0.0.1", port)
+if plain is error
+    print(plain.code, plain.message)
+fetched = try network.get("https://127.0.0.1:{port}/")
+if fetched is error
+    print(fetched.code, fetched.message)
+threads.join(server)
+
+unknown = try network.get("ftp://example.com/")
+if unknown is error
+    print(unknown.code, unknown.message)

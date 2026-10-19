@@ -1,8 +1,8 @@
-# TCP connections and listeners, UDP datagrams, and an HTTP client.
+# TCP connections and listeners, UDP datagrams, TLS, and an HTTP client.
 #
 #     network = import("standard/network.sayon")
 #
-#     response = network.get("http://localhost:8080/status")
+#     response = network.get("https://example.com/")
 #     print(response.status, response.text())
 #
 #     connection = network.connect("localhost", 7000)
@@ -17,7 +17,12 @@
 # TimeoutError. The network's failures are ConnectionError (refused,
 # closed by the other side, unreachable), AddressError (a host without an
 # address, an address in use), TimeoutError, and NetworkError for the
-# rest; HTTP adds HttpError.
+# rest; TLS adds TlsError, and HTTP HttpError.
+#
+# TLS comes from the system, which decides which servers' certificates it
+# trusts: SChannel and the certificate store on Windows. A connection from
+# `connect_secure`, or made secure with `connection.secure(name)`, reads
+# and writes as before, and its bytes travel encrypted.
 
 io = import("standard/io.sayon")
 strings = import("standard/strings.sayon")
@@ -49,13 +54,32 @@ function resolve(host: string) -> Array<string>
 # so it cannot be cloned.
 type Connection = [stream: HostStream, line_limit: integer]
 
-# Connects to a port of a host, trying each of its addresses in turn. Fails
-# with ConnectionError when nothing accepts the connection, AddressError
-# when the host has no address, and TimeoutError after `timeout`.
+# Connects to a port of a host, on the first of its addresses that answers.
+# Fails with ConnectionError when nothing accepts the connection,
+# AddressError when the host has no address, and TimeoutError after
+# `timeout`.
 function connect(host: string, port: integer, timeout = time.seconds(30)) -> Connection
     stream = host_connect(host, port, timeout.nanoseconds)
     host_connect_finish(stream)
     return Connection(stream = stream, line_limit = io.LINE_LIMIT)
+
+# Connects as `connect` does, and starts TLS with the host, which must
+# show a certificate for its name that the system trusts. Fails as
+# `connect` does, and with TlsError when TLS fails.
+function connect_secure(host: string, port: integer, timeout = time.seconds(30)) -> Connection
+    connection = connect(host, port, timeout)
+    connection.set_timeout(timeout)
+    connection.secure(host)
+    connection.set_timeout(time.seconds(0))
+    return connection
+
+# Starts TLS on the connection, with the server named `server`: what is
+# read and written after it is encrypted. The system must trust the
+# server's certificate, which must be for that name; otherwise it fails
+# with TlsError. A protocol that starts in plain text and then turns to
+# TLS calls it when the other side agrees to.
+function connection_secure(update connection: Connection, server: string)
+    host_secure(connection.stream, server)
 
 # The next line without its line ending (LF or CRLF), or nothing once the
 # other side has finished sending.
@@ -246,8 +270,8 @@ function post(url: string, body: string, content_type = "text/plain; charset=utf
 # Sends an HTTP/1.1 request and gives the response, following up to
 # `redirects` redirects. Each step of connecting, sending, and receiving
 # may wait for `timeout`; a body longer than `limit` bytes fails with
-# HttpError, as do a response that is not HTTP and a URL that is not
-# `http://`. A status that reports a failure, such as 404, is a response
+# HttpError, as do a response that is not HTTP and a URL that is neither
+# `http://` nor `https://`, which goes through TLS. A status that reports a failure, such as 404, is a response
 # like any other; `response.succeeded()` tells it apart.
 function request(method: string, url: string, headers: Dict<string, string> = [], body: Array<byte> = [], timeout = time.seconds(30), redirects = 10, limit = 16_777_216) -> Response
     verb = strings.upper(method)
@@ -272,14 +296,18 @@ private function is_redirect(status: integer) -> boolean
     return status == 301 or status == 302 or status == 303 or status == 307 or status == 308
 
 # A URL split into its parts.
-private type Url = [host: string, port: integer, target: string]
+private type Url = [secure: boolean, host: string, port: integer, target: string]
 
 private function parse_url(url: string) -> Url
-    if strings.starts_with(url, "https://")
-        host_http_fail("{url} needs TLS, which this release does not have yet")
-    if not strings.starts_with(url, "http://")
-        host_http_fail("{url} is not an http:// URL")
-    rest = strings.slice(url, 7, length(url))
+    secure = strings.starts_with(url, "https://")
+    if not secure and not strings.starts_with(url, "http://")
+        host_http_fail("{url} is not an http:// or https:// URL")
+    scheme = 7
+    port = 80
+    if secure
+        scheme = 8
+        port = 443
+    rest = strings.slice(url, scheme, length(url))
     slash = strings.find(rest, "/")
     authority = clone(rest)
     target = "/"
@@ -289,7 +317,6 @@ private function parse_url(url: string) -> Url
     if authority == ""
         host_http_fail("{url} has no host")
     host = clone(authority)
-    port = 80
     colon = strings.find(authority, ":")
     if colon != nothing and not strings.starts_with(authority, "[")
         host = strings.slice(authority, 0, colon)
@@ -299,14 +326,23 @@ private function parse_url(url: string) -> Url
         port = number
     if strings.starts_with(host, "[")
         host = strings.slice(host, 1, length(host) - 1)
-    return Url(host = host, port = port, target = target)
+    return Url(secure = secure, host = host, port = port, target = target)
+
+# The port a URL's scheme uses when it names none.
+private function default_port(parts: Url) -> integer
+    if parts.secure
+        return 443
+    return 80
 
 # Where a redirect leads: a URL of its own, or a path on the same host.
 private function join_url(base: string, location: string) -> string
     if strings.starts_with(location, "http://") or strings.starts_with(location, "https://")
         return clone(location)
     parts = parse_url(base)
-    origin = "http://{address_text(Address(host = clone(parts.host), port = parts.port))}"
+    scheme = "http"
+    if parts.secure
+        scheme = "https"
+    origin = "{scheme}://{address_text(Address(host = clone(parts.host), port = parts.port))}"
     if strings.starts_with(location, "/")
         return origin + location
     last = 0
@@ -322,10 +358,12 @@ private function exchange(method: string, url: string, headers: Dict<string, str
     parts = parse_url(url)
     connection = connect(parts.host, parts.port, timeout)
     connection.set_timeout(timeout)
+    if parts.secure
+        connection.secure(parts.host)
     host = clone(parts.host)
     if strings.contains(host, ":")
         host = "[{host}]"
-    if parts.port != 80
+    if parts.port != default_port(parts)
         host = "{host}:{parts.port}"
     lines = ["{method} {parts.target} HTTP/1.1", "host: {host}", "user-agent: sayon", "connection: close"]
     if length(body) > 0 or method == "POST" or method == "PUT"

@@ -102,7 +102,7 @@ if nothing_said is error
     print(nothing_said.code, nothing_said.message)
 
 # Mistakes are errors.
-outcome = try network.get("https://127.0.0.1/")
+outcome = try network.get("gopher://127.0.0.1/")
 if outcome is error
     print(outcome.code, outcome.message)
 bad_port = try network.listen("127.0.0.1", 70000)

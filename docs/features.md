@@ -109,7 +109,10 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `standard/time` time zones of the IANA database, from the system (ICU on Windows, TZif files elsewhere, or `TZDIR`) | experimental | M3 |
 | `standard/network`: TCP connections and listeners, UDP datagrams, address resolution, timeouts; waiting for sockets lets other tasks run | experimental | M3 |
 | `standard/network` HTTP/1.1 client: `get`, `post`, `request`, chunked and sized bodies, redirects, body size limits | experimental | M3 |
-| TLS (`https://`) with certificate verification, streaming HTTP bodies | planned | M3 |
+| TLS from the system, with its certificate checks: `network.connect_secure`, `connection.secure`, `https://` in the HTTP client; Windows (SChannel) | experimental | M3 |
+| TLS on Linux and macOS | planned | with each platform's validation |
+| Connecting on the first of a host's addresses that answers, IPv6 and IPv4 by turns (RFC 8305) | experimental | M3 |
+| Streaming HTTP bodies; TLS servers and client certificates | planned | M4 |
 | Tasks on threads of their own (`threads.spawn_parallel`), with their own tasks, cancellation, and `os.exit` across threads; channels and `select` between threads; native on Windows | experimental | M3 |
 | `standard.graphics` | planned | M4 baseline |
 

@@ -5,6 +5,8 @@
 //!   `NAME.stdout`, plus `NAME.stderr` and `NAME.status` when present.
 //! - `tests/errors/NAME.sayon` is checked with `sayon check`; the rendered
 //!   diagnostics must match `NAME.stderr` and the status must be 2.
+//! - `tests/online/NAME.sayon` is like a program, and talks to public
+//!   servers; it runs only with `cargo test -- --ignored`.
 //!
 //! Set `SAYON_BLESS=1` to write the current behavior as the expectation, then
 //! review the changes before committing them.
@@ -102,14 +104,31 @@ fn compare(failures: &mut Vec<String>, name: &str, path: &Path, actual: &str, re
 
 #[test]
 fn programs_produce_their_recorded_output() {
-    let dir = tests_dir().join("programs");
+    run_programs(&tests_dir().join("programs"));
+}
+
+/// The programs under `tests/online`, which need the internet: their HTTPS
+/// requests go to public servers. Run them with `cargo test -- --ignored`.
+#[test]
+#[ignore = "needs the internet"]
+fn online_programs_produce_their_recorded_output() {
+    let dir = tests_dir().join("online");
+    run_programs(&dir);
+    if std::env::var_os("SAYON_SKIP_NATIVE").is_none() {
+        run_native_programs(&dir);
+    }
+}
+
+/// Runs each program under `dir` and compares its output, errors, and status
+/// with the recorded ones.
+fn run_programs(dir: &Path) {
     let mut failures = Vec::new();
-    for source in sources(&dir) {
+    for source in sources(dir) {
         let name = source.file_name().unwrap().to_string_lossy().to_string();
         // A program's `.stdin` file, when it has one, is its input.
         let input = read_expectation(&source.with_extension("stdin"));
         let outcome = sayon_with_env(
-            &dir,
+            dir,
             &["run", "--color", "never", &name],
             &[],
             input.as_deref(),
@@ -159,12 +178,17 @@ fn native_programs_match_the_interpreter() {
         eprintln!("SKIPPED: native parity checks (SAYON_SKIP_NATIVE is set)");
         return;
     }
-    let dir = tests_dir().join("programs");
+    run_native_programs(&tests_dir().join("programs"));
+}
+
+/// Builds each program under `dir` natively and compares its behavior with
+/// the interpreter's recorded one.
+fn run_native_programs(dir: &Path) {
     let mut failures = Vec::new();
-    for source in sources(&dir) {
+    for source in sources(dir) {
         let name = source.file_name().unwrap().to_string_lossy().to_string();
         let mut outcome = sayon_with_env(
-            &dir,
+            dir,
             &["run", "--native", "--color", "never", &name],
             &[("SAYON_DEBUG_ALLOC", "1")],
             read_expectation(&source.with_extension("stdin")).as_deref(),
@@ -300,6 +324,7 @@ fn repository_sources_are_formatted() {
             "fmt",
             "--check",
             "tests/programs",
+            "tests/online",
             "tests/lint",
             "tests/test_runner",
             "stdlib",

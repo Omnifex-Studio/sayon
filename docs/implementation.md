@@ -252,6 +252,10 @@ Sockets are entries of the stream table, beside files, so a connection is releas
 
 When no task can go on but some wait for sockets, the scheduler waits in the system's `poll` (`WSAPoll` on Windows) for any of their sockets, and those with output, until the earliest timer or socket deadline. A socket's timeout counts from when its operation first waited; past it, the operation fails with `TimeoutError`. Making a connection blocks, to find the host's addresses and then to connect, so it runs on a thread of its own, which wakes the scheduler through a loopback datagram socket of the scheduler's poll. In the interpreter a waiting primitive leaves its frame at the operation, as a channel operation does; in compiled programs `sayon_host_call` waits in a loop on the task's own stack.
 
+Making a connection tries the host's addresses in turns of their families, IPv6 and IPv4, starting a new attempt, each on a thread of its own, every quarter of a second until one connects, and taking the first that does; the timeout covers them all.
+
+TLS comes from the system: SChannel, through `secur32.dll`, which is loaded the first time a connection starts TLS. A connection holds its session, which never touches the socket: `receive` adds what arrives to the session's encrypted input, and the session decrypts every whole record into the connection's input, where reading finds it as before; `write` encrypts into records in the connection's output. The handshake runs in `secure`, which gives SChannel what has arrived and sends what it puts out, and like any operation of a connection, returns `Blocked` when it must wait and runs again from where it was. SChannel checks the certificate against the system's store and the name given, which also goes in the handshake. A record that starts a handshake again, as a TLS 1.3 server does to send tickets, makes the session go back to the handshake before decrypting more. Closing or finishing sending first sends the message that ends the session.
+
 The HTTP client is Sayon code in `standard/network`, over connections.
 
 ## Programs
