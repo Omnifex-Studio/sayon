@@ -736,8 +736,8 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 
 | Module | Functions |
 |---|---|
-| `standard/io.sayon` | `read_file`, `write_file`, `append_file`, `read_lines`, `read_file_bytes`, `write_file_bytes`, `read_line` (standard input; `nothing` at the end), `write` (no newline), `write_error`; `open` for a `File`, and `input` for standard input as one, with the methods `read_line`, `lines`, `read`, `read_bytes`, `write`, `write_line`, `write_bytes`, `flush`, `position`, `seek`, `close`; `copy` |
-| `standard/os.sayon` | `arguments` (the words after `--` with `sayon run`), `environment`, `platform`, `current_directory`, `exit`, `run` (a `Completed` with `status`, `output`, and `errors`) |
+| `standard/io.sayon` | `read_file`, `write_file`, `append_file`, `read_lines`, `read_file_bytes`, `write_file_bytes`, `read_line` (standard input; `nothing` at the end), `write` (no newline), `write_error`; `open` for a `File`, and `input`, `output`, and `errors` for the standard streams as ones, with the methods `read_line`, `lines`, `read`, `read_bytes`, `write`, `write_line`, `write_bytes`, `flush`, `position`, `seek`, `close`; `copy` |
+| `standard/os.sayon` | `arguments` (the words after `--` with `sayon run`), `environment`, `platform`, `current_directory`, `exit`, `run` (a `Completed` with `status`, `output`, and `errors`), `start` (a `Process` with the files `input`, `output`, and `errors`, and the methods `finish_input`, `wait`, `stop`, `id`) |
 | `standard/filesystem.sayon` | `exists`, `is_file`, `is_directory`, `is_link`, `list` (sorted names), `walk` (everything below a directory), `size`, `create_directory`, `remove`, `rename`, `copy`, `join`, `name`, `parent`, `extension` |
 | `standard/strings.sayon` | `split`, `lines`, `join`, `trim`, `upper`, `lower`, `replace`, `starts_with`, `ends_with`, `contains`, `find` (`integer or nothing`), `repeat`, `slice`, `characters`, `code` (a character's Unicode code), `character` (the character with a code), `graphemes`, `grapheme_count`, `bytes`, `byte_view`, `from_bytes` (strict UTF-8), `from_bytes_lossy` |
 | `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer`; typed values: `decode`, `encode_value`, `from_json`, `to_json` |
@@ -761,7 +761,20 @@ while true
 
 String positions count Unicode characters. File and directory failures raise `IOError`; text that is not UTF-8 raises `EncodingError`. `math.random()` is not suitable for security.
 
-`os.run(program, arguments, directory)` runs another program and waits for it, returning its exit status and what it wrote to standard output and error. The arguments are passed exactly as given, with no shell in between, so no character in them has a special meaning; the program reads empty input. Running something through a shell is explicit, as with `os.run("sh", ["-c", "ls | wc -l"])`. A program that cannot be started raises `IOError`.
+`os.run(program, arguments, directory, input, environment, inherit_environment)` runs another program and waits for it, returning its exit status and what it wrote to standard output and error. The arguments are passed exactly as given, with no shell in between, so no character in them has a special meaning. The program reads `input` (nothing unless given), and has this program's environment variables with those of `environment` added, or with `inherit_environment = false` only those. Running something through a shell is explicit, as with `os.run("sh", ["-c", "ls | wc -l"])`. A program that cannot be started raises `IOError`.
+
+`os.start` starts a program without waiting for it, and gives a `Process` whose `input`, `output`, and `errors` are files: write to its input, `finish_input()` when it is done, read its output as it comes, and `wait()` for its exit status, or `stop()` it. Waiting for a program, or for what it writes, lets other tasks run. `io.output()` and `io.errors()` give standard output and error as files, for code that takes a file; what they write comes in order with `print`.
+
+```sayon
+os = import("standard/os.sayon")
+
+sorting = os.start("sort", [])
+for word in ["pear", "apple"]
+    sorting.input.write_line(word)
+sorting.finish_input()
+print(sorting.output.read())     # apple, then pear
+sorting.wait()
+```
 
 `os.exit(status)` ends the program with a status from 0 to 255 (another status raises `ValueError`). It ends it in order: `finally` blocks run and values are cleaned up on the way out, so open files are written, but `catch` and `try` do not stop it. In a test, it fails the test.
 

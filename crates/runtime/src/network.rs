@@ -39,15 +39,22 @@ pub struct Blocked {
 pub enum IoWait {
     /// A socket to have data to read, or room to write.
     Socket { raw: u64, read: bool, write: bool },
-    /// A connection being made on a thread of its own.
-    Job(Arc<Job>),
+    /// Work a thread of the runtime does, such as making a connection or
+    /// reading a pipe: ready when it says so.
+    Background(Arc<dyn Background>),
+}
+
+/// Work a thread of the runtime does while tasks wait for it. The thread
+/// calls [`wake`] when what it did may let a task go on.
+pub trait Background: Send + Sync {
+    fn ready(&self) -> bool;
 }
 
 thread_local! {
     static BLOCKED: RefCell<Option<Blocked>> = const { RefCell::new(None) };
 }
 
-fn blocked(wait: IoWait, timeout: Option<Duration>) -> HostError {
+pub(crate) fn blocked(wait: IoWait, timeout: Option<Duration>) -> HostError {
     BLOCKED.with(|cell| *cell.borrow_mut() = Some(Blocked { wait, timeout }));
     (BLOCKED_CODE, String::new())
 }
@@ -64,7 +71,7 @@ pub fn ready(wait: &IoWait) -> bool {
             let mut fds = [platform::entry(*raw, *read, *write)];
             platform::poll(&mut fds, Some(Duration::ZERO)) > 0 && fds[0].revents != 0
         }
-        IoWait::Job(job) => job.finished(),
+        IoWait::Background(work) => work.ready(),
     }
 }
 
@@ -77,7 +84,7 @@ pub fn wait_any(waits: &[IoWait], timeout: Option<Duration>) {
     for wait in waits {
         match wait {
             IoWait::Socket { raw, read, write } => fds.push(platform::entry(*raw, *read, *write)),
-            IoWait::Job(_) => jobs = true,
+            IoWait::Background(_) => jobs = true,
         }
     }
     for raw in crate::streams::sockets_with_output() {
@@ -491,8 +498,8 @@ pub struct Job {
     result: Mutex<Option<Result<TcpStream, HostError>>>,
 }
 
-impl Job {
-    fn finished(&self) -> bool {
+impl Background for Job {
+    fn ready(&self) -> bool {
         self.result
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -521,9 +528,7 @@ impl Connecting {
             .spawn(move || {
                 let result = connect(&host, port, timeout);
                 *shared.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
-                if let Some(waker) = waker() {
-                    waker.wake();
-                }
+                wake();
             });
         if let Err(e) = started {
             *job.result.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -541,7 +546,7 @@ impl Connecting {
             Some(Err(error)) => Err(error),
             None => {
                 drop(result);
-                Err(blocked(IoWait::Job(self.job.clone()), self.timeout))
+                Err(blocked(IoWait::Background(self.job.clone()), self.timeout))
             }
         }
     }
@@ -693,6 +698,19 @@ impl Waker {
 }
 
 static WAKER: OnceLock<Option<Waker>> = OnceLock::new();
+
+/// Wakes the scheduler if it waits, for a thread of the runtime that has
+/// done something a task may wait for.
+pub(crate) fn wake() {
+    if let Some(waker) = waker() {
+        waker.wake();
+    }
+}
+
+/// Makes the scheduler's way of being woken, before a thread can need it.
+pub(crate) fn prepare_waking() {
+    let _ = waker();
+}
 
 fn waker() -> Option<&'static Waker> {
     WAKER

@@ -27,3 +27,42 @@ filesystem.remove(folder)
 missing = try os.run("sayon-no-such-program", [])
 if missing is error
     print(missing.code)
+
+# What a program reads, and the environment it has.
+sorted = os.run("sort", [], "", "pear\napple\nfig\n")
+print(strings.split(strings.trim(strings.replace(sorted.output, "\r", "")), "\n"))
+command = "echo $SAYON_GREETING"
+if os.platform() == "windows"
+    command = "echo %SAYON_GREETING%"
+environment: Dict<string, string> = ["SAYON_GREETING" = "hi there"]
+if os.platform() == "windows"
+    greeted = os.run("cmd", ["/c", command], "", "", environment)
+    print(strings.trim(greeted.output))
+else
+    greeted = os.run("sh", ["-c", command], "", "", environment)
+    print(strings.trim(greeted.output))
+
+# A program started without waiting: its output is read as it comes.
+counting = os.start("sort", [])
+for word in ["three", "one", "two"]
+    counting.input.write_line(word)
+counting.finish_input()
+lines: Array<string> = []
+while true
+    line = counting.output.read_line()
+    if line == nothing
+        break
+    push(lines, line)
+print(lines, counting.wait(), counting.id() > 0)
+
+# A program that would wait for its input forever can be stopped.
+waiting = os.start("sort", [])
+waiting.stop()
+print(waiting.wait() != 0)
+
+# Standard output as a file writes in order with `print`.
+io = import("standard/io.sayon")
+out = io.output()
+print("before")
+out.write_line("through the file")
+print("after")

@@ -4,6 +4,8 @@
 #     for argument in os.arguments()
 #         print(argument)
 
+io = import("standard/io.sayon")
+
 # The arguments given to the program, without the program's own name. With
 # `sayon run`, these are the words after `--`.
 function arguments() -> Array<string>
@@ -25,19 +27,59 @@ function current_directory() -> string
 # without one), and what it wrote to its standard output and error.
 type Completed = [status: integer, output: string, errors: string]
 
-# Runs a program and waits for it to finish. `program` is a path, or a name
-# found on the system's search path; the arguments are passed exactly as
-# they are, without a shell, so no character in them has a special meaning.
-# The program reads empty standard input and runs in `directory`, or in the
-# current directory when it is "". Fails with IOError when it cannot be
-# started, and with EncodingError when its output is not UTF-8.
-function run(program: string, arguments: Array<string>, directory = "") -> Completed
-    results = host_run(program, arguments, directory)
-    status = tonumber(results[0])
-    code = -1
-    if typeof(status) == "integer"
-        code = status
-    return Completed(status = code, output = clone(results[1]), errors = clone(results[2]))
+# Runs a program and waits for it to finish, letting other tasks run.
+# `program` is a path, or a name found on the system's search path; the
+# arguments are passed exactly as they are, without a shell, so no
+# character in them has a special meaning. The program reads `input`, and
+# runs in `directory`, or in the current directory when it is "". It has
+# this program's environment variables and those of `environment`, or with
+# `inherit_environment = false` only those. Fails with IOError when it
+# cannot be started, and with EncodingError when its output is not UTF-8.
+function run(program: string, arguments: Array<string>, directory = "", input = "", environment: Dict<string, string> = [], inherit_environment = true) -> Completed
+    process = start(program, arguments, directory, environment, inherit_environment)
+    process.input.write(input)
+    process.finish_input()
+    output = process.output.read()
+    errors = process.errors.read()
+    status = process.wait()
+    return Completed(status = status, output = output, errors = errors)
+
+# A program started with `start`: what it reads from `input`, and what it
+# writes to `output` and `errors`, are files of standard/io, which can be
+# read and written while it runs. Reading them, and waiting for the
+# program, let other tasks run.
+type Process = [handle: HostStream, input: io.File, output: io.File, errors: io.File]
+
+# Starts a program, as `run` does, without waiting for it to finish.
+function start(program: string, arguments: Array<string>, directory = "", environment: Dict<string, string> = [], inherit_environment = true) -> Process
+    pairs: Array<string> = []
+    for name, value in environment
+        push(pairs, clone(name))
+        push(pairs, clone(value))
+    handle = host_start(program, arguments, directory, pairs, inherit_environment)
+    name = "\"{program}\""
+    input = io.File(stream = host_process_input(handle), path = "the input of {name}", line_limit = io.LINE_LIMIT)
+    output = io.File(stream = host_process_output(handle), path = "the output of {name}", line_limit = io.LINE_LIMIT)
+    errors = io.File(stream = host_process_errors(handle), path = "the error output of {name}", line_limit = io.LINE_LIMIT)
+    return Process(handle = handle, input = input, output = output, errors = errors)
+
+# Ends the program's input once what was written to it has gone: the
+# program then reads to its end.
+function process_finish_input(update process: Process)
+    host_stream_close(process.input.stream)
+
+# Waits for the program to finish, and gives its exit status: -1 when it
+# was stopped without one.
+function process_wait(update process: Process) -> integer
+    return host_process_wait(process.handle)
+
+# Stops the program at once, unless it has finished.
+function process_stop(update process: Process)
+    host_process_kill(process.handle)
+
+# The number the system knows the program by.
+function process_id(process: Process) -> integer
+    return host_process_id(process.handle)
 
 # Ends the program with an exit status from 0 (success) to 255. The program
 # ends in order: `finally` blocks run and values are cleaned up on the way

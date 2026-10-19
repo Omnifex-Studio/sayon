@@ -130,7 +130,15 @@ hosts! {
     Walk = "walk"(String) -> StringArray;
     IsLink = "is_link"(String) -> Boolean;
     StandardInput = "standard_input"() -> Stream;
-    Run = "run"(String, StringArray, String) -> StringArray;
+    StandardOutput = "standard_output"() -> Stream;
+    StandardError = "standard_error"() -> Stream;
+    Start = "start"(String, StringArray, String, StringArray, Boolean) -> Stream;
+    ProcessInput = "process_input"(Stream) -> Stream;
+    ProcessOutput = "process_output"(Stream) -> Stream;
+    ProcessErrors = "process_errors"(Stream) -> Stream;
+    ProcessWait = "process_wait"(Stream) -> Integer;
+    ProcessKill = "process_kill"(Stream) -> Nothing;
+    ProcessId = "process_id"(Stream) -> Integer;
     JsonInteger = "json_integer"(String, String, Integer) -> Integer;
     JsonUnsigned = "json_unsigned"(String, String, Integer) -> Unsigned;
     JsonFloat = "json_float"(String, String, Integer) -> Float;
@@ -191,6 +199,7 @@ impl Host {
                 | Host::DatagramSend
                 | Host::DatagramReceive
                 | Host::FinishSending
+                | Host::ProcessWait
         )
     }
 }
@@ -432,38 +441,6 @@ fn json_integer(digits: &str, path: &str, code: i64) -> Result<i128, HostError> 
     }
 }
 
-/// Runs a program with an argument vector, without a shell, and waits for
-/// it: its status, standard output, and standard error, as three strings.
-/// Its standard input is empty.
-fn run(program: &str, arguments: &HostArg, directory: &str) -> Result<HostValue, HostError> {
-    let HostArg::Strings(arguments) = arguments else {
-        panic!("run expects strings, found {arguments:?}")
-    };
-    let _ = std::io::stdout().flush();
-    let mut command = std::process::Command::new(program);
-    command.args(arguments).stdin(std::process::Stdio::null());
-    if !directory.is_empty() {
-        command.current_dir(directory);
-    }
-    let output = command
-        .output()
-        .map_err(|error| io_error("run", program, &error))?;
-    let text = |bytes: Vec<u8>, what: &str| {
-        String::from_utf8(bytes).map_err(|_| {
-            (
-                "EncodingError",
-                format!("the {what} of \"{program}\" is not valid UTF-8"),
-            )
-        })
-    };
-    let status = output.status.code().map_or(-1, i64::from);
-    Ok(HostValue::Strings(vec![
-        status.to_string(),
-        text(output.stdout, "output")?,
-        text(output.stderr, "error output")?,
-    ]))
-}
-
 /// Runs a primitive. Output primitives write to the process's standard
 /// streams; the interpreter routes `Write` through its own output instead so
 /// it stays ordered with `print`.
@@ -591,7 +568,30 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
         Host::FinishSending => crate::streams::finish_sending(stream(args, 0)).map(|()| V::Nothing),
         Host::Resolve => crate::network::resolve(string(args, 0)).map(V::Strings),
         Host::HttpFail => Err(("HttpError", string(args, 0).to_string())),
-        Host::Run => run(string(args, 0), &args[1], string(args, 2)),
+        Host::StandardOutput => Ok(V::Stream(crate::streams::standard_output())),
+        Host::StandardError => Ok(V::Stream(crate::streams::standard_error())),
+        Host::Start => {
+            let (Some(HostArg::Strings(arguments)), Some(HostArg::Strings(environment))) =
+                (args.get(1), args.get(3))
+            else {
+                panic!("start expects its arguments and environment as strings")
+            };
+            let inherit = matches!(args.get(4), Some(HostArg::Boolean(true)));
+            crate::streams::start(
+                string(args, 0),
+                arguments,
+                string(args, 2),
+                environment,
+                inherit,
+            )
+            .map(V::Stream)
+        }
+        Host::ProcessInput => crate::streams::process_input(stream(args, 0)).map(V::Stream),
+        Host::ProcessOutput => crate::streams::process_output(stream(args, 0)).map(V::Stream),
+        Host::ProcessErrors => crate::streams::process_errors(stream(args, 0)).map(V::Stream),
+        Host::ProcessWait => crate::streams::process_wait(stream(args, 0)).map(V::Integer),
+        Host::ProcessKill => crate::streams::process_kill(stream(args, 0)).map(|()| V::Nothing),
+        Host::ProcessId => crate::streams::process_id(stream(args, 0)).map(V::Integer),
         Host::JsonInteger => json_integer(string(args, 0), string(args, 1), integer(args, 2))
             .map(|value| V::Integer(value as i64)),
         Host::JsonUnsigned => json_integer(string(args, 0), string(args, 1), integer(args, 2))

@@ -55,6 +55,15 @@ function write_error(text: string)
 function input() -> File
     return File(stream = host_standard_input(), path = "standard input", line_limit = LINE_LIMIT)
 
+# Standard output as a file, for code that takes one; what it writes comes
+# in order with what `print` does. Closing it only stops this file.
+function output() -> File
+    return File(stream = host_standard_output(), path = "standard output", line_limit = LINE_LIMIT)
+
+# Standard error as a file. Closing it only stops this file.
+function errors() -> File
+    return File(stream = host_standard_error(), path = "standard error", line_limit = LINE_LIMIT)
+
 # ----- open files -----------------------------------------------------------------
 
 # The longest line, in bytes, that a file's `read_line` and `lines` accept

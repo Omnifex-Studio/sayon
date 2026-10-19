@@ -12,9 +12,11 @@
 
 use crate::host::{HostError, io_error};
 use crate::network::{BLOCKED_CODE, Connecting, Connection, Datagrams, Listener};
+use crate::processes::{PipeInput, PipeOutput, Process};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
+use std::sync::Arc;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 enum Handle {
@@ -23,7 +25,17 @@ enum Handle {
     /// Standard input, read through the process's own buffer, which
     /// `io.read_line` shares.
     Input,
+    /// The process's standard output, which `print` writes too.
+    Output,
+    /// The process's standard error.
+    Errors,
     Socket(Socket),
+    /// A program started with `os.start`.
+    Process(Arc<Process>),
+    /// A started program's output or error output, read from.
+    PipeIn(Arc<PipeInput>),
+    /// A started program's input, written to.
+    PipeOut(Arc<PipeOutput>),
     Closed,
 }
 
@@ -81,9 +93,51 @@ fn reader<T>(
             "IOError",
             format!("\"{}\" was opened for writing, not reading", entry.path),
         )),
-        Handle::Socket(_) => Err(not_connection(&entry.path)),
+        Handle::Output | Handle::Errors | Handle::PipeOut(_) => {
+            Err(("IOError", format!("{} is written, not read", entry.path)))
+        }
+        Handle::Socket(_) | Handle::Process(_) | Handle::PipeIn(_) => {
+            Err(not_connection(&entry.path))
+        }
         Handle::Closed => Err(closed(&entry.path)),
     }
+}
+
+/// The pipe a stream reads from a program, when it is one.
+fn pipe_in(id: i64) -> Option<Arc<PipeInput>> {
+    match table().entries.get(&id).map(|entry| &entry.handle) {
+        Some(Handle::PipeIn(pipe)) => Some(pipe.clone()),
+        _ => None,
+    }
+}
+
+/// The pipe a stream writes to a program, when it is one.
+fn pipe_out(id: i64) -> Option<Arc<PipeOutput>> {
+    match table().entries.get(&id).map(|entry| &entry.handle) {
+        Some(Handle::PipeOut(pipe)) => Some(pipe.clone()),
+        _ => None,
+    }
+}
+
+/// Which standard stream a stream writes to: 1 for output, 2 for error,
+/// or 0 for neither.
+fn standard_stream(id: i64) -> u8 {
+    match table().entries.get(&id).map(|entry| &entry.handle) {
+        Some(Handle::Output) => 1,
+        Some(Handle::Errors) => 2,
+        _ => 0,
+    }
+}
+
+/// Whether a stream writes to the process's standard output, which the
+/// interpreter writes through its own writer, as it does `print`.
+pub fn is_standard_output(id: i64) -> bool {
+    standard_stream(id) == 1
+}
+
+/// Whether a stream writes to the process's standard error.
+pub fn is_standard_error(id: i64) -> bool {
+    standard_stream(id) == 2
 }
 
 fn not_connection(name: &str) -> HostError {
@@ -145,11 +199,18 @@ fn writer<T>(
         .ok_or(("IOError", "the file is closed".to_string()))?;
     match &mut entry.handle {
         Handle::Writer(writer) => f(writer, &entry.path),
-        Handle::Reader(_) | Handle::Input => Err((
+        Handle::Reader(_) => Err((
             "IOError",
             format!("\"{}\" was opened for reading, not writing", entry.path),
         )),
-        Handle::Socket(_) => Err(not_connection(&entry.path)),
+        Handle::Input | Handle::PipeIn(_) => {
+            Err(("IOError", format!("{} is read, not written", entry.path)))
+        }
+        Handle::Socket(_)
+        | Handle::Process(_)
+        | Handle::Output
+        | Handle::Errors
+        | Handle::PipeOut(_) => Err(not_connection(&entry.path)),
         Handle::Closed => Err(closed(&entry.path)),
     }
 }
@@ -172,6 +233,74 @@ fn insert(handle: Handle, path: &str) -> i64 {
 /// A stream reading standard input.
 pub fn standard_input() -> i64 {
     insert(Handle::Input, "standard input")
+}
+
+/// A stream writing to standard output, where `print` writes too.
+pub fn standard_output() -> i64 {
+    insert(Handle::Output, "standard output")
+}
+
+/// A stream writing to standard error.
+pub fn standard_error() -> i64 {
+    insert(Handle::Errors, "standard error")
+}
+
+fn process(id: i64) -> Result<Arc<Process>, HostError> {
+    match table().entries.get(&id).map(|entry| &entry.handle) {
+        Some(Handle::Process(process)) => Ok(process.clone()),
+        _ => Err(("IOError", "the stream is not a program".to_string())),
+    }
+}
+
+/// Starts a program. Its pipes are taken from it as streams of their own
+/// with `process_input`, `process_output`, and `process_errors`.
+pub fn start(
+    program: &str,
+    arguments: &[&str],
+    directory: &str,
+    environment: &[&str],
+    inherit: bool,
+) -> Result<i64, HostError> {
+    let process = Process::start(program, arguments, directory, environment, inherit)?;
+    let name = process.name.clone();
+    Ok(insert(Handle::Process(process), &name))
+}
+
+pub fn process_input(id: i64) -> Result<i64, HostError> {
+    let pipe = process(id)?
+        .take_input()
+        .ok_or(("IOError", "the input was taken already".to_string()))?;
+    let name = pipe.name.clone();
+    Ok(insert(Handle::PipeOut(pipe), &name))
+}
+
+pub fn process_output(id: i64) -> Result<i64, HostError> {
+    let pipe = process(id)?
+        .take_output()
+        .ok_or(("IOError", "the output was taken already".to_string()))?;
+    let name = pipe.name.clone();
+    Ok(insert(Handle::PipeIn(pipe), &name))
+}
+
+pub fn process_errors(id: i64) -> Result<i64, HostError> {
+    let pipe = process(id)?
+        .take_errors()
+        .ok_or(("IOError", "the error output was taken already".to_string()))?;
+    let name = pipe.name.clone();
+    Ok(insert(Handle::PipeIn(pipe), &name))
+}
+
+/// A program's exit status, waiting for it to finish.
+pub fn process_wait(id: i64) -> Result<i64, HostError> {
+    process(id)?.wait()
+}
+
+pub fn process_kill(id: i64) -> Result<(), HostError> {
+    process(id)?.kill()
+}
+
+pub fn process_id(id: i64) -> Result<i64, HostError> {
+    Ok(process(id)?.id())
 }
 
 /// Opens a file: `"r"` to read, `"w"` to write from the start (creating or
@@ -389,6 +518,13 @@ pub fn release(id: i64) {
     if entry.references == 0 {
         let entry = table.entries.remove(&id);
         drop(table);
+        if let Some(Entry {
+            handle: Handle::PipeOut(pipe),
+            ..
+        }) = &entry
+        {
+            pipe.release();
+        }
         drop(entry);
     }
 }
@@ -401,6 +537,9 @@ pub fn flush_all() {
                 let _ = writer.flush();
             }
             Handle::Socket(Socket::Connection(connection)) => connection.send_rest(),
+            Handle::Output => {
+                let _ = std::io::stdout().flush();
+            }
             _ => {}
         }
     }
@@ -413,6 +552,9 @@ pub fn read_line(id: i64, limit: i64) -> Result<Option<String>, HostError> {
     let limit = limit.max(0) as usize;
     if let Some(result) = connection(id, |connection| connection.read_line(limit)) {
         return result;
+    }
+    if let Some(pipe) = pipe_in(id) {
+        return pipe.read_line(limit);
     }
     reader(id, |reader, path| {
         let too_long = || {
@@ -462,6 +604,9 @@ pub fn read_rest(id: i64) -> Result<String, HostError> {
     if let Some(result) = connection(id, |connection| connection.read_rest()) {
         return result;
     }
+    if let Some(pipe) = pipe_in(id) {
+        return pipe.read_rest();
+    }
     reader(id, |reader, path| {
         let mut bytes = Vec::new();
         reader
@@ -480,6 +625,9 @@ pub fn read_bytes(id: i64, count: i64) -> Result<Vec<u8>, HostError> {
     if let Some(result) = connection(id, |connection| connection.read_bytes(count as usize)) {
         return result;
     }
+    if let Some(pipe) = pipe_in(id) {
+        return pipe.read_bytes(count as usize);
+    }
     reader(id, |reader, path| {
         let mut bytes = Vec::new();
         reader
@@ -494,6 +642,23 @@ pub fn write(id: i64, bytes: &[u8]) -> Result<(), HostError> {
     if let Some(result) = connection(id, |connection| connection.write(bytes)) {
         return result;
     }
+    if let Some(pipe) = pipe_out(id) {
+        return pipe.write(bytes);
+    }
+    match standard_stream(id) {
+        1 => {
+            return std::io::stdout()
+                .write_all(bytes)
+                .map_err(|e| ("IOError", format!("could not write output: {e}")));
+        }
+        2 => {
+            let _ = std::io::stdout().flush();
+            return std::io::stderr()
+                .write_all(bytes)
+                .map_err(|e| ("IOError", format!("could not write error output: {e}")));
+        }
+        _ => {}
+    }
     writer(id, |writer, path| {
         writer
             .write_all(bytes)
@@ -506,6 +671,18 @@ pub fn write(id: i64, bytes: &[u8]) -> Result<(), HostError> {
 pub fn flush(id: i64) -> Result<(), HostError> {
     if let Some(result) = connection(id, |connection| connection.flush()) {
         return result;
+    }
+    if let Some(pipe) = pipe_out(id) {
+        return pipe.flush();
+    }
+    match standard_stream(id) {
+        1 => {
+            return std::io::stdout()
+                .flush()
+                .map_err(|e| ("IOError", format!("could not write output: {e}")));
+        }
+        2 => return Ok(()),
+        _ => {}
     }
     writer(id, |writer, path| {
         writer.flush().map_err(|e| io_error("write", path, &e))
@@ -523,7 +700,13 @@ pub fn position(id: i64) -> Result<i64, HostError> {
     let result = match &mut entry.handle {
         Handle::Reader(reader) => reader.stream_position(),
         Handle::Writer(writer) => writer.stream_position(),
-        Handle::Input | Handle::Socket(_) => return Err(unpositioned(&path)),
+        Handle::Input
+        | Handle::Output
+        | Handle::Errors
+        | Handle::Socket(_)
+        | Handle::Process(_)
+        | Handle::PipeIn(_)
+        | Handle::PipeOut(_) => return Err(unpositioned(&path)),
         Handle::Closed => return Err(closed(&path)),
     };
     result
@@ -549,7 +732,13 @@ pub fn seek(id: i64, position: i64) -> Result<(), HostError> {
     let result = match &mut entry.handle {
         Handle::Reader(reader) => reader.seek(target),
         Handle::Writer(writer) => writer.seek(target),
-        Handle::Input | Handle::Socket(_) => return Err(unpositioned(&path)),
+        Handle::Input
+        | Handle::Output
+        | Handle::Errors
+        | Handle::Socket(_)
+        | Handle::Process(_)
+        | Handle::PipeIn(_)
+        | Handle::PipeOut(_) => return Err(unpositioned(&path)),
         Handle::Closed => return Err(closed(&path)),
     };
     result
@@ -562,6 +751,12 @@ pub fn seek(id: i64, position: i64) -> Result<(), HostError> {
 pub fn close(id: i64) -> Result<(), HostError> {
     if let Some(result) = connection(id, |connection| connection.flush()) {
         result?;
+    }
+    if let Some(pipe) = pipe_out(id) {
+        pipe.close()?;
+    }
+    if standard_stream(id) == 1 {
+        let _ = std::io::stdout().flush();
     }
     let mut table = table();
     let entry = table
@@ -576,7 +771,14 @@ pub fn close(id: i64) -> Result<(), HostError> {
             .into_inner()
             .map(drop)
             .map_err(|e| io_error("write", &path, e.error())),
-        Handle::Reader(_) | Handle::Input | Handle::Socket(_) => Ok(()),
+        Handle::Reader(_)
+        | Handle::Input
+        | Handle::Output
+        | Handle::Errors
+        | Handle::Socket(_)
+        | Handle::Process(_)
+        | Handle::PipeIn(_)
+        | Handle::PipeOut(_) => Ok(()),
         Handle::Closed => Err(("IOError", format!("\"{path}\" is already closed"))),
     }
 }
@@ -607,7 +809,14 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
                 format!("\"{}\" was opened for writing, not reading", source.path),
             ));
         }
-        Handle::Socket(_) => return Err(("IOError", "io.copy copies between files".to_string())),
+        Handle::Socket(_)
+        | Handle::Process(_)
+        | Handle::PipeIn(_)
+        | Handle::PipeOut(_)
+        | Handle::Output
+        | Handle::Errors => {
+            return Err(("IOError", "io.copy copies between files".to_string()));
+        }
         Handle::Closed => return Err(closed(&source.path)),
     };
     let writer = match &mut target.handle {
@@ -618,7 +827,14 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
                 format!("\"{}\" was opened for reading, not writing", target.path),
             ));
         }
-        Handle::Socket(_) => return Err(("IOError", "io.copy copies between files".to_string())),
+        Handle::Socket(_)
+        | Handle::Process(_)
+        | Handle::PipeIn(_)
+        | Handle::PipeOut(_)
+        | Handle::Output
+        | Handle::Errors => {
+            return Err(("IOError", "io.copy copies between files".to_string()));
+        }
         Handle::Closed => return Err(closed(&target.path)),
     };
     let mut buffer = [0u8; 64 * 1024];

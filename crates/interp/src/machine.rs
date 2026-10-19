@@ -1402,15 +1402,38 @@ impl<'m> Machine<'m> {
                     self.error("IOError", format!("could not write output: {error}"), span)
                 });
             }
+            // A file of standard output writes where `print` does.
+            Host::StreamWrite | Host::StreamWriteBytes | Host::StreamFlush
+                if matches!(&values[0], Value::Stream(stream)
+                    if sayon_runtime::streams::is_standard_output(stream.id())) =>
+            {
+                let written = match &values[1..] {
+                    [Value::Str(text)] => self.out.write_all(text.as_bytes()),
+                    [Value::Array(bytes)] => {
+                        let bytes: Vec<u8> = bytes.iter().map(|b| b.as_int() as u8).collect();
+                        self.out.write_all(&bytes)
+                    }
+                    _ => self.out.flush(),
+                };
+                return written.map(|_| Value::Nothing).map_err(|error| {
+                    self.error("IOError", format!("could not write output: {error}"), span)
+                });
+            }
             // What the program printed shows before it waits for input or
             // another program writes.
             Host::WriteError
             | Host::ReadLine
-            | Host::Run
+            | Host::Start
             | Host::StreamReadLine
             | Host::StreamRead
             | Host::StreamReadBytes
             | Host::StreamCopy => {
+                let _ = self.out.flush();
+            }
+            Host::StreamWrite | Host::StreamWriteBytes
+                if matches!(&values[0], Value::Stream(stream)
+                    if sayon_runtime::streams::is_standard_error(stream.id())) =>
+            {
                 let _ = self.out.flush();
             }
             _ => {}
