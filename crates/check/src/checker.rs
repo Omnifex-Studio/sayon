@@ -928,7 +928,7 @@ impl<'a> Checker<'a> {
             );
             return false;
         }
-        if crate::builtins::lookup(name, false).is_some() {
+        if crate::builtins::lookup(name, false, self.target).is_some() {
             self.error(
                 Diagnostic::warning(
                     "W_SHADOWED_BUILTIN",
@@ -1153,7 +1153,7 @@ impl<'a> Checker<'a> {
                     }
                     return Type::Param(*index);
                 }
-                if let Some(int) = crate::infer::int_type_by_name(&name.name) {
+                if let Some(int) = crate::infer::int_type_by_name(&name.name, self.target) {
                     arity(self, 0);
                     return Type::Int(int);
                 }

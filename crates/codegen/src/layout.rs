@@ -9,12 +9,16 @@
 //! | string | `%sayon.str = { ptr, i64 len, i64 cap }` | 24 |
 //! | Array<T> | `%sayon.array = { ptr, i64 len, i64 cap }` | 24 |
 //! | Range | `%sayon.range = { i64, i64, i64 }` | 24 |
-//! | Dict, Error | `ptr` to a runtime object | 8 |
+//! | Dict, Error | `ptr` to a runtime object | P |
 //! | union | `{ i32 tag, [N x i64] payload }`, payload at offset 8 | 8 + 8N |
 //! | structure | `{ fields... }` in declaration order, naturally aligned | sum with padding |
 //! | enum | `{ i32 tag, [N x i64] payload }`; a variant's fields are laid out like a structure from offset 8 | 8 + 8N |
-//! | function value | `%sayon.func = { ptr code, ptr environment }` | 16 |
+//! | function value | `%sayon.func = { ptr code, ptr environment }`, environment at offset P | 2P |
 //! | View, MutableView | `%sayon.view = { ptr first, i64 length }`: the first two fields of an array | 16 |
+//!
+//! P is the size of an address on the target: 8, or 4 on WebAssembly. A
+//! 64-bit integer is aligned to 8 bytes everywhere, so a string's, an
+//! array's, and a view's length stays at offset 8 whatever P is.
 //!
 //! Every union places its payload at offset 8 and uses program-wide tags, so
 //! a reference to a union value is also a valid reference to any narrower
@@ -22,9 +26,10 @@
 //! plus one. An all-zero value is "empty": dropping it does nothing, which is
 //! how moved-from places are represented.
 //!
-//! A closure's environment is a heap block: a pointer to its drop function,
-//! a pointer to its clone function, then the environment structure from
-//! offset 16. A named function's value has a null environment. The code
+//! A closure's environment is a heap block: a pointer to its drop function
+//! at offset 0, a pointer to its clone function at offset 8, then the
+//! environment structure from offset 16, on every target. A named
+//! function's value has a null environment. The code
 //! receives a pointer to the environment structure before its arguments.
 
 use sayon_check::types::{
@@ -35,21 +40,34 @@ use sayon_check::types::{
 /// The bytes before the value in a shared value's block.
 pub const SHARED_HEADER: u64 = sayon_runtime::ffi::SHARED_HEADER as u64;
 use sayon_ir::ForeignFunction;
+use sayon_target::Target;
 use std::collections::HashMap;
 
-#[derive(Default)]
 pub struct Layouts {
     types: Vec<TypeDef>,
+    target: &'static Target,
     names: HashMap<Type, String>,
     pub definitions: Vec<String>,
 }
 
 impl Layouts {
-    pub fn new(types: Vec<TypeDef>) -> Layouts {
+    pub fn new(types: Vec<TypeDef>, target: &'static Target) -> Layouts {
         Layouts {
             types,
-            ..Layouts::default()
+            target,
+            names: HashMap::new(),
+            definitions: Vec::new(),
         }
+    }
+
+    /// The size of an address, P in the table above.
+    pub fn pointer_size(&self) -> u64 {
+        self.target.pointer_size
+    }
+
+    /// The offset of a function value's environment: after its code.
+    pub fn environment_offset(&self) -> u64 {
+        self.pointer_size()
     }
 
     pub fn llvm(&mut self, ty: &Type) -> String {
@@ -157,10 +175,12 @@ impl Layouts {
             Type::Float(FloatType::F32) => 4,
             Type::Boolean | Type::Nothing | Type::Unknown => 1,
             Type::String | Type::Array(_) | Type::Range => 24,
-            Type::Dict(..) | Type::Error | Type::Stream | Type::Pointer | Type::CString => 8,
+            Type::Dict(..) | Type::Error | Type::Pointer | Type::CString => self.pointer_size(),
+            Type::Stream => 8,
             Type::Wrapper(Wrapper::Cell, inner) => self.size_of(inner),
-            Type::Wrapper(..) => 8,
-            Type::Function(_) | Type::View(..) => 16,
+            Type::Wrapper(..) => self.pointer_size(),
+            Type::Function(_) => 2 * self.pointer_size(),
+            Type::View(..) => 16,
             Type::Union(_) => 8 + 8 * self.payload_words(ty),
             Type::Named(named) if self.is_enum(named) => 8 + 8 * self.payload_words(ty),
             Type::Named(named) => {
@@ -182,6 +202,13 @@ impl Layouts {
                 self.record_layout(&self.stored_fields(named)).2
             }
             Type::Wrapper(Wrapper::Cell, inner) => self.align_of(inner),
+            Type::Dict(..)
+            | Type::Error
+            | Type::Pointer
+            | Type::CString
+            | Type::Wrapper(..)
+            | Type::Function(_) => self.pointer_size(),
+            // Each of the others holds a 64-bit integer.
             _ => 8,
         }
     }
@@ -236,11 +263,13 @@ pub enum CPass {
     /// Windows x64: a structure of 1, 2, 4, or 8 bytes, in a register as an
     /// integer of this many bits.
     Register(u64),
-    /// Windows x64: a structure by the address of a copy. For a result, on
-    /// either convention: by the address of where C writes it.
+    /// Windows x64 and WebAssembly: a structure by the address of a copy.
+    /// For a result, on every convention: by the address of where C writes
+    /// it.
     Address,
     /// System V: a structure as one value for each of its eightbytes, in a
-    /// register of the kind it needs: its offset and LLVM type.
+    /// register of the kind it needs: its offset and LLVM type. WebAssembly:
+    /// a structure of one number as that number.
     Pieces(Vec<(u64, String)>),
     /// System V: a structure copied onto the stack.
     Stack,
@@ -288,27 +317,57 @@ impl CPlan {
 }
 
 /// Whether the target passes C structures as System V does on x86-64.
-const SYSTEM_V: bool = cfg!(all(unix, target_arch = "x86_64"));
+fn system_v(target: &Target) -> bool {
+    target.processor == "x64" && target.platform != "windows"
+}
 
-/// Whether compiled programs know how this target passes C structures.
-pub const STRUCTURES_SUPPORTED: bool = cfg!(all(windows, target_arch = "x86_64")) || SYSTEM_V;
+/// Whether compiled programs know how the target passes C structures: the
+/// Windows x64, System V x86-64, and basic WebAssembly conventions so far.
+pub fn structures_supported(target: &Target) -> bool {
+    target.processor == "x64" || target.processor == "wasm32"
+}
+
+/// The one number or address a structure holds, with nothing else and no
+/// padding, through any structures it is nested in. The basic C convention
+/// of WebAssembly passes and gives such a structure as that value, and any
+/// other structure by address.
+fn single_scalar(types: &[TypeDef], ty: &Type, target: &Target) -> Option<Type> {
+    let Type::Named(named) = ty else {
+        return Some(ty.clone());
+    };
+    let layout = c_layout(types, named, target);
+    let [(_, field)] = layout.fields.as_slice() else {
+        return None;
+    };
+    let scalar = single_scalar(types, field, target)?;
+    (c_size_align(types, &scalar, target).0 == layout.size).then_some(scalar)
+}
 
 /// How the target's convention calls a C function. System V puts a
 /// structure's eightbytes in registers only when registers are left for
 /// all of them, which depends on the parameters before it.
-pub fn c_plan(types: &[TypeDef], function: &ForeignFunction) -> CPlan {
+pub fn c_plan(types: &[TypeDef], function: &ForeignFunction, target: &Target) -> CPlan {
+    let system_v = system_v(target);
+    let wasm = target.processor == "wasm32";
     let mut declared = Vec::new();
     let mut integers = 0;
     let mut vectors = 0;
     let (ret, ret_llvm) = match &function.ret {
         Type::Named(_) => {
-            let pass = if SYSTEM_V {
-                match sysv_eightbytes(types, &function.ret) {
-                    Some(classes) => CPass::Pieces(eightbyte_types(types, &function.ret, &classes)),
+            let pass = if wasm {
+                match single_scalar(types, &function.ret, target) {
+                    Some(scalar) => CPass::Pieces(vec![(0, c_llvm(&scalar).to_string())]),
+                    None => CPass::Address,
+                }
+            } else if system_v {
+                match sysv_eightbytes(types, &function.ret, target) {
+                    Some(classes) => {
+                        CPass::Pieces(eightbyte_types(types, &function.ret, &classes, target))
+                    }
                     None => CPass::Address,
                 }
             } else {
-                let (size, _) = c_size_align(types, &function.ret);
+                let (size, _) = c_size_align(types, &function.ret, target);
                 if win64_in_register(size) {
                     CPass::Register(size * 8)
                 } else {
@@ -323,7 +382,7 @@ pub fn c_plan(types: &[TypeDef], function: &ForeignFunction) -> CPlan {
                     format!("{{ {} }}", types.join(", "))
                 }
                 _ => {
-                    let (size, align) = c_size_align(types, &function.ret);
+                    let (size, align) = c_size_align(types, &function.ret, target);
                     declared.push((
                         "ptr".to_string(),
                         format!("sret([{size} x i8]) align {align}"),
@@ -339,16 +398,28 @@ pub fn c_plan(types: &[TypeDef], function: &ForeignFunction) -> CPlan {
     let mut params = Vec::new();
     for param in &function.params {
         let pass = match param {
-            Type::Named(_) if SYSTEM_V => {
-                let (size, align) = c_size_align(types, param);
+            // The address of a copy is what C's `byval` comes to there.
+            Type::Named(_) if wasm => match single_scalar(types, param, target) {
+                Some(scalar) => {
+                    let llvm = c_llvm(&scalar).to_string();
+                    declared.push((llvm.clone(), String::new()));
+                    CPass::Pieces(vec![(0, llvm)])
+                }
+                None => {
+                    declared.push(("ptr".to_string(), String::new()));
+                    CPass::Address
+                }
+            },
+            Type::Named(_) if system_v => {
+                let (size, align) = c_size_align(types, param, target);
                 let fits = |classes: &[Eightbyte]| {
                     let needed = |kind| classes.iter().filter(|c| **c == kind).count();
                     integers + needed(Eightbyte::Integer) <= 6
                         && vectors + needed(Eightbyte::Sse) <= 8
                 };
-                match sysv_eightbytes(types, param) {
+                match sysv_eightbytes(types, param, target) {
                     Some(classes) if fits(&classes) => {
-                        let pieces = eightbyte_types(types, param, &classes);
+                        let pieces = eightbyte_types(types, param, &classes, target);
                         for ((_, ty), class) in pieces.iter().zip(&classes) {
                             declared.push((ty.clone(), String::new()));
                             match class {
@@ -368,7 +439,7 @@ pub fn c_plan(types: &[TypeDef], function: &ForeignFunction) -> CPlan {
                 }
             }
             Type::Named(_) => {
-                let (size, _) = c_size_align(types, param);
+                let (size, _) = c_size_align(types, param, target);
                 if win64_in_register(size) {
                     declared.push((format!("i{}", size * 8), String::new()));
                     CPass::Register(size * 8)
@@ -405,20 +476,31 @@ pub fn c_plan(types: &[TypeDef], function: &ForeignFunction) -> CPlan {
 /// The LLVM type of each eightbyte of a structure, with its offset: an
 /// integer of the eightbyte's bytes, or the float, two floats, or double
 /// it holds.
-fn eightbyte_types(types: &[TypeDef], ty: &Type, classes: &[Eightbyte]) -> Vec<(u64, String)> {
-    fn scalars(types: &[TypeDef], ty: &Type, offset: u64, out: &mut Vec<(u64, Type)>) {
+fn eightbyte_types(
+    types: &[TypeDef],
+    ty: &Type,
+    classes: &[Eightbyte],
+    target: &Target,
+) -> Vec<(u64, String)> {
+    fn scalars(
+        types: &[TypeDef],
+        ty: &Type,
+        offset: u64,
+        out: &mut Vec<(u64, Type)>,
+        target: &Target,
+    ) {
         match ty {
             Type::Named(named) => {
-                for (field_offset, field) in c_layout(types, named).fields {
-                    scalars(types, &field, offset + field_offset, out);
+                for (field_offset, field) in c_layout(types, named, target).fields {
+                    scalars(types, &field, offset + field_offset, out, target);
                 }
             }
             other => out.push((offset, other.clone())),
         }
     }
-    let (size, _) = c_size_align(types, ty);
+    let (size, _) = c_size_align(types, ty, target);
     let mut fields = Vec::new();
-    scalars(types, ty, 0, &mut fields);
+    scalars(types, ty, 0, &mut fields, target);
     classes
         .iter()
         .enumerate()
@@ -532,14 +614,18 @@ mod tests {
         })
     }
 
+    fn host_layouts(types: Vec<TypeDef>) -> Layouts {
+        Layouts::new(types, sayon_target::find("windows-x64").unwrap())
+    }
+
     #[test]
     fn union_sizes_cover_their_largest_member() {
         let small = Type::union([Type::INTEGER, Type::Nothing]);
-        let layouts = Layouts::default();
+        let layouts = host_layouts(Vec::new());
         assert_eq!(layouts.size_of(&small), 16);
         let large = Type::union([Type::String, Type::Nothing]);
         assert_eq!(layouts.size_of(&large), 32);
-        let mut layouts = Layouts::default();
+        let mut layouts = host_layouts(Vec::new());
         assert_eq!(layouts.llvm(&small), "%sayon.union.0");
         assert_eq!(layouts.llvm(&small), "%sayon.union.0");
         assert_eq!(
@@ -581,7 +667,7 @@ mod tests {
                 finally: false,
             },
         ];
-        let mut layouts = Layouts::new(types);
+        let mut layouts = host_layouts(types);
         let mixed = named(0, true);
         let Type::Named(mixed_named) = &mixed else {
             panic!()
@@ -605,6 +691,24 @@ mod tests {
         assert_eq!(layouts.variant_field_offset(shape_named, 1, 1), 16);
         assert!(needs_drop(&shape));
         assert!(!needs_drop(&mixed));
+    }
+
+    #[test]
+    fn addresses_are_four_bytes_on_webassembly() {
+        let wasm = Layouts::new(Vec::new(), sayon_target::find("wasi").unwrap());
+        let function = Type::function(sayon_check::types::FunctionType {
+            params: Vec::new(),
+            ret: Type::Nothing,
+        });
+        assert_eq!(wasm.size_of(&function), 8);
+        assert_eq!(wasm.align_of(&function), 4);
+        assert_eq!(wasm.environment_offset(), 4);
+        assert_eq!(wasm.size_of(&Type::Error), 4);
+        // Lengths are 64-bit integers, aligned to 8 bytes everywhere.
+        assert_eq!(wasm.size_of(&Type::String), 24);
+        let host = host_layouts(Vec::new());
+        assert_eq!(host.size_of(&function), 16);
+        assert_eq!(host.environment_offset(), 8);
     }
 
     #[test]

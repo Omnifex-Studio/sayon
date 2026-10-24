@@ -363,7 +363,8 @@ impl<'a> Checker<'a> {
             );
             return expr(ExprKind::Nothing, Type::Unknown, span);
         }
-        if builtins::lookup(&name.name, self.modules[cx.module.0 as usize].standard).is_some() {
+        let standard = self.modules[cx.module.0 as usize].standard;
+        if builtins::lookup(&name.name, standard, self.target).is_some() {
             self.error(
                 Diagnostic::error(
                     "E_BUILTIN_VALUE",
@@ -1082,7 +1083,8 @@ impl<'a> Checker<'a> {
             let id = ty.as_named().expect("enum").id;
             return self.check_variant(cx, id, variant, Some(ty), name, Some(args), expected, span);
         }
-        if builtins::lookup(&name.name, self.modules[cx.module.0 as usize].standard).is_none() {
+        let standard = self.modules[cx.module.0 as usize].standard;
+        if builtins::lookup(&name.name, standard, self.target).is_none() {
             if let Some((known, id, variant)) = self.variant_for_name(cx, &name.name, expected) {
                 return self.check_variant(
                     cx,
@@ -1114,7 +1116,7 @@ impl<'a> Checker<'a> {
                 .primary(callee.span, ""),
             );
         }
-        match builtins::lookup(&name.name, self.modules[cx.module.0 as usize].standard) {
+        match builtins::lookup(&name.name, standard, self.target) {
             Some(PreludeItem::Builtin(builtin)) => {
                 self.check_builtin(cx, builtin, name, args, expected, span)
             }

@@ -146,6 +146,7 @@ fn lower_program(program: &hir::Program, include_tests: bool) -> LowerOutput {
         types: lowerer.types,
         foreign: program.foreign.clone(),
         finally,
+        target: program.target,
     };
     LowerOutput {
         module,
@@ -2028,7 +2029,9 @@ impl<'l, 'p> FnLower<'l, 'p> {
             H::NullPointer => self.assign(dest, Rvalue::Use(Operand::Const(Constant::NullPointer))),
             H::SizeOf(ty) => {
                 let ty = self.ty(ty);
-                let (size, _) = sayon_check::types::c_size_align(&self.l.program.types, &ty);
+                let program = self.l.program;
+                let (size, _) =
+                    sayon_check::types::c_size_align(&program.types, &ty, program.target);
                 let size = Constant::Int(size as i128, IntType::I64);
                 self.assign(dest, Rvalue::Use(Operand::Const(size)));
             }

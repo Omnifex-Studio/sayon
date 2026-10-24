@@ -58,6 +58,7 @@ dependencies = [
  "sayon-ir",
  "sayon-runtime",
  "sayon-syntax",
+ "sayon-target",
 ]
 
 [[package]]
@@ -67,6 +68,7 @@ dependencies = [
  "sayon-check",
  "sayon-runtime",
  "sayon-syntax",
+ "sayon-target",
 ]
 
 [[package]]

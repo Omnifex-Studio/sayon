@@ -9,6 +9,7 @@
 #
 #   bin/sayon.exe            the command-line tool
 #   lib/sayon_runtime.lib    linked into native builds
+#   lib/wasm32-wasip1/       the runtime for WASI, with WASI's C library
 #   stdlib/                  the standard library
 #   docs/, examples/, editors/vscode/, README.md, INSTALL.txt
 #
@@ -32,6 +33,11 @@ $device = "windows-$processor"
 
 cargo build --release -p sayon-cli -p sayon-runtime
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+cargo build --release -p sayon-runtime --target wasm32-wasip1
+if ($LASTEXITCODE -ne 0) { throw "building the runtime for WASI failed" }
+# WASI's C library (wasi-libc), as the Rust toolchain ships it.
+$sysroot = (rustc --print sysroot).Trim()
+$wasiLibc = Join-Path $sysroot "lib/rustlib/wasm32-wasip1/lib/self-contained"
 
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).Path
@@ -44,6 +50,17 @@ foreach ($dir in "bin", "lib", "stdlib", "docs", "examples", "editors", "assets"
 
 Copy-Item "target/release/sayon.exe" (Join-Path $stage "bin")
 Copy-Item "target/release/sayon_runtime.lib" (Join-Path $stage "lib")
+$wasi = Join-Path $stage "lib/wasm32-wasip1"
+New-Item -ItemType Directory -Force $wasi | Out-Null
+Copy-Item "target/wasm32-wasip1/release/libsayon_runtime.a" $wasi
+Copy-Item (Join-Path $wasiLibc "crt1-command.o"), (Join-Path $wasiLibc "libc.a") $wasi
+$notice = @"
+crt1-command.o and libc.a are wasi-libc, the C library of WASI programs,
+as the Rust toolchain ships it. WebAssembly programs that Sayon builds for
+WASI include parts of it. Its license, which allows this, is at
+https://github.com/WebAssembly/wasi-libc/blob/main/LICENSE
+"@
+Set-Content -Path (Join-Path $wasi "NOTICE.txt") -Value $notice -Encoding utf8
 Copy-Item "stdlib/*.sayon" (Join-Path $stage "stdlib")
 Copy-Item "docs/*.md" (Join-Path $stage "docs")
 Copy-Item "examples/*.sayon" (Join-Path $stage "examples")
@@ -69,6 +86,8 @@ To use this archive instead:
 Native builds (``sayon build``, ``sayon run --native``) also need clang from LLVM:
 install it from https://releases.llvm.org, then run ``sayon doctor`` again.
 Programs you build this way run on other Windows machines without Sayon or LLVM.
+``sayon build --target wasi`` builds WebAssembly programs that run under a WASI
+host such as wasmtime; it uses the same clang.
 
 To start a project: sayon init hello, then cd hello and sayon run.
 Editor support for VS Code is in editors/vscode; see its README.

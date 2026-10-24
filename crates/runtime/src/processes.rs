@@ -577,3 +577,11 @@ mod platform {
         unsafe { kill(process.id as i32, KILL) == 0 }
     }
 }
+
+/// Systems that start no programs, such as WASI, never have one to stop.
+#[cfg(not(any(windows, unix)))]
+mod platform {
+    pub fn stop(_process: &super::Process) -> bool {
+        false
+    }
+}

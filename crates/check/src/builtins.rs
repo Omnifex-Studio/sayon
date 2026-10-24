@@ -3,6 +3,7 @@
 use crate::hir::Builtin;
 use crate::infer::int_type_by_name;
 use crate::types::{FloatType, Type};
+use sayon_target::Target;
 
 pub enum PreludeItem {
     Builtin(Builtin),
@@ -13,8 +14,9 @@ pub enum PreludeItem {
 }
 
 /// Looks up a prelude function. `host` admits the primitives that only
-/// standard library modules may call.
-pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
+/// standard library modules may call; `target` decides the widths of the C
+/// integer conversions.
+pub fn lookup(name: &str, host: bool, target: &Target) -> Option<PreludeItem> {
     if host && let Some(primitive) = sayon_runtime::host::Host::lookup(name) {
         return Some(PreludeItem::Builtin(Builtin::Host(primitive)));
     }
@@ -72,7 +74,7 @@ pub fn lookup(name: &str, host: bool) -> Option<PreludeItem> {
         "c_string" => Builtin::Host(sayon_runtime::host::Host::CString),
         "move" => return Some(PreludeItem::Move),
         _ => {
-            if let Some(int) = int_type_by_name(name) {
+            if let Some(int) = int_type_by_name(name, target) {
                 return Some(PreludeItem::Conversion(Type::Int(int)));
             }
             return match name {

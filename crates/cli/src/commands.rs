@@ -292,7 +292,7 @@ fn build_for(
         Ok(compiled) => compiled,
         Err(code) => return code,
     };
-    if !target.is_host() {
+    if !target.builds_here() {
         let reason = if target.state >= sayon_target::State::Buildable {
             format!("so far, programs for {target} are built on {target} itself")
         } else {
@@ -401,6 +401,13 @@ pub fn target_setup(name: &str) -> u8 {
     if target.is_host() {
         println!(
             "This computer's own target: native builds need clang, which `sayon doctor` checks."
+        );
+    } else if target.platform == "wasi" && target.built_anywhere() {
+        println!(
+            "Built on any computer with clang and its WebAssembly linker (wasm-ld), and the runtime \
+             for {}; the programs run under a WASI host such as wasmtime, with the folders they may \
+             use given to them (`wasmtime run --dir . program.wasm`).",
+            target.triple
         );
     } else if target.state >= sayon_target::State::Buildable {
         println!("So far, programs for {target} are built on {target} itself.");
@@ -771,7 +778,7 @@ pub fn doctor() -> u8 {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
-    match sayon_codegen::Toolchain::locate(exe_dir.as_deref()) {
+    match sayon_codegen::Toolchain::locate(exe_dir.as_deref(), sayon_target::host()) {
         Ok(toolchain) => {
             line(
                 true,
@@ -795,6 +802,22 @@ pub fn doctor() -> u8 {
             let first = message.lines().next().unwrap_or("").to_string();
             line(false, "native toolchain", first);
         }
+    }
+    // Building for WASI is optional: without it, the rest works.
+    if let Some(wasi) = sayon_target::find("wasi") {
+        let (state, detail) = match sayon_codegen::Toolchain::locate(exe_dir.as_deref(), wasi) {
+            Ok(toolchain) => (
+                "ok",
+                toolchain
+                    .runtime
+                    .parent()
+                    .unwrap_or(&toolchain.runtime)
+                    .display()
+                    .to_string(),
+            ),
+            Err(message) => ("absent", message.lines().next().unwrap_or("").to_string()),
+        };
+        println!("  {state:<8} {:<18} {detail}", "WASI runtime");
     }
     if healthy {
         println!("Everything is in place: sayon run, test, and native builds are available.");

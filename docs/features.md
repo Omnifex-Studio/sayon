@@ -54,6 +54,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | C functions in the interpreter on Linux x86-64 (System V), with C structures and callbacks | experimental | M3 |
 | C functions in the interpreter on macOS and on ARM64 | planned | with each platform's validation |
 | C structures (`foreign type`): C layout, by value in C calls, in C memory with `memory.read`, `write`, and `size`; Windows x64 and System V x86-64 (Linux) | experimental | M3 |
+| C structures by value in WebAssembly programs (WASI), by its basic C convention | experimental | M4 |
 | C structures by value on ARM64 | planned | with each platform's validation |
 | C callbacks: Sayon function values, with what they captured, as parameters of C functions that call them during the call; failures raised once C returns; compiled programs on every target, the interpreter on Windows x64 and Linux x86-64 | experimental | M3 |
 | C callbacks that C keeps and calls after the call, or on other threads | planned | M4 |
@@ -72,7 +73,9 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `sayon check` | experimental | M1 |
 | `sayon build`, `sayon run --native` on Windows x64 (M1) and Linux x86-64 (M3) | experimental | M1, M3 |
 | Targets: `--target` for `check`, `lint`, and `build` (repeatable, `all`, `native`, short names, triples); `sayon target list` and `setup`; `[compiler]` `targets` and `required_capabilities` in `sayon.toml` | experimental | M4 |
-| Building on one system for another (WebAssembly, Android, and the other desktop systems) | planned | M4 to M7, with each target |
+| Building for WASI (`--target wasi`) on any computer: WebAssembly modules for `wasm32-wasip1`, run under wasmtime with the same behavior as the interpreter | experimental | M4 |
+| Tasks in WebAssembly programs, through the lowering of suspending functions | planned | M4 |
+| Building on one system for another (browser WebAssembly, Android, and the other desktop systems) | planned | M4 to M7, with each target |
 | Diagnostics with stable codes and source excerpts | experimental | M1 |
 | VS Code syntax highlighting and file icon | experimental | M1 |
 | `sayon test` with `test` blocks (interpreter) | experimental | M1 |
@@ -129,5 +132,6 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Windows x64 (`x86_64-pc-windows-msvc`) | yes | yes | yes, development machine | no |
 | Linux x64 (`x86_64-unknown-linux-gnu`) | yes | yes | yes, Ubuntu 26.04 under WSL 2 | no |
 | Windows and Linux ARM64 | yes | no | no | no |
-| Android (`android-arm64`, `android-x64`), browser WebAssembly (`web`), WASI (`wasi`) | yes, checked with `--target` | no | no | no |
+| WASI (`wasm32-wasip1`) | yes | yes, from any computer | yes, under wasmtime 50 | no |
+| Android (`android-arm64`, `android-x64`), browser WebAssembly (`web`) | yes, checked with `--target` | no | no | no |
 | macOS, iOS | yes | no | no | no |

@@ -110,7 +110,7 @@ pub fn call(
                 callback_entry(index, position).map_err(CallFailure::Foreign)? as u64,
             ),
             Type::Named(_) => {
-                let (size, _) = c_size_align(types, ty);
+                let (size, _) = c_size_align(types, ty, sayon_target::host());
                 let mut words = vec![0u64; size.div_ceil(8).max(1) as usize];
                 // SAFETY: the words have room for the structure.
                 unsafe { write(words.as_mut_ptr() as usize, value, ty, types) };
@@ -385,7 +385,7 @@ pub unsafe fn read(address: usize, ty: &Type, types: &[TypeDef]) -> Value {
     unsafe {
         match ty {
             Type::Named(named) => {
-                let fields: Vec<Value> = c_layout(types, named)
+                let fields: Vec<Value> = c_layout(types, named, sayon_target::host())
                     .fields
                     .iter()
                     .map(|(offset, field)| read(address + *offset as usize, field, types))
@@ -421,7 +421,7 @@ pub unsafe fn write(address: usize, value: &Value, ty: &Type, types: &[TypeDef])
     unsafe {
         match (ty, value) {
             (Type::Named(named), Value::Record(_, fields)) => {
-                let layout = c_layout(types, named);
+                let layout = c_layout(types, named, sayon_target::host());
                 for ((offset, field_ty), field) in layout.fields.iter().zip(fields.iter()) {
                     write(address + *offset as usize, field, field_ty, types);
                 }
@@ -539,7 +539,7 @@ mod platform {
         let mut slots = Vec::new();
         let in_memory = match ret {
             Type::Named(_) => {
-                let (size, _) = c_size_align(types, ret);
+                let (size, _) = c_size_align(types, ret, sayon_target::host());
                 (!win64_in_register(size)).then(|| {
                     copies.push(vec![0; size.div_ceil(8) as usize]);
                     slots.push(copies[0].as_ptr() as u64);
@@ -551,7 +551,7 @@ mod platform {
             match piece {
                 Piece::Integer(word) | Piece::Float(word) => slots.push(*word),
                 Piece::Structure(words, ty) => {
-                    let (size, _) = c_size_align(types, ty);
+                    let (size, _) = c_size_align(types, ty, sayon_target::host());
                     if win64_in_register(size) {
                         slots.push(words[0]);
                     } else {
@@ -800,11 +800,11 @@ mod platform {
         let mut stack: Vec<u64> = Vec::new();
         let mut memory: Option<Vec<u64>> = None;
         let returned = match ret {
-            Type::Named(_) => sysv_eightbytes(types, ret),
+            Type::Named(_) => sysv_eightbytes(types, ret, sayon_target::host()),
             _ => None,
         };
         if matches!(ret, Type::Named(_)) && returned.is_none() {
-            let (size, _) = sayon_check::types::c_size_align(types, ret);
+            let (size, _) = sayon_check::types::c_size_align(types, ret, sayon_target::host());
             let words = vec![0u64; size.div_ceil(8) as usize];
             integers.push(words.as_ptr() as u64);
             memory = Some(words);
@@ -814,25 +814,27 @@ mod platform {
                 Piece::Integer(word) if integers.len() < 6 => integers.push(*word),
                 Piece::Float(word) if floats.len() < 8 => floats.push(*word),
                 Piece::Integer(word) | Piece::Float(word) => stack.push(*word),
-                Piece::Structure(words, ty) => match sysv_eightbytes(types, ty) {
-                    Some(classes)
-                        if integers.len()
-                            + classes.iter().filter(|c| **c == Eightbyte::Integer).count()
-                            <= 6
-                            && floats.len()
-                                + classes.iter().filter(|c| **c == Eightbyte::Sse).count()
-                                <= 8 =>
-                    {
-                        for (class, word) in classes.iter().zip(words) {
-                            match class {
-                                Eightbyte::Integer => integers.push(*word),
-                                Eightbyte::Sse => floats.push(*word),
+                Piece::Structure(words, ty) => {
+                    match sysv_eightbytes(types, ty, sayon_target::host()) {
+                        Some(classes)
+                            if integers.len()
+                                + classes.iter().filter(|c| **c == Eightbyte::Integer).count()
+                                <= 6
+                                && floats.len()
+                                    + classes.iter().filter(|c| **c == Eightbyte::Sse).count()
+                                    <= 8 =>
+                        {
+                            for (class, word) in classes.iter().zip(words) {
+                                match class {
+                                    Eightbyte::Integer => integers.push(*word),
+                                    Eightbyte::Sse => floats.push(*word),
+                                }
                             }
                         }
+                        // In memory, or without registers enough for all of it.
+                        _ => stack.extend_from_slice(words),
                     }
-                    // In memory, or without registers enough for all of it.
-                    _ => stack.extend_from_slice(words),
-                },
+                }
             }
         }
         integers.resize(6, 0);

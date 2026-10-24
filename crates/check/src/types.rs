@@ -1,6 +1,7 @@
 //! Semantic types.
 
 use sayon_syntax::ast::ParamMode;
+use sayon_target::Target;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -546,13 +547,13 @@ pub struct CLayout {
     pub align: u64,
 }
 
-/// The C layout of a structure declared with `foreign type`.
-pub fn c_layout(types: &[TypeDef], named: &NamedType) -> CLayout {
+/// The C layout on `target` of a structure declared with `foreign type`.
+pub fn c_layout(types: &[TypeDef], named: &NamedType, target: &Target) -> CLayout {
     let mut fields = Vec::new();
     let mut offset = 0;
     let mut align = 1;
     for field in structure_fields(types, named) {
-        let (size, field_align) = c_size_align(types, &field);
+        let (size, field_align) = c_size_align(types, &field, target);
         offset = u64::next_multiple_of(offset, field_align);
         fields.push((offset, field));
         offset += size;
@@ -584,12 +585,18 @@ pub enum Eightbyte {
 /// How the System V convention of x86-64 passes and returns a structure:
 /// each of its eightbytes in a register of the kind it needs, or, for one
 /// of more than 16 bytes, in memory (`None`).
-pub fn sysv_eightbytes(types: &[TypeDef], ty: &Type) -> Option<Vec<Eightbyte>> {
-    fn visit(types: &[TypeDef], ty: &Type, offset: u64, classes: &mut [Option<Eightbyte>]) {
+pub fn sysv_eightbytes(types: &[TypeDef], ty: &Type, target: &Target) -> Option<Vec<Eightbyte>> {
+    fn visit(
+        types: &[TypeDef],
+        ty: &Type,
+        offset: u64,
+        classes: &mut [Option<Eightbyte>],
+        target: &Target,
+    ) {
         let class = match ty {
             Type::Named(named) => {
-                for (field_offset, field) in c_layout(types, named).fields {
-                    visit(types, &field, offset + field_offset, classes);
+                for (field_offset, field) in c_layout(types, named, target).fields {
+                    visit(types, &field, offset + field_offset, classes, target);
                 }
                 return;
             }
@@ -603,12 +610,12 @@ pub fn sysv_eightbytes(types: &[TypeDef], ty: &Type) -> Option<Vec<Eightbyte>> {
             _ => Some(Eightbyte::Sse),
         };
     }
-    let (size, _) = c_size_align(types, ty);
+    let (size, _) = c_size_align(types, ty, target);
     if size > 16 {
         return None;
     }
     let mut classes = vec![None; size.div_ceil(8) as usize];
-    visit(types, ty, 0, &mut classes);
+    visit(types, ty, 0, &mut classes, target);
     Some(
         classes
             .into_iter()
@@ -617,21 +624,22 @@ pub fn sysv_eightbytes(types: &[TypeDef], ty: &Type) -> Option<Vec<Eightbyte>> {
     )
 }
 
-/// The size and alignment C gives a value of a type C functions take: a
-/// number, a pointer, or a `foreign type` structure. Pointers are 64 bits,
-/// as on every target so far.
-pub fn c_size_align(types: &[TypeDef], ty: &Type) -> (u64, u64) {
+/// The size and alignment C gives on `target` a value of a type C functions
+/// take: a number, a pointer, or a `foreign type` structure.
+pub fn c_size_align(types: &[TypeDef], ty: &Type, target: &Target) -> (u64, u64) {
     match ty {
         Type::Int(int) => {
             let bytes = int.bits() as u64 / 8;
             (bytes, bytes)
         }
         Type::Float(FloatType::F32) => (4, 4),
+        Type::Float(FloatType::F64) => (8, 8),
         Type::Named(named) => {
-            let layout = c_layout(types, named);
+            let layout = c_layout(types, named, target);
             (layout.size, layout.align)
         }
-        _ => (8, 8),
+        // A pointer, a C string, or a function C calls back: an address.
+        _ => (target.pointer_size, target.pointer_size),
     }
 }
 

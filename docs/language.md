@@ -695,7 +695,7 @@ print(unsafe strlen(name))       # 5
 ```
 
 - `"c"` names the target's C runtime; another name is one of the system's libraries, such as `"kernel32"` or `"m"`, which a compiled program is linked with. A declaration gives each parameter its C type, and `...` after them takes further arguments.
-- C functions take integers, floats, `pointer`, `c_string`, and C structures, and give integers, floats, `pointer`, C structures, or nothing (`E_FOREIGN_TYPE`). The integer types include the target's C types `c_char`, `c_short`, `c_ushort`, `c_int`, `c_uint`, `c_long`, `c_ulong`, `c_longlong`, `c_ulonglong`, `c_size`, and `c_ssize`, each the integer type of its size: `c_long` is `integer32` on Windows and `integer64` elsewhere. `c_float` and `c_double` are `float32` and `float`.
+- C functions take integers, floats, `pointer`, `c_string`, and C structures, and give integers, floats, `pointer`, C structures, or nothing (`E_FOREIGN_TYPE`). The integer types include the target's C types `c_char`, `c_short`, `c_ushort`, `c_int`, `c_uint`, `c_long`, `c_ulong`, `c_longlong`, `c_ulonglong`, `c_size`, and `c_ssize`, each the integer type of its size on the target the program is checked for: `c_long` is `integer32` on Windows and WebAssembly and `integer64` elsewhere, and `c_size` and `c_ssize`, like `pointer`, are as wide as an address, 32 bits on WebAssembly. `c_float` and `c_double` are `float32` and `float`.
 - Arguments after the parameters of a variadic function go as C passes them: an integer narrower than `c_int` becomes a `c_int`, a `float32` becomes a `float`, and an integer literal is a `c_int`.
 - `c_string(text)` copies text into a buffer that ends with a NUL byte, for C to read; it fails with `ValueError` when the text holds a NUL character, which C would take for its end. The C string owns its buffer, and C reads it during a call that takes it. It shows as its text, and cannot be cloned or compared. Text that C gives back is a `pointer`, which `memory.read_text` reads.
 - A `pointer` is a raw address. `null_pointer` points nowhere; pointers can be compared, and one shows as `pointer` or `null_pointer`, never as its address.
@@ -744,7 +744,7 @@ unsafe
 - Its fields are numbers, `pointer`, and other `foreign type` structures, in C's order: each at the next multiple of its alignment, and the whole a multiple of the largest (`E_FOREIGN_TYPE` for anything else, and for type parameters). Text is a `pointer` to its bytes, a boolean a `c_int`, and a structure that points to another of its type does so with a `pointer`.
 - Otherwise it is an ordinary structure: built, read, changed, compared, and shown as any other, and copied, since every field is.
 - A variadic C function takes a structure by its address, as a `pointer`.
-- Structures go to C and come back as the target's C convention passes them; compiled programs and the interpreter pass them as Windows x64 and Linux x86-64 do, and compiled programs report `ForeignError` on other targets.
+- Structures go to C and come back as the target's C convention passes them; compiled programs and the interpreter pass them as Windows x64 and Linux x86-64 do, compiled programs for WASI as WebAssembly's C convention does, and compiled programs report `ForeignError` on other targets.
 
 ### Functions that C calls back
 
@@ -1123,7 +1123,7 @@ A program is checked and built for a target: a platform and a processor. `sayon 
 ```text
 sayon check --target web          # check the program as a web page would run it
 sayon check --target all          # the project's targets, or windows-x64 and linux-x64
-sayon build --target linux-x64
+sayon build --target wasi         # a WebAssembly program, on any computer
 sayon target list                 # every target, how far it has come, and what it lacks
 sayon target setup wasi           # what building for one needs
 ```
@@ -1132,14 +1132,25 @@ sayon target setup wasi           # what building for one needs
 |---|---|---|---|
 | `windows-x64` | `windows` | `x64` | built and run |
 | `linux-x64` | `linux` | `x64` | built and run |
-| `wasi` | `wasi` | `wasm32` | checked; built from M4 on |
+| `wasi` | `wasi` | `wasm32` | built on any computer, run under wasmtime |
 | `web` | `web` | `wasm32` | checked; built from M4 on |
 | `android-arm64`, `android-x64` | `android` | `arm64`, `x64` | checked; built from M4 on |
 | `windows-arm64`, `linux-arm64` | `windows`, `linux` | `arm64` | checked; built from M5 on |
 | `macos-arm64`, `macos-x64` | `macos` | `arm64`, `x64` | checked; built from M7 on |
 | `ios-arm64`, `ios-simulator-arm64` | `ios` | `arm64` | checked; built from M7 on |
 
-`native` is this computer's target, and the short names `windows`, `linux`, `android`, `macos`, and `ios` are `windows-x64`, `linux-x64`, `android-arm64`, `macos-arm64`, and `ios-arm64`, for good: a later release never moves them to another processor. Each target's LLVM triple, such as `x86_64-unknown-linux-gnu`, names it too. So far, a program is built on the system it is for; a target other than this computer's checks the program but stops before building it. `sayon build` writes a program for a target other than this computer's under `build/debug/<target>/`, or next to a standalone file as `<name>-<target>`.
+`native` is this computer's target, and the short names `windows`, `linux`, `android`, `macos`, and `ios` are `windows-x64`, `linux-x64`, `android-arm64`, `macos-arm64`, and `ios-arm64`, for good: a later release never moves them to another processor. Each target's LLVM triple, such as `x86_64-unknown-linux-gnu`, names it too. A native program is built on the system it is for; for another native target, `sayon build` checks the program but stops before building it. A WebAssembly program is the same wherever it is built, so `wasi` builds on any computer. `sayon build` writes a program for a target other than this computer's under `build/debug/<target>/`, or next to a standalone file as `<name>-<target>`, such as `hello-wasi.wasm`.
+
+### WASI
+
+A program built for `wasi` is a WebAssembly module for WASI preview 1 (`wasm32-wasip1`). It runs under a WASI host, which gives it only the folders it is told to:
+
+```text
+sayon build --target wasi hello.sayon      # hello-wasi.wasm
+wasmtime run --dir . hello-wasi.wasm       # the current folder, as .
+```
+
+Building needs the same clang as native builds, with its WebAssembly linker (`wasm-ld`, part of LLVM), and Sayon's runtime for WASI with WASI's C library, which an installation keeps in `lib/wasm32-wasip1`. Programs behave as in the interpreter: Sayon's tests run each example under wasmtime 50 and compare. WASI has no sockets, threads, or other programs, and so far no tasks: WebAssembly cannot switch between stacks, and tasks there wait for the compiler to turn functions that wait into ones that can stop and continue later (planned for M4).
 
 ### Platform branches
 
@@ -1172,7 +1183,7 @@ Each target provides capabilities: what its programs can ask of the system.
 | `network` | TCP and UDP sockets, resolving names | web, WASI |
 | `http` | the HTTP client | WASI |
 | `tls` | `network.connect_secure`, `connection.secure`, `https://` | web, WASI, Android, iOS |
-| `tasks` | tasks, channels, `sleep`, `select` | none |
+| `tasks` | tasks, channels, `sleep`, `select` | WASI, for now |
 | `threads` | `threads.spawn_parallel` | web, WASI |
 | `foreign` | C functions and `standard/memory` | web |
 | `time_zones` | IANA time zones | web, WASI, Android, iOS |

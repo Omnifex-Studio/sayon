@@ -9,8 +9,8 @@
 
 use crate::layout::SHARED_HEADER;
 use crate::layout::{
-    CPass, Layouts, STRUCTURES_SUPPORTED, c_llvm, c_param, c_plan, int_code, int_llvm, needs_drop,
-    passes_structures,
+    CPass, Layouts, c_llvm, c_param, c_plan, int_code, int_llvm, needs_drop, passes_structures,
+    structures_supported,
 };
 use sayon_check::types::{FloatType, IntType, Type, Wrapper};
 use sayon_ir::*;
@@ -153,7 +153,7 @@ impl<'m> Codegen<'m> {
         Codegen {
             module,
             sources,
-            layouts: Layouts::new(module.types.clone()),
+            layouts: Layouts::new(module.types.clone(), module.target),
             constants: HashMap::new(),
             constant_defs: String::new(),
             helpers: HashMap::new(),
@@ -306,7 +306,7 @@ impl<'m> Codegen<'m> {
             if !declared.insert(function.name.as_str()) {
                 continue;
             }
-            let plan = c_plan(&module.types, function);
+            let plan = c_plan(&module.types, function, module.target);
             let _ = writeln!(
                 out,
                 "declare {} @{}({})",
@@ -384,7 +384,7 @@ impl<'m> Codegen<'m> {
                      \x20 br i1 %none, label %skip, label %call\n\
                      call:\n\
                      \x20 %code = load ptr, ptr %value\n\
-                     \x20 %field = getelementptr i8, ptr %value, i64 8\n\
+                     \x20 %field = getelementptr i8, ptr %value, i64 {offset}\n\
                      \x20 %block = load ptr, ptr %field\n\
                      \x20 %environment = getelementptr i8, ptr %block, i64 16\n\
                      \x20 %status = call i32 %code(ptr %result, ptr %err, i64 {count}, ptr %environment{rest})\n\
@@ -399,6 +399,7 @@ impl<'m> Codegen<'m> {
                      \x20 {zero}\n\
                      }}\n\n",
                     params = params.join(", "),
+                    offset = self.layouts.environment_offset(),
                     count = args.len() + 1,
                     rest = args.iter().map(|a| format!(", {a}")).collect::<String>(),
                 );
@@ -513,8 +514,15 @@ impl<'m> Codegen<'m> {
         body.code.push_str(&release_globals);
         body.line("call void @sayon_runtime_finish()");
         body.line(format!("ret i32 {code}"));
+        // WASI's C library starts the program by calling the name C
+        // compilers give a `main` that takes its arguments.
+        let name = if module.target.platform == "wasi" {
+            "__main_argc_argv"
+        } else {
+            "main"
+        };
         format!(
-            "define i32 @main(i32 %argc, ptr %argv) {{\nentry:\n{}{}}}\n",
+            "define i32 @{name}(i32 %argc, ptr %argv) {{\nentry:\n{}{}}}\n",
             body.allocas, body.code
         )
     }
@@ -1417,7 +1425,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 };
                 self.body
                     .line(format!("store ptr @sayon.fn.{}, ptr {dest}", function.0));
-                let field = self.offset_pointer(dest, 8);
+                let field = self.offset_pointer(dest, self.cg.layouts.environment_offset());
                 self.body
                     .line(format!("store ptr {environment}, ptr {field}"));
             }
@@ -1923,7 +1931,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 };
                 let code = self.body.tmp();
                 self.body.line(format!("{code} = load ptr, ptr {pointer}"));
-                let field = self.offset_pointer(&pointer, 8);
+                let field = self.offset_pointer(&pointer, self.cg.layouts.environment_offset());
                 let block = self.body.tmp();
                 self.body.line(format!("{block} = load ptr, ptr {field}"));
                 // A named function's value has no environment; its code
@@ -2419,11 +2427,12 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     declaration.library.clone(),
                     declaration.ret.clone(),
                 );
-                if passes_structures(declaration) && !STRUCTURES_SUPPORTED {
+                let target = self.cg.module.target;
+                if passes_structures(declaration) && !structures_supported(target) {
                     let code = self.cg.c_string("ForeignError");
-                    let message = self
-                        .cg
-                        .c_string("compiled programs pass C structures only on x86-64 so far");
+                    let message = self.cg.c_string(
+                        "compiled programs pass C structures only on x86-64 and WebAssembly so far",
+                    );
                     let location = self.cg.location(span);
                     let status = self.body.tmp();
                     self.body.line(format!(
@@ -2431,13 +2440,14 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     ));
                     return Some(status);
                 }
-                let plan = c_plan(&self.cg.module.types, declaration);
+                let plan = c_plan(&self.cg.module.types, declaration, target);
                 // The function values C can call back, by parameter.
                 let callbacks = args.iter().any(|(_, ty)| matches!(ty, Type::Function(_)));
                 let frame = if callbacks {
                     let frame = self.body.alloca(&format!("[{} x ptr]", args.len()));
+                    let pointer_size = self.cg.layouts.pointer_size();
                     for (position, (operand, ty)) in args.iter().enumerate() {
-                        let entry = self.offset_pointer(&frame, 8 * position as u64);
+                        let entry = self.offset_pointer(&frame, pointer_size * position as u64);
                         if let Type::Function(_) = ty {
                             let (value, _) = self.pointer(operand);
                             self.body.line(format!("store ptr {value}, ptr {entry}"));
@@ -2496,8 +2506,11 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                             self.body.line(format!("store {llvm} {value}, ptr {copy}"));
                             match pass {
                                 CPass::Stack => {
-                                    let (size, align) =
-                                        sayon_check::types::c_size_align(&self.cg.module.types, ty);
+                                    let (size, align) = sayon_check::types::c_size_align(
+                                        &self.cg.module.types,
+                                        ty,
+                                        target,
+                                    );
                                     format!(
                                         "ptr byval([{size} x i8]) align {} {copy}",
                                         align.max(8)

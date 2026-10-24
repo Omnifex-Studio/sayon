@@ -10,7 +10,9 @@
 
 use crate::host::HostError;
 
-/// What a step of the handshake reached.
+/// What a step of the handshake reached. A system without TLS, such as
+/// WASI, never starts a session, so never reaches either.
+#[cfg_attr(not(any(windows, unix)), allow(dead_code))]
 pub(crate) enum Step {
     Done,
     /// The other side's next messages are needed.
@@ -1139,6 +1141,7 @@ mod platform {
     use super::Step;
     use crate::host::HostError;
 
+    #[allow(dead_code)]
     pub(super) enum Decrypted {
         More,
         Closed,

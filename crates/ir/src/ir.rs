@@ -56,6 +56,8 @@ pub struct Module {
     pub foreign: Vec<ForeignFunction>,
     /// The function that destroys each structure with a `finally function`.
     pub finally: HashMap<TypeId, FunctionId>,
+    /// The target the program was checked and lowered for.
+    pub target: &'static sayon_target::Target,
 }
 
 pub use sayon_check::hir::{ForeignFunction, ForeignId};

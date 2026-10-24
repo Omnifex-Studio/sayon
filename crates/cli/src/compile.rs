@@ -348,7 +348,7 @@ pub fn compile_native(compiled: &Compiled, output: &Path, release: bool) -> Resu
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
-    let toolchain = sayon_codegen::Toolchain::locate(exe_dir.as_deref())?;
+    let toolchain = sayon_codegen::Toolchain::locate(exe_dir.as_deref(), compiled.module.target)?;
     let work = WorkDir::create()?;
     let ir_path = work.0.join("program.ll");
     let ir = sayon_codegen::emit_llvm(&compiled.module, &compiled.sources);

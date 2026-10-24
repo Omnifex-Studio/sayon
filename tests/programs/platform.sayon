@@ -4,17 +4,17 @@
 function where_am_i() -> string
     if platform == "web"
         return page_title()
-    elseif platform == "windows" or platform == "linux" or platform == "macos"
-        return "a desktop"
+    elseif platform == "android" or platform == "ios"
+        return phone_name()
     else
-        return "somewhere else"
+        return "a computer"
 
 print(where_am_i())
 print(supports("files"), supports("json"))
-print(processor == "x64" or processor == "arm64")
+print(processor == "x64" or processor == "arm64" or processor == "wasm32")
 
-if not supports("tasks")
-    tasks_are_missing()
+if not supports("console")
+    console_is_missing()
 
 # Outside conditions the names are plain values.
 known = platform

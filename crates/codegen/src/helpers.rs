@@ -303,7 +303,7 @@ impl<'m> Codegen<'m> {
     fn drop_body(&mut self, body: &mut Body, ty: &Type) {
         match ty {
             Type::Function(_) => {
-                let field = offset_pointer(body, "%p", 8);
+                let field = offset_pointer(body, "%p", self.layouts.environment_offset());
                 let block = body.tmp();
                 body.line(format!("{block} = load ptr, ptr {field}"));
                 let none = body.tmp();
@@ -465,8 +465,9 @@ impl<'m> Codegen<'m> {
         match ty {
             Type::Function(_) => {
                 self.intrinsic(MEMCPY.to_string());
-                body.memcpy("%dst", "%src", "16");
-                let field = offset_pointer(body, "%src", 8);
+                body.memcpy("%dst", "%src", &self.layouts.size_of(ty).to_string());
+                let environment = self.layouts.environment_offset();
+                let field = offset_pointer(body, "%src", environment);
                 let block = body.tmp();
                 body.line(format!("{block} = load ptr, ptr {field}"));
                 let none = body.tmp();
@@ -480,7 +481,7 @@ impl<'m> Codegen<'m> {
                 body.line(format!("{clone} = load ptr, ptr {clone_field}"));
                 let copied = body.tmp();
                 body.line(format!("{copied} = call ptr {clone}(ptr {block})"));
-                let target = offset_pointer(body, "%dst", 8);
+                let target = offset_pointer(body, "%dst", environment);
                 body.line(format!("store ptr {copied}, ptr {target}"));
                 body.line(format!("br label %{done}"));
                 body.start(&done);
@@ -832,8 +833,10 @@ impl<'m> Codegen<'m> {
             Type::Function(_) => self.text(body, "function"),
             Type::Stream => self.text(body, "stream"),
             Type::Pointer => {
+                let pointer = body.tmp();
+                body.line(format!("{pointer} = load ptr, ptr %value"));
                 let address = body.tmp();
-                body.line(format!("{address} = load i64, ptr %value"));
+                body.line(format!("{address} = ptrtoint ptr {pointer} to i64"));
                 body.line(format!(
                     "call void @sayon_builder_pointer(ptr %builder, i64 {address})"
                 ));

@@ -187,69 +187,21 @@ fn run_native_programs(dir: &Path) {
     let mut failures = Vec::new();
     for source in sources(dir) {
         let name = source.file_name().unwrap().to_string_lossy().to_string();
-        let mut outcome = sayon_with_env(
+        let outcome = sayon_with_env(
             dir,
             &["run", "--native", "--color", "never", &name],
             &[("SAYON_DEBUG_ALLOC", "1")],
             read_expectation(&source.with_extension("stdin")).as_deref(),
         );
-        const REPORT: &str = "sayon: allocations live at exit: ";
-        // A program stopped by a fatal error releases nothing, and reports
-        // nothing.
-        let fatal = read_expectation(&source.with_extension("status"))
-            .is_some_and(|status| status.trim() == "3");
-        let mut stderr_lines: Vec<&str> = outcome.stderr.lines().collect();
-        match stderr_lines
-            .iter()
-            .position(|line| line.starts_with(REPORT))
-        {
-            Some(index) => {
-                let live = &stderr_lines[index][REPORT.len()..];
-                if live != "0" {
-                    failures.push(format!("{name}: {live} allocations were never released"));
-                }
-                stderr_lines.remove(index);
-            }
-            None if fatal => {}
-            None => failures.push(format!("{name}: no allocation report\n{}", outcome.stderr)),
-        }
-        outcome.stderr = stderr_lines
-            .iter()
-            .map(|line| format!("{line}\n"))
-            .collect();
-        let expected_stdout =
-            read_expectation(&source.with_extension("stdout")).unwrap_or_default();
-        let expected_stderr =
-            read_expectation(&source.with_extension("stderr")).unwrap_or_default();
-        let expected_status: i32 = read_expectation(&source.with_extension("status"))
-            .map(|text| text.trim().parse().expect("status"))
-            .unwrap_or(0);
         // Status 4 means the build failed, unless the program itself returns 4.
-        if outcome.status == 4 && expected_status != 4 {
+        if outcome.status == 4 && expected_status(&source) != 4 {
             failures.push(format!(
                 "{name}: the native build failed:\n{}",
                 outcome.stderr
             ));
             continue;
         }
-        if outcome.stdout != expected_stdout {
-            failures.push(format!(
-                "{name}: native output differs\n--- interpreter\n{expected_stdout}\n--- native\n{}",
-                outcome.stdout
-            ));
-        }
-        if outcome.stderr != expected_stderr {
-            failures.push(format!(
-                "{name}: native errors differ\n--- interpreter\n{expected_stderr}\n--- native\n{}",
-                outcome.stderr
-            ));
-        }
-        if outcome.status != expected_status {
-            failures.push(format!(
-                "{name}: native status {} differs from {expected_status}",
-                outcome.status
-            ));
-        }
+        compare_with_interpreter(&mut failures, &source, outcome, "native");
     }
     assert!(
         failures.is_empty(),
@@ -257,6 +209,233 @@ fn run_native_programs(dir: &Path) {
         failures.len(),
         failures.join("\n\n")
     );
+}
+
+/// The WASI host the WebAssembly programs run under, pinned: a program's
+/// behavior is checked against this version.
+const WASMTIME_VERSION: &str = "wasmtime 50.0.0";
+
+/// Builds every example for WASI and runs it under wasmtime: it must behave
+/// exactly like the interpreter and release every allocation it made. A
+/// program that needs what WASI lacks, such as sockets, is diagnosed when
+/// it is built, and is left out. Needs clang with its WebAssembly linker,
+/// the Rust target `wasm32-wasip1` (`rust-toolchain.toml` installs it), and
+/// wasmtime on `PATH` or at `SAYON_WASMTIME`; set `SAYON_SKIP_WASI=1` to
+/// skip explicitly on a machine without them.
+#[test]
+fn wasi_programs_match_the_interpreter() {
+    if std::env::var_os("SAYON_SKIP_WASI").is_some() {
+        eprintln!("SKIPPED: WASI parity checks (SAYON_SKIP_WASI is set)");
+        return;
+    }
+    prepare_wasi_runtime();
+    let wasmtime = std::env::var_os("SAYON_WASMTIME").unwrap_or_else(|| "wasmtime".into());
+    let version = Command::new(&wasmtime)
+        .arg("--version")
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).to_string())
+        .unwrap_or_else(|e| panic!("cannot run wasmtime ({e}); set SAYON_SKIP_WASI=1 to skip"));
+    assert!(
+        version.starts_with(WASMTIME_VERSION),
+        "the WASI checks are pinned to {WASMTIME_VERSION}, but found {version}"
+    );
+    let dir = tests_dir().join("programs");
+    let work = std::env::temp_dir().join(format!("sayon-wasi-{}", std::process::id()));
+    std::fs::create_dir_all(&work).expect("create work directory");
+    let mut failures = Vec::new();
+    let mut lacking = Vec::new();
+    let mut ran = 0;
+    for source in sources(&dir) {
+        let name = source.file_name().unwrap().to_string_lossy().to_string();
+        let wasm = work.join(source.with_extension("wasm").file_name().unwrap());
+        let built = sayon(
+            &dir,
+            &[
+                "build",
+                "--color",
+                "never",
+                "--quiet",
+                "--target",
+                "wasi",
+                "--output",
+                &wasm.to_string_lossy(),
+                &name,
+            ],
+        );
+        if built.status != 0 {
+            if built.stderr.contains("E_CAPABILITY") {
+                lacking.push(name);
+            } else {
+                failures.push(format!("{name}: the WASI build failed:\n{}", built.stderr));
+            }
+            continue;
+        }
+        let input = read_expectation(&source.with_extension("stdin"));
+        let outcome = run_wasm(&wasmtime, &dir, &wasm, input.as_deref());
+        compare_with_interpreter(&mut failures, &source, outcome, "WASI");
+        ran += 1;
+    }
+    let _ = std::fs::remove_dir_all(&work);
+    eprintln!(
+        "WASI: {ran} programs ran; {} need what WASI lacks: {}",
+        lacking.len(),
+        lacking.join(", ")
+    );
+    assert!(ran > 0, "no program ran under WASI");
+    assert!(
+        failures.is_empty(),
+        "{} WASI parity problem(s):\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
+}
+
+/// Runs a WebAssembly program under wasmtime in `dir`, which it may use,
+/// with `SAYON_DEBUG_ALLOC` set and `input` as its standard input.
+fn run_wasm(wasmtime: &std::ffi::OsStr, dir: &Path, wasm: &Path, input: Option<&str>) -> Outcome {
+    let mut child = Command::new(wasmtime)
+        .args(["run", "--dir", ".", "--env", "SAYON_DEBUG_ALLOC=1"])
+        .arg(wasm)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run wasmtime");
+    let mut stdin = child.stdin.take().expect("standard input");
+    if let Some(input) = input {
+        stdin.write_all(input.as_bytes()).expect("write input");
+    }
+    drop(stdin);
+    let output = child.wait_with_output().expect("run wasmtime");
+    Outcome {
+        stdout: String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n"),
+        stderr: String::from_utf8_lossy(&output.stderr).replace("\r\n", "\n"),
+        status: output.status.code().unwrap_or(-1),
+    }
+}
+
+/// Builds the runtime for WASI and puts it, with WASI's C library from the
+/// Rust toolchain, where `sayon` looks for another target's libraries:
+/// `lib/wasm32-wasip1` beside the directory of the `sayon` executable. The
+/// runtime builds in a directory of its own, so this cargo never waits for
+/// the one running the tests.
+fn prepare_wasi_runtime() {
+    const TRIPLE: &str = "wasm32-wasip1";
+    let root = tests_dir().join("..");
+    let target_dir = Path::new(env!("CARGO_BIN_EXE_sayon"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("the target directory");
+    let build_dir = target_dir.join("wasi-runtime");
+    let cargo = option_env!("CARGO").unwrap_or("cargo");
+    let built = Command::new(cargo)
+        .args([
+            "build",
+            "--quiet",
+            "-p",
+            "sayon-runtime",
+            "--target",
+            TRIPLE,
+        ])
+        .arg("--target-dir")
+        .arg(&build_dir)
+        .current_dir(&root)
+        .status()
+        .expect("run cargo");
+    assert!(built.success(), "building the runtime for {TRIPLE} failed");
+    let sysroot = Command::new("rustc")
+        .args(["--print", "sysroot"])
+        .current_dir(&root)
+        .output()
+        .expect("run rustc");
+    let sysroot = PathBuf::from(String::from_utf8_lossy(&sysroot.stdout).trim());
+    let c_library = sysroot
+        .join("lib")
+        .join("rustlib")
+        .join(TRIPLE)
+        .join("lib")
+        .join("self-contained");
+    let lib = target_dir.join("lib").join(TRIPLE);
+    std::fs::create_dir_all(&lib).expect("create the library directory");
+    let runtime = build_dir
+        .join(TRIPLE)
+        .join("debug")
+        .join("libsayon_runtime.a");
+    std::fs::copy(&runtime, lib.join("libsayon_runtime.a"))
+        .unwrap_or_else(|e| panic!("copy {}: {e}", runtime.display()));
+    for name in ["crt1-command.o", "libc.a"] {
+        std::fs::copy(c_library.join(name), lib.join(name))
+            .unwrap_or_else(|e| panic!("copy {name} from {}: {e}", c_library.display()));
+    }
+}
+
+/// The status a program's recorded behavior ends with.
+fn expected_status(source: &Path) -> i32 {
+    read_expectation(&source.with_extension("status"))
+        .map(|text| text.trim().parse().expect("status"))
+        .unwrap_or(0)
+}
+
+/// Compares how a compiled program behaved, run with `SAYON_DEBUG_ALLOC`,
+/// with the interpreter's recorded behavior, and checks that it released
+/// every allocation it made. `mode` names how it was compiled.
+fn compare_with_interpreter(
+    failures: &mut Vec<String>,
+    source: &Path,
+    mut outcome: Outcome,
+    mode: &str,
+) {
+    let name = source.file_name().unwrap().to_string_lossy().to_string();
+    const REPORT: &str = "sayon: allocations live at exit: ";
+    // A program stopped by a fatal error releases nothing, and reports
+    // nothing.
+    let fatal = expected_status(source) == 3;
+    let mut stderr_lines: Vec<&str> = outcome.stderr.lines().collect();
+    match stderr_lines
+        .iter()
+        .position(|line| line.starts_with(REPORT))
+    {
+        Some(index) => {
+            let live = &stderr_lines[index][REPORT.len()..];
+            if live != "0" {
+                failures.push(format!(
+                    "{name}: {live} allocations were never released ({mode})"
+                ));
+            }
+            stderr_lines.remove(index);
+        }
+        None if fatal => {}
+        None => failures.push(format!(
+            "{name}: no allocation report ({mode})\n{}",
+            outcome.stderr
+        )),
+    }
+    outcome.stderr = stderr_lines
+        .iter()
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let expected_stdout = read_expectation(&source.with_extension("stdout")).unwrap_or_default();
+    let expected_stderr = read_expectation(&source.with_extension("stderr")).unwrap_or_default();
+    let expected_status = expected_status(source);
+    if outcome.stdout != expected_stdout {
+        failures.push(format!(
+            "{name}: {mode} output differs\n--- interpreter\n{expected_stdout}\n--- {mode}\n{}",
+            outcome.stdout
+        ));
+    }
+    if outcome.stderr != expected_stderr {
+        failures.push(format!(
+            "{name}: {mode} errors differ\n--- interpreter\n{expected_stderr}\n--- {mode}\n{}",
+            outcome.stderr
+        ));
+    }
+    if outcome.status != expected_status {
+        failures.push(format!(
+            "{name}: {mode} status {} differs from {expected_status}",
+            outcome.status
+        ));
+    }
 }
 
 /// Runs `sayon test` on each file under `tests/test_runner` and compares

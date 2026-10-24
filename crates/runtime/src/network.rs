@@ -961,7 +961,8 @@ mod platform {
     }
 }
 
-#[cfg(unix)]
+// WASI's C library has `poll` too, for the files it has; it has no sockets.
+#[cfg(any(unix, target_os = "wasi"))]
 mod platform {
     use std::os::fd::AsRawFd;
     use std::time::Duration;

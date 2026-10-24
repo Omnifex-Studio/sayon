@@ -37,6 +37,9 @@ pub struct Program {
     pub foreign: Vec<ForeignFunction>,
     /// Each structure that a `finally function` destroys, with the function.
     pub finally: Vec<(crate::types::TypeId, FuncId)>,
+    /// The target the program was checked for, which decides the sizes of
+    /// its C types.
+    pub target: &'static sayon_target::Target,
 }
 
 /// A C function declared in a `foreign` block.

@@ -7,6 +7,7 @@
 //! signature are generalized together with their bounds.
 
 use crate::types::{FloatType, IntType, NamedType, TyVar, Type, Wrapper};
+use sayon_target::Target;
 use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -720,31 +721,33 @@ fn check_literal_traits(literal: LiteralKind, traits: Traits, ty: &Type) -> Resu
     Ok(())
 }
 
-/// An integer type by name, including the C types of the target, whose
-/// sizes C leaves to each platform: `long` is 32 bits on Windows and 64
-/// elsewhere.
-pub fn int_type_by_name(name: &str) -> Option<IntType> {
-    let long = if cfg!(windows) {
-        IntType::I32
+/// An integer type by name, including the C types of `target`, whose sizes
+/// C leaves to each platform: `long` is 32 bits on Windows and where
+/// addresses are 32 bits, and `size_t` is as wide as an address.
+pub fn int_type_by_name(name: &str, target: &Target) -> Option<IntType> {
+    let (long, unsigned_long) = if target.c_long_bits() == 32 {
+        (IntType::I32, IntType::U32)
     } else {
-        IntType::I64
+        (IntType::I64, IntType::U64)
     };
-    let unsigned_long = if cfg!(windows) {
-        IntType::U32
+    let (signed_size, size) = if target.pointer_size == 4 {
+        (IntType::I32, IntType::U32)
     } else {
-        IntType::U64
+        (IntType::I64, IntType::U64)
     };
     Some(match name {
-        "integer" | "integer64" | "c_longlong" | "c_ssize" => IntType::I64,
+        "integer" | "integer64" | "c_longlong" => IntType::I64,
         "integer8" | "c_char" => IntType::I8,
         "integer16" | "c_short" => IntType::I16,
         "integer32" | "c_int" => IntType::I32,
-        "unsigned" | "unsigned64" | "c_ulonglong" | "c_size" => IntType::U64,
+        "unsigned" | "unsigned64" | "c_ulonglong" => IntType::U64,
         "unsigned8" | "byte" | "c_uchar" => IntType::U8,
         "unsigned16" | "c_ushort" => IntType::U16,
         "unsigned32" | "c_uint" => IntType::U32,
         "c_long" => long,
         "c_ulong" => unsigned_long,
+        "c_ssize" => signed_size,
+        "c_size" => size,
         _ => return None,
     })
 }

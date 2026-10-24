@@ -133,6 +133,7 @@ pub fn check_program(
         json,
         foreign,
         finally,
+        target,
     };
 
     let components = checker.scc_order.clone();

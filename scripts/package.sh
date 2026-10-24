@@ -10,6 +10,7 @@
 #
 #   bin/sayon                    the command-line tool
 #   lib/libsayon_runtime.a       linked into native builds
+#   lib/wasm32-wasip1/           the runtime for WASI, with WASI's C library
 #   stdlib/                      the standard library
 #   docs/, examples/, editors/vscode/, README.md, INSTALL.txt
 #
@@ -40,6 +41,9 @@ device="$system-$processor"
 command -v python3 > /dev/null || { echo "python3 is needed to write the installer's archive" >&2; exit 1; }
 
 cargo build --release -p sayon-cli -p sayon-runtime
+cargo build --release -p sayon-runtime --target wasm32-wasip1
+# WASI's C library (wasi-libc), as the Rust toolchain ships it.
+wasi_libc="$(rustc --print sysroot)/lib/rustlib/wasm32-wasip1/lib/self-contained"
 
 mkdir -p "$out_dir"
 out_dir="$(cd "$out_dir" && pwd)"
@@ -50,6 +54,15 @@ mkdir -p "$stage"/{bin,lib,stdlib,docs,examples,editors,assets}
 
 cp target/release/sayon "$stage/bin/"
 cp target/release/libsayon_runtime.a "$stage/lib/"
+mkdir -p "$stage/lib/wasm32-wasip1"
+cp target/wasm32-wasip1/release/libsayon_runtime.a "$stage/lib/wasm32-wasip1/"
+cp "$wasi_libc/crt1-command.o" "$wasi_libc/libc.a" "$stage/lib/wasm32-wasip1/"
+cat > "$stage/lib/wasm32-wasip1/NOTICE.txt" <<EOF
+crt1-command.o and libc.a are wasi-libc, the C library of WASI programs,
+as the Rust toolchain ships it. WebAssembly programs that Sayon builds for
+WASI include parts of it. Its license, which allows this, is at
+https://github.com/WebAssembly/wasi-libc/blob/main/LICENSE
+EOF
 cp stdlib/*.sayon "$stage/stdlib/"
 cp docs/*.md "$stage/docs/"
 cp examples/*.sayon "$stage/examples/"
@@ -85,6 +98,8 @@ To use this archive instead:
 Native builds (\`sayon build\`, \`sayon run --native\`) also need clang from LLVM,
 from your system's packages (for example \`sudo apt install clang\`) or from
 https://releases.llvm.org; then run \`sayon doctor\` again.
+\`sayon build --target wasi\` builds WebAssembly programs that run under a WASI
+host such as wasmtime; it uses the same clang, with its WebAssembly linker.
 TLS (https:// and network.connect_secure) uses the system's OpenSSL 3
 (libssl.so.3), which most systems have.
 $requirement

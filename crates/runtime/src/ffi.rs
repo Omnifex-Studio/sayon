@@ -1547,7 +1547,9 @@ pub unsafe extern "C" fn sayon_builder_c_string(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn sayon_builder_pointer(b: *mut Builder, address: usize) {
+pub unsafe extern "C" fn sayon_builder_pointer(b: *mut Builder, address: u64) {
+    // The address comes widened to 64 bits on every target.
+    let address = address as usize;
     // SAFETY: `b` is a live builder.
     unsafe { (*b).0.push_str(&text::pointer_text(address)) }
 }

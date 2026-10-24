@@ -194,6 +194,16 @@ impl Target {
             .collect()
     }
 
+    /// The bits of C's `long`, which C leaves to each platform: 32 on
+    /// Windows and where addresses are 32 bits, 64 elsewhere.
+    pub fn c_long_bits(&self) -> u32 {
+        if self.platform == "windows" || self.pointer_size == 4 {
+            32
+        } else {
+            64
+        }
+    }
+
     /// The suffix of the programs built for it.
     pub fn executable_suffix(&self) -> &'static str {
         match self.platform {
@@ -206,6 +216,18 @@ impl Target {
     /// Whether this is the target the running compiler was built for.
     pub fn is_host(&self) -> bool {
         std::ptr::eq(self, host())
+    }
+
+    /// Whether the compiler builds programs for it on any computer, not
+    /// only on a computer of the target itself: a buildable WebAssembly
+    /// target, whose programs are the same wherever they are built.
+    pub fn built_anywhere(&self) -> bool {
+        self.state >= State::Buildable && self.processor == "wasm32"
+    }
+
+    /// Whether the running compiler builds programs for it.
+    pub fn builds_here(&self) -> bool {
+        self.is_host() || self.built_anywhere()
     }
 }
 
@@ -274,13 +296,14 @@ const WEB: &[Capability] = &[
 
 /// What WASI preview 1 offers: the console, preopened files, the
 /// environment, and the C library compiled to WebAssembly; no sockets,
-/// threads, or other programs.
+/// threads, or other programs. Tasks come once compiled WebAssembly
+/// programs can switch between them, which needs the lowering of
+/// suspending functions (DESIGN section 9.3): WebAssembly has no fibers.
 const WASI: &[Capability] = &[
     Console,
     Input,
     Files,
     Environment,
-    Tasks,
     Foreign,
     Clock,
     Random,
@@ -318,7 +341,7 @@ pub static TARGETS: &[Target] = &[
         platform: "wasi",
         processor: "wasm32",
         pointer_size: 4,
-        state: State::Specified,
+        state: State::Executed,
         planned: "M4",
         capabilities: WASI,
     },
@@ -494,6 +517,20 @@ mod tests {
         assert!(find("native").unwrap().is_host());
         assert!(find("plan9").is_none());
         assert!(resolve("plan9").unwrap_err().contains("windows-x64"));
+    }
+
+    #[test]
+    fn c_types_follow_the_target() {
+        assert_eq!(find("windows").unwrap().c_long_bits(), 32);
+        assert_eq!(find("linux").unwrap().c_long_bits(), 64);
+        assert_eq!(find("wasi").unwrap().c_long_bits(), 32);
+    }
+
+    #[test]
+    fn webassembly_is_built_anywhere() {
+        assert!(find("wasi").unwrap().builds_here());
+        assert!(!find("android").unwrap().built_anywhere());
+        assert!(find("native").unwrap().builds_here());
     }
 
     #[test]
