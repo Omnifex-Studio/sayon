@@ -5,6 +5,8 @@
 //!   `NAME.stdout`, plus `NAME.stderr` and `NAME.status` when present.
 //! - `tests/errors/NAME.sayon` is checked with `sayon check`; the rendered
 //!   diagnostics must match `NAME.stderr` and the status must be 2.
+//! - `tests/windows/NAME.sayon` is like a program, and opens a window; it
+//!   runs where there is a screen.
 //! - `tests/online/NAME.sayon` is like a program, and talks to public
 //!   servers; it runs only with `cargo test -- --ignored`.
 //!
@@ -322,10 +324,16 @@ fn web_programs_match_the_interpreter_in_browsers() {
         eprintln!("SKIPPED: web parity checks in browsers (no browser found)");
         return;
     }
+    check_in_browsers(&browsers, &tests_dir().join("programs"), "browsers");
+}
+
+/// Builds each program under `dir` for web pages and runs it in each of
+/// `browsers`, comparing it with the interpreter; `host` names the work
+/// directory.
+fn check_in_browsers(browsers: &[Browser], dir: &Path, host: &str) {
     prepare_runtime("wasm32-unknown-unknown", &[]);
     serve_http();
-    let dir = tests_dir().join("programs");
-    let mut built = build_programs(&dir, "web", "browsers", "wasm", &[]);
+    let mut built = build_programs(dir, "web", host, "wasm", &[]);
     let mut failures = std::mem::take(&mut built.failures);
     std::fs::copy(
         tests_dir().join("web").join("runner.html"),
@@ -338,7 +346,7 @@ fn web_programs_match_the_interpreter_in_browsers() {
         .map(|(source, _)| source.file_stem().unwrap().to_string_lossy().to_string())
         .collect();
     std::fs::write(built.work.join("programs.txt"), names.join("\n")).expect("list the programs");
-    for browser in &browsers {
+    for browser in browsers {
         let results = run_in_browser(browser, &built.work, names.len());
         for (source, _) in &built.programs {
             let name = source.file_stem().unwrap().to_string_lossy().to_string();
@@ -357,9 +365,41 @@ fn web_programs_match_the_interpreter_in_browsers() {
     built.finish(&format!("Web in {}", used.join(", ")), failures);
 }
 
+/// Whether this computer has a screen for windows: Windows has, and Linux
+/// when an X display is set.
+fn has_screen() -> bool {
+    cfg!(windows) || (cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_some())
+}
+
+/// The programs under `tests/windows` open a window, show a few frames,
+/// and close it, on this computer's screen: in the interpreter, compiled
+/// (releasing every allocation), and in each browser found, where the
+/// window is a canvas of the page. The Android check runs them as apps.
+/// Without a screen (on Linux, no `DISPLAY`), the check says it skipped;
+/// the browsers are skipped as their own check is.
+#[test]
+fn window_programs_match_the_interpreter() {
+    if !has_screen() {
+        eprintln!("SKIPPED: window checks (no screen: DISPLAY is not set)");
+        return;
+    }
+    let dir = tests_dir().join("windows");
+    run_programs(&dir);
+    if std::env::var_os("SAYON_SKIP_NATIVE").is_none() {
+        run_native_programs(&dir);
+    }
+    let browsers = browsers();
+    if std::env::var_os("SAYON_SKIP_BROWSERS").is_some() || browsers.is_empty() {
+        eprintln!("SKIPPED: window checks in browsers (no browser, or SAYON_SKIP_BROWSERS)");
+        return;
+    }
+    check_in_browsers(&browsers, &dir, "browsers-windows");
+}
+
 /// The programs the Android check also runs as apps, through their
 /// packages: what they write goes to Android's log, and the files they
-/// write to the app's own directory.
+/// write to the app's own directory. Every program under `tests/windows`
+/// runs as an app too, on the app's screen.
 const ANDROID_APPS: &[&str] = &[
     "threads.sayon",
     "uncaught.sayon",
@@ -399,9 +439,18 @@ fn android_programs_match_the_interpreter() {
     device.adb(&["reverse", &format!("tcp:{port}"), &format!("tcp:{port}")]);
     let dir = tests_dir().join("programs");
     let (built, mut failures) = run_android_programs(&device, &dir, "android-x64", &[]);
-    for name in ANDROID_APPS {
-        let source = dir.join(name);
-        match run_android_app(&device, &dir, &source, &built.work) {
+    let windows = tests_dir().join("windows");
+    let apps = ANDROID_APPS
+        .iter()
+        .map(|name| (dir.clone(), dir.join(name)))
+        .chain(
+            sources(&windows)
+                .into_iter()
+                .map(|source| (windows.clone(), source)),
+        );
+    for (directory, source) in apps {
+        let name = source.file_name().unwrap().to_string_lossy().to_string();
+        match run_android_app(&device, &directory, &source, &built.work) {
             Ok(outcome) => compare_recorded(&mut failures, &source, outcome, "Android app"),
             Err(problem) => failures.push(format!("{name}: {problem}")),
         }

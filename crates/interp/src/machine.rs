@@ -1732,6 +1732,9 @@ impl<'m> Machine<'m> {
                 (HostType::StringArray, Value::Array(items)) => {
                     HostArg::Strings(items.iter().map(Value::as_str).collect())
                 }
+                (HostType::Integers, Value::Array(items)) => {
+                    HostArg::Integers(items.iter().map(|item| item.as_int() as i64).collect())
+                }
                 (HostType::Stream, Value::Stream(stream)) => HostArg::Stream(stream.id()),
                 (HostType::Bytes, Value::Array(items)) => {
                     HostArg::Bytes(items.iter().map(|item| item.as_int() as u8).collect())

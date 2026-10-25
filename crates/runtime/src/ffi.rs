@@ -1700,6 +1700,16 @@ pub unsafe extern "C" fn sayon_host_call(
                         .collect();
                     HostArg::Strings(elements)
                 }
+                HostType::Integers => {
+                    let array = &*(pointer as *const SayonArray);
+                    let integers = if array.len == 0 {
+                        Vec::new()
+                    } else {
+                        std::slice::from_raw_parts(array.ptr as *const i64, array.len as usize)
+                            .to_vec()
+                    };
+                    HostArg::Integers(integers)
+                }
                 HostType::Stream => HostArg::Stream(*(pointer as *const i64)),
                 // A C string is its buffer's address.
                 HostType::Pointer | HostType::CString => {

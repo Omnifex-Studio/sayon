@@ -24,3 +24,8 @@ unsafe_op_in_unsafe_fn = "deny"
 
 [profile.release]
 debug = "line-tables-only"
+
+# The runtime does a program's heaviest work, such as drawing each pixel of
+# a frame, so even development builds, and the tests, optimize it.
+[profile.dev.package.sayon-runtime]
+opt-level = 2

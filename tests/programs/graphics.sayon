@@ -1,0 +1,59 @@
+# Drawing on canvases, which gives the same pixels everywhere: the
+# interpreter, compiled programs, WebAssembly, and Android.
+graphics = import("standard/graphics.sayon")
+
+# A sum of the pixels that tells two pictures apart.
+function digest(canvas: graphics.Canvas) -> integer
+    total = 0
+    position = 1
+    for byte in canvas.bytes()
+        total = (total + integer(byte) * position) % 1_000_000_007
+        position = position % 9973 + 1
+    return total
+
+canvas = graphics.canvas(64, 48)
+print(canvas.width, canvas.height, length(canvas.bytes()), canvas.pixel(0, 0))
+canvas.clear(graphics.rgb(10, 20, 30))
+canvas.fill_rectangle(2, 3, 12, 8, graphics.RED)
+canvas.stroke_rectangle(20, 3, 16, 10, graphics.WHITE, 2)
+canvas.fill_circle(48, 12, 9, graphics.rgba(0, 128, 255, 200))
+canvas.fill_circle(54, 16, 6, graphics.rgba(255, 200, 0, 120))
+canvas.line(0, 47, 63, 20, graphics.GREEN)
+canvas.line(4, 20, 30, 44, graphics.rgb(255, 0, 255), 3)
+points = [graphics.Point(x = 34, y = 24), graphics.Point(x = 60, y = 30), graphics.Point(x = 40, y = 46)]
+canvas.fill_polygon(points, graphics.rgba(255, 255, 255, 160))
+canvas.text("Sayon", 2, 38, 8, graphics.WHITE)
+print(canvas.pixel(5, 5), canvas.pixel(20, 3))
+print(canvas.pixel(48, 12), canvas.pixel(56, 16))
+print(digest(canvas))
+
+# Text in the built-in font, scaled; a character it lacks is a box.
+words = graphics.canvas(48, 24)
+words.text("Ωé✓\nAb", 0, 0, 12, graphics.BLACK)
+print(graphics.text_width("Ωé✓\nAb", 12), graphics.text_height("Ωé✓\nAb", 12), digest(words))
+
+# An image of given pixels, drawn twice, and a copy of a canvas drawn on it.
+pixels: Array<byte> = []
+for index in range(16)
+    for part in [255, index * 16, 0, 128]
+        push(pixels, unsigned8(part))
+sprite = graphics.image(4, 4, pixels)
+canvas.draw(sprite, 60, 44)
+canvas.draw(sprite, -2, -2)
+copy = graphics.image(canvas.width, canvas.height, canvas.bytes())
+canvas.draw(copy, 32, 24)
+print(canvas.pixel(61, 45), digest(canvas))
+
+# Sizes and colors out of range.
+try
+    graphics.canvas(0, 10)
+catch problem
+    print(problem.code, problem.message)
+try
+    canvas.clear(graphics.rgb(256, 0, 0))
+catch problem
+    print(problem.code, problem.message)
+try
+    graphics.image(2, 2, [1, 2, 3])
+catch problem
+    print(problem.code, problem.message)

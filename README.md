@@ -40,7 +40,7 @@ Sayon is in early development and not ready for real programs. What works today:
 - Borrowed views of arrays and strings, shared values with weak handles and cells, and finally functions that release what a structure owns when it is destroyed
 - Tasks that take turns on a thread, channels and `select`, timers, and tasks on threads of their own that share data through channels and mutexes
 - TCP and UDP sockets, TLS from the system, and an HTTP client for `http://` and `https://`, other programs started with pipes to their streams, and C functions: calls, C structures by value, and Sayon functions that C calls back
-- Standard library modules for files, directories, streams and text encodings, JSON (typed values and streams), collections, time with time zones, processes, the network, threads, memory, text, and math
+- Standard library modules for files, directories, streams and text encodings, JSON (typed values and streams), collections, time with time zones, processes, the network, threads, memory, text, and math, and graphics: drawing on canvases, the same pixels everywhere, shown in windows on Windows and Linux, in web pages, and in Android apps
 - `test` blocks and the `sayon test` runner, and the `sayon fmt` formatter
 - Projects with a `sayon.toml` manifest, and the `run`, `build`, `check`, `test`, `fmt`, `init`, `clean`, `doctor`, `lint`, and `explain` commands
 

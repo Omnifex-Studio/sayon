@@ -31,6 +31,9 @@ pub enum Capability {
     Http,
     /// Secure connections: `network.connect_secure` and `connection.secure`.
     Tls,
+    /// Windows and the screen: `standard/graphics`'s `open`. Drawing on a
+    /// canvas needs none.
+    Graphics,
     /// Tasks and channels: `spawn`, `sleep`, `select`, and their kin.
     Tasks,
     /// Tasks on threads of their own: `spawn_parallel`, and mutexes.
@@ -63,6 +66,7 @@ impl Capability {
         Capability::Network,
         Capability::Http,
         Capability::Tls,
+        Capability::Graphics,
         Capability::Tasks,
         Capability::Threads,
         Capability::Foreign,
@@ -86,6 +90,7 @@ impl Capability {
             Capability::Network => "network",
             Capability::Http => "http",
             Capability::Tls => "tls",
+            Capability::Graphics => "graphics",
             Capability::Tasks => "tasks",
             Capability::Threads => "threads",
             Capability::Foreign => "foreign",
@@ -113,6 +118,7 @@ impl Capability {
             Capability::Network => "use TCP and UDP sockets",
             Capability::Http => "make HTTP requests",
             Capability::Tls => "make secure connections (TLS)",
+            Capability::Graphics => "show windows",
             Capability::Tasks => "run tasks and channels",
             Capability::Threads => "run tasks on threads of their own",
             Capability::Foreign => "call C functions",
@@ -251,6 +257,7 @@ const DESKTOP: &[Capability] = &[
     Network,
     Http,
     Tls,
+    Graphics,
     Tasks,
     Threads,
     Foreign,
@@ -271,6 +278,7 @@ const MOBILE: &[Capability] = &[
     Files,
     Network,
     Http,
+    Graphics,
     Tasks,
     Threads,
     Foreign,
@@ -282,12 +290,13 @@ const MOBILE: &[Capability] = &[
     Collections,
 ];
 
-/// What a page can use: the console, the event loop for tasks, and HTTP
-/// through the browser's `fetch`. Sockets, files, other programs, and C are
-/// not a page's.
+/// What a page can use: the console, the event loop for tasks, HTTP
+/// through the browser's `fetch`, and a canvas of the page to show.
+/// Sockets, files, other programs, and C are not a page's.
 const WEB: &[Capability] = &[
     Console,
     Http,
+    Graphics,
     Tasks,
     Clock,
     Random,

@@ -1,0 +1,9 @@
+64 48 12288 Color(red = 0, green = 0, blue = 0, alpha = 0)
+Color(red = 255, green = 0, blue = 0, alpha = 255) Color(red = 255, green = 255, blue = 255, alpha = 255)
+Color(red = 2, green = 105, blue = 206, alpha = 255) Color(red = 121, green = 150, blue = 109, alpha = 255)
+826758180
+36 24 161280360
+Color(red = 10, green = 20, blue = 30, alpha = 255) 461325179
+ValueError a canvas of 0 by 10 pixels is not possible; each side is 1 to 16384 pixels, and 67108864 pixels at most in all
+ValueError each part of a color is 0 to 255, not 256
+ValueError an image of 2 by 2 pixels takes 16 bytes, not 3

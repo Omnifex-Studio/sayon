@@ -2420,6 +2420,7 @@ pub(crate) fn host_type(ty: sayon_runtime::host::HostType) -> Type {
         HostType::Boolean => Type::Boolean,
         HostType::Nothing => Type::Nothing,
         HostType::StringArray => Type::array(Type::String),
+        HostType::Integers => Type::array(Type::INTEGER),
         HostType::OptionalString => Type::union([Type::String, Type::Nothing]),
         HostType::Stream => Type::Stream,
         HostType::Unsigned => Type::Int(IntType::U64),

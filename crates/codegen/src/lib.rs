@@ -217,8 +217,10 @@ fn find_clang() -> Option<PathBuf> {
 /// library is linked by name, as the files of [`WASI_C_LIBRARY`].
 fn system_libraries(target: &Target) -> &'static [&'static str] {
     match target.platform {
+        // Windows of `standard/graphics` are `user32`'s, drawn with `gdi32`.
         "windows" => &[
-            "kernel32", "ntdll", "userenv", "ws2_32", "dbghelp", "advapi32", "bcrypt",
+            "kernel32", "ntdll", "userenv", "ws2_32", "dbghelp", "advapi32", "bcrypt", "user32",
+            "gdi32",
         ],
         "macos" => &["System"],
         "wasi" | "web" => &[],

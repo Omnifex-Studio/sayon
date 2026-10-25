@@ -12,7 +12,9 @@
 // Options: `write(stream, text)` receives what the program writes to its
 // output (1) and errors (2), by default the console a line at a time;
 // `options` holds the host options set, such as `{ SAYON_DEBUG_ALLOC: 1 }`;
-// `wasm` gives the module's bytes instead of loading them.
+// `windows` is the element the canvases of the program's windows go in,
+// by default the page's body; `wasm` gives the module's bytes instead of
+// loading them.
 
 const MODULE = "__MODULE__";
 
@@ -48,7 +50,7 @@ class Failure {
   }
 }
 
-export async function run({ write = consoleWriter(), options = {}, wasm } = {}) {
+export async function run({ write = consoleWriter(), options = {}, windows: place, wasm } = {}) {
   let memory;
   const view = (pointer, length) => new Uint8Array(memory.buffer, pointer, length);
   // Text can be cut inside a character between two writes.
@@ -59,6 +61,10 @@ export async function run({ write = consoleWriter(), options = {}, wasm } = {}) 
   let requested = 0;
   // Ends the glue's wait early, when a request settles.
   let wake = () => {};
+  // The program's windows, canvases of the page, by number.
+  const windows = new Map();
+  let opened = 0;
+  const encoder = new TextEncoder();
   const host = {
     host_write(stream, pointer, length) {
       write(stream, decoders[stream].decode(view(pointer, length), { stream: true }));
@@ -115,6 +121,36 @@ export async function run({ write = consoleWriter(), options = {}, wasm } = {}) 
       requests.delete(number);
       if (request.state === WAITING) request.controller.abort();
     },
+    host_window_open(title, titleLength, width, height) {
+      if (typeof document === "undefined") return 0;
+      const window = openWindow(text(title, titleLength), width, height, place ?? document.body);
+      windows.set(++opened, window);
+      return opened;
+    },
+    host_window_events(number) {
+      const window = windows.get(number);
+      window.check();
+      window.taken = encoder.encode(window.events.map((fields) => fields.join("\n") + "\n").join(""));
+      window.events = [];
+      return window.taken.length;
+    },
+    host_window_take(number, pointer) {
+      const taken = windows.get(number).taken;
+      view(pointer, taken.length).set(taken);
+    },
+    host_window_present(number, pointer, width, height) {
+      const window = windows.get(number);
+      const pixels = new Uint8ClampedArray(memory.buffer, pointer, width * height * 4).slice();
+      window.context.putImageData(new ImageData(pixels, width, height), 0, 0);
+    },
+    host_window_size(number, which) {
+      const { canvas, scale } = windows.get(number);
+      return [canvas.width, canvas.height, scale][which];
+    },
+    host_window_close(number) {
+      windows.get(number).close();
+      windows.delete(number);
+    },
   };
   const bytes = wasm ?? (await load(new URL(MODULE, import.meta.url)));
   const { instance } = await WebAssembly.instantiate(bytes, { sayon: host });
@@ -151,6 +187,82 @@ export async function run({ write = consoleWriter(), options = {}, wasm } = {}) 
   }
   write.finish?.();
   return status;
+}
+
+/// A window of the program: a canvas added to `place`, `width` by `height`
+/// CSS pixels, its backing store the screen's pixels. Its events wait in
+/// `events`, each a list of fields, as the runtime reads them.
+function openWindow(title, width, height, place) {
+  const canvas = document.createElement("canvas");
+  canvas.className = "sayon-window";
+  canvas.setAttribute("aria-label", title);
+  canvas.tabIndex = 0;
+  canvas.style.width = `${width}px`;
+  canvas.style.height = `${height}px`;
+  canvas.style.touchAction = "none";
+  canvas.style.outline = "none";
+  place.append(canvas);
+  const window = { canvas, context: canvas.getContext("2d"), events: [], scale: 0, taken: null };
+  const push = (...fields) => window.events.push(fields.map(String));
+  // The backing store follows the screen's density, which zooming changes.
+  window.check = () => {
+    const scale = globalThis.devicePixelRatio || 1;
+    if (scale === window.scale) return;
+    window.scale = scale;
+    canvas.width = Math.round(width * scale);
+    canvas.height = Math.round(height * scale);
+    push("resized", canvas.width, canvas.height);
+  };
+  window.check();
+  const point = (event) => {
+    const box = canvas.getBoundingClientRect();
+    return [
+      Math.floor(((event.clientX - box.left) * canvas.width) / box.width),
+      Math.floor(((event.clientY - box.top) * canvas.height) / box.height),
+    ];
+  };
+  const button = (event) => (event.pointerType !== "mouse" ? 1 : [1, 3, 2][event.button] ?? 1);
+  const listeners = [
+    [canvas, "pointerdown", (event) => {
+      canvas.setPointerCapture(event.pointerId);
+      canvas.focus();
+      push("pointer_down", ...point(event), button(event));
+      event.preventDefault();
+    }],
+    [canvas, "pointerup", (event) => push("pointer_up", ...point(event), button(event))],
+    [canvas, "pointermove", (event) => push("pointer_moved", ...point(event))],
+    [canvas, "contextmenu", (event) => event.preventDefault()],
+    [canvas, "keydown", (event) => {
+      push("key_down", keyName(event));
+      event.preventDefault();
+    }],
+    [canvas, "keyup", (event) => push("key_up", keyName(event))],
+    [canvas, "focus", () => push("focused", true)],
+    [canvas, "blur", () => push("focused", false)],
+    [document, "visibilitychange", () => push(document.hidden ? "paused" : "resumed")],
+  ];
+  for (const [target, name, listener] of listeners) target.addEventListener(name, listener);
+  window.close = () => {
+    for (const [target, name, listener] of listeners) target.removeEventListener(name, listener);
+    canvas.remove();
+  };
+  canvas.focus();
+  return window;
+}
+
+/// A key's name, as `standard/graphics` names keys: by where the key is,
+/// as the systems' own key codes do, not by what it types.
+function keyName(event) {
+  const code = event.code;
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase();
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5);
+  if (/^F([1-9]|1[0-2])$/.test(code)) return code;
+  const renamed = { Space: " ", ShiftLeft: "Shift", ShiftRight: "Shift", ControlLeft: "Control",
+    ControlRight: "Control", AltLeft: "Alt", AltRight: "Alt", NumpadEnter: "Enter" };
+  if (code in renamed) return renamed[code];
+  const same = ["Enter", "Escape", "Backspace", "Tab", "ArrowLeft", "ArrowRight", "ArrowUp",
+    "ArrowDown", "Home", "End", "PageUp", "PageDown", "Insert", "Delete"];
+  return same.includes(code) ? code : "Unidentified";
 }
 
 /// Fetches a request, and settles it with its response or its failure:

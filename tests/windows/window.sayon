@@ -1,0 +1,25 @@
+# A window that shows a few frames and closes itself, the same wherever
+# there is a screen: a desktop, a web page, or an Android app.
+graphics = import("standard/graphics.sayon")
+
+function size_of(event: graphics.Event) -> integer
+    match event
+        case resized(width, height)
+            return width * height
+        case _
+            return 0
+
+window = graphics.open("Sayon's test window", 200, 150)
+print(window.width() > 0, window.height() > 0, window.scale() > 0.0, window.is_open())
+canvas = graphics.canvas(window.width(), window.height())
+told = 0
+for frame in range(10)
+    for event in window.events()
+        told = told + size_of(event)
+    canvas.clear(graphics.rgb(frame * 20, 40, 80))
+    canvas.fill_circle(canvas.width / 2, canvas.height / 2, 20 + frame, graphics.WHITE)
+    canvas.text("frame {frame}", 4, 4, 8, graphics.WHITE)
+    window.present(canvas)
+print("presented 10 frames, told its size:", told == canvas.width * canvas.height)
+window.close()
+print("closed")

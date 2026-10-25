@@ -80,6 +80,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Android apps (`--target android-x64`, `android-arm64`) on any computer with the Android SDK: the program as the native library of a `NativeActivity` package, aligned for 16 KiB pages and signed with the debug key; output to Android's log; `--executable` for `adb shell`; checked on the emulator against the interpreter, ARM64 through translation | experimental | M4 |
 | TLS, time zones, and C structures on ARM64 in Android programs; release signing | planned | M5 |
 | Building on one system for another desktop system | planned | M5 to M7, with each target |
+| `standard/graphics` baseline: canvases drawn by the runtime (rectangles, circles, polygons, lines, images, text in a built-in font), the same pixels everywhere; windows with events and frames on Windows (Win32 and GDI), Linux (X11), web pages (a canvas), and Android apps (the app's surface) | experimental | M4 |
+| Graphics after the baseline: anti-aliasing, fonts of the system, images from files, text input, a GPU backend; 2D and 3D rendering | planned | M6, M8 |
 | Diagnostics with stable codes and source excerpts | experimental | M1 |
 | VS Code syntax highlighting and file icon | experimental | M1 |
 | `sayon test` with `test` blocks (interpreter) | experimental | M1 |

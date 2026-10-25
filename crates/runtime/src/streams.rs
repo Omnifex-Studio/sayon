@@ -11,9 +11,11 @@
 //! different file.
 
 use crate::encodings::{DecodeReader, Encoding};
+use crate::graphics::Canvas;
 use crate::host::{HostError, io_error};
 use crate::network::{BLOCKED_CODE, Connecting, Connection, Datagrams, Listener};
 use crate::processes::{PipeInput, PipeOutput, Process};
+use crate::window::Window;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
@@ -41,6 +43,10 @@ enum Handle {
     PipeOut(Arc<PipeOutput>),
     /// A response the browser fetched for a web page.
     Fetched(Box<Fetched>),
+    /// Pixels to draw on, of `standard/graphics`.
+    Canvas(Box<Canvas>),
+    /// A window, or the surface an app or a page shows.
+    Window(Box<Window>),
     Closed,
 }
 
@@ -111,9 +117,12 @@ fn reader<T>(
         Handle::Output | Handle::Errors | Handle::PipeOut(_) => {
             Err(("IOError", format!("{} is written, not read", entry.path)))
         }
-        Handle::Socket(_) | Handle::Process(_) | Handle::Fetched(_) | Handle::PipeIn(_) => {
-            Err(not_connection(&entry.path))
-        }
+        Handle::Socket(_)
+        | Handle::Process(_)
+        | Handle::Fetched(_)
+        | Handle::Canvas(_)
+        | Handle::Window(_)
+        | Handle::PipeIn(_) => Err(not_connection(&entry.path)),
         Handle::Closed => Err(closed(&entry.path)),
     }
 }
@@ -224,6 +233,8 @@ fn writer<T>(
         Handle::Socket(_)
         | Handle::Process(_)
         | Handle::Fetched(_)
+        | Handle::Canvas(_)
+        | Handle::Window(_)
         | Handle::Output
         | Handle::Errors
         | Handle::PipeOut(_) => Err(not_connection(&entry.path)),
@@ -274,6 +285,86 @@ pub fn fetched_head(id: i64) -> Result<Vec<String>, HostError> {
 /// Takes the body of a fetched response.
 pub fn fetched_body(id: i64) -> Result<Vec<u8>, HostError> {
     response(id, |response| std::mem::take(&mut response.body))
+}
+
+/// A stream holding a canvas.
+pub fn canvas(canvas: Canvas) -> i64 {
+    insert(Handle::Canvas(Box::new(canvas)), "a canvas")
+}
+
+/// A stream holding a window.
+pub fn window(window: Window) -> i64 {
+    insert(Handle::Window(Box::new(window)), "a window")
+}
+
+fn not_canvas(path: &str) -> HostError {
+    ("IOError", format!("{path} is not a canvas"))
+}
+
+/// Runs `f` on the canvas a stream holds.
+pub fn with_canvas<T>(id: i64, f: impl FnOnce(&mut Canvas) -> T) -> Result<T, HostError> {
+    let mut table = table();
+    let entry = table
+        .entries
+        .get_mut(&id)
+        .ok_or(("IOError", "the canvas is gone".to_string()))?;
+    match &mut entry.handle {
+        Handle::Canvas(canvas) => Ok(f(canvas)),
+        _ => Err(not_canvas(&entry.path)),
+    }
+}
+
+/// Runs `f` on two canvases, the first drawn on; the same canvas twice
+/// draws a copy of it.
+pub fn with_canvases<T>(
+    target: i64,
+    source: i64,
+    f: impl FnOnce(&mut Canvas, &Canvas) -> T,
+) -> Result<T, HostError> {
+    if target == source {
+        let copy = with_canvas(source, |canvas| Canvas {
+            width: canvas.width,
+            height: canvas.height,
+            pixels: canvas.pixels.clone(),
+        })?;
+        return with_canvas(target, |canvas| f(canvas, &copy));
+    }
+    let mut table = table();
+    let [Some(target), Some(source)] = table.entries.get_disjoint_mut([&target, &source]) else {
+        return Err(("IOError", "the canvas is gone".to_string()));
+    };
+    match (&mut target.handle, &source.handle) {
+        (Handle::Canvas(target), Handle::Canvas(source)) => Ok(f(target, source)),
+        (Handle::Canvas(_), _) => Err(not_canvas(&source.path)),
+        _ => Err(not_canvas(&target.path)),
+    }
+}
+
+/// Runs `f` on the window a stream holds.
+pub fn with_window<T>(id: i64, f: impl FnOnce(&mut Window) -> T) -> Result<T, HostError> {
+    let mut table = table();
+    let entry = table
+        .entries
+        .get_mut(&id)
+        .ok_or(("GraphicsError", "the window is closed".to_string()))?;
+    match &mut entry.handle {
+        Handle::Window(window) => Ok(f(window)),
+        Handle::Closed => Err(("GraphicsError", "the window is closed".to_string())),
+        _ => Err(("IOError", format!("{} is not a window", entry.path))),
+    }
+}
+
+/// Shows a canvas in a window.
+pub fn present(window: i64, canvas: i64) -> Result<(), HostError> {
+    let mut table = table();
+    let [Some(window), Some(canvas)] = table.entries.get_disjoint_mut([&window, &canvas]) else {
+        return Err(("GraphicsError", "the window is closed".to_string()));
+    };
+    match (&mut window.handle, &canvas.handle) {
+        (Handle::Window(window), Handle::Canvas(canvas)) => window.present(canvas),
+        (Handle::Window(_), _) => Err(not_canvas(&canvas.path)),
+        _ => Err(("GraphicsError", "the window is closed".to_string())),
+    }
 }
 
 /// A stream reading standard input.
@@ -826,6 +917,8 @@ pub fn position(id: i64) -> Result<i64, HostError> {
         | Handle::Socket(_)
         | Handle::Process(_)
         | Handle::Fetched(_)
+        | Handle::Canvas(_)
+        | Handle::Window(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_) => return Err(unpositioned(&path)),
         Handle::Closed => return Err(closed(&path)),
@@ -860,6 +953,8 @@ pub fn seek(id: i64, position: i64) -> Result<(), HostError> {
         | Handle::Socket(_)
         | Handle::Process(_)
         | Handle::Fetched(_)
+        | Handle::Canvas(_)
+        | Handle::Window(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_) => return Err(unpositioned(&path)),
         Handle::Closed => return Err(closed(&path)),
@@ -902,6 +997,8 @@ pub fn close(id: i64) -> Result<(), HostError> {
         | Handle::Socket(_)
         | Handle::Process(_)
         | Handle::Fetched(_)
+        | Handle::Canvas(_)
+        | Handle::Window(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_) => Ok(()),
         Handle::Closed => Err(("IOError", format!("\"{path}\" is already closed"))),
@@ -938,6 +1035,8 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
         Handle::Socket(_)
         | Handle::Process(_)
         | Handle::Fetched(_)
+        | Handle::Canvas(_)
+        | Handle::Window(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_)
         | Handle::Output
@@ -957,6 +1056,8 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
         Handle::Socket(_)
         | Handle::Process(_)
         | Handle::Fetched(_)
+        | Handle::Canvas(_)
+        | Handle::Window(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_)
         | Handle::Output

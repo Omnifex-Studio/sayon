@@ -18,6 +18,8 @@ pub enum HostType {
     Boolean,
     Nothing,
     StringArray,
+    /// `Array<integer>`, for arguments only.
+    Integers,
     /// `string or nothing`.
     OptionalString,
     /// An open file of `standard/io`, `HostStream` in the library's code.
@@ -178,6 +180,25 @@ hosts! {
     Fetch = "fetch"(String, String, StringArray, Bytes, Integer, Integer, Integer) -> Stream;
     FetchHead = "fetch_head"(Stream) -> StringArray;
     FetchBody = "fetch_body"(Stream) -> Bytes;
+    CanvasNew = "canvas_new"(Integer, Integer) -> Stream;
+    CanvasFromBytes = "canvas_from_bytes"(Integer, Integer, Bytes) -> Stream;
+    CanvasBytes = "canvas_bytes"(Stream) -> Bytes;
+    CanvasPixel = "canvas_pixel"(Stream, Integer, Integer) -> Integer;
+    CanvasClear = "canvas_clear"(Stream, Integer) -> Nothing;
+    CanvasRectangle = "canvas_rectangle"(Stream, Integer, Integer, Integer, Integer, Integer) -> Nothing;
+    CanvasCircle = "canvas_circle"(Stream, Integer, Integer, Integer, Integer) -> Nothing;
+    CanvasPolygon = "canvas_polygon"(Stream, Integers, Integer) -> Nothing;
+    CanvasLine = "canvas_line"(Stream, Integer, Integer, Integer, Integer, Integer, Integer) -> Nothing;
+    CanvasDraw = "canvas_draw"(Stream, Stream, Integer, Integer) -> Nothing;
+    CanvasText = "canvas_text"(Stream, String, Integer, Integer, Integer, Integer) -> Nothing;
+    TextWidth = "text_width"(String, Integer) -> Integer;
+    TextHeight = "text_height"(String, Integer) -> Integer;
+    WindowOpen = "window_open"(String, Integer, Integer) -> Stream;
+    WindowEvents = "window_events"(Stream) -> StringArray;
+    WindowPresent = "window_present"(Stream, Stream) -> Nothing;
+    WindowWidth = "window_width"(Stream) -> Integer;
+    WindowHeight = "window_height"(Stream) -> Integer;
+    WindowScale = "window_scale"(Stream) -> Float;
     ValueFail = "value_fail"(String) -> Nothing;
     ZoneOffset = "zone_offset"(String, Integer) -> Integer;
     ZoneCheck = "zone_check"(String) -> Nothing;
@@ -266,6 +287,7 @@ pub enum HostArg<'a> {
     Float(f64),
     Boolean(bool),
     Strings(Vec<&'a str>),
+    Integers(Vec<i64>),
     Stream(i64),
     Bytes(Vec<u8>),
     /// An address: a `pointer`, or where a `c_string`'s bytes are.
@@ -611,6 +633,89 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
         Host::Fetch => Err(("HttpError", "only web pages fetch".to_string())),
         Host::FetchHead => crate::streams::fetched_head(stream(args, 0)).map(V::Strings),
         Host::FetchBody => crate::streams::fetched_body(stream(args, 0)).map(V::Bytes),
+        Host::CanvasNew => crate::graphics::Canvas::new(integer(args, 0), integer(args, 1))
+            .map(|canvas| V::Stream(crate::streams::canvas(canvas))),
+        Host::CanvasFromBytes => {
+            crate::graphics::Canvas::from_bytes(integer(args, 0), integer(args, 1), bytes(args, 2))
+                .map(|canvas| V::Stream(crate::streams::canvas(canvas)))
+        }
+        Host::CanvasBytes => {
+            crate::streams::with_canvas(stream(args, 0), |canvas| V::Bytes(canvas.pixels.clone()))
+        }
+        Host::CanvasPixel => crate::streams::with_canvas(stream(args, 0), |canvas| {
+            V::Integer(canvas.pixel(integer(args, 1), integer(args, 2)))
+        }),
+        Host::CanvasClear => crate::streams::with_canvas(stream(args, 0), |canvas| {
+            canvas.clear(integer(args, 1));
+            V::Nothing
+        }),
+        Host::CanvasRectangle => crate::streams::with_canvas(stream(args, 0), |canvas| {
+            let [x, y, width, height, color] = [1, 2, 3, 4, 5].map(|i| integer(args, i));
+            canvas.fill_rectangle(x, y, width, height, color);
+            V::Nothing
+        }),
+        Host::CanvasCircle => crate::streams::with_canvas(stream(args, 0), |canvas| {
+            let [x, y, radius, color] = [1, 2, 3, 4].map(|i| integer(args, i));
+            canvas.fill_circle(x, y, radius, color);
+            V::Nothing
+        }),
+        Host::CanvasPolygon => {
+            let Some(HostArg::Integers(coordinates)) = args.get(1) else {
+                panic!("host argument 1 should be integers");
+            };
+            let points: Vec<(f64, f64)> = coordinates
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|point| (point[0] as f64, point[1] as f64))
+                .collect();
+            crate::streams::with_canvas(stream(args, 0), |canvas| {
+                canvas.fill_polygon(&points, integer(args, 2));
+                V::Nothing
+            })
+        }
+        Host::CanvasLine => crate::streams::with_canvas(stream(args, 0), |canvas| {
+            let [x1, y1, x2, y2, thickness, color] = [1, 2, 3, 4, 5, 6].map(|i| integer(args, i));
+            canvas.line((x1, y1), (x2, y2), thickness, color);
+            V::Nothing
+        }),
+        Host::CanvasDraw => {
+            crate::streams::with_canvases(stream(args, 0), stream(args, 1), |target, source| {
+                target.draw(source, integer(args, 2), integer(args, 3));
+                V::Nothing
+            })
+        }
+        Host::CanvasText => crate::streams::with_canvas(stream(args, 0), |canvas| {
+            let [x, y, size, color] = [2, 3, 4, 5].map(|i| integer(args, i));
+            canvas.text(string(args, 1), x, y, size, color);
+            V::Nothing
+        }),
+        Host::TextWidth => Ok(V::Integer(
+            crate::graphics::text_size(string(args, 0), integer(args, 1)).0,
+        )),
+        Host::TextHeight => Ok(V::Integer(
+            crate::graphics::text_size(string(args, 0), integer(args, 1)).1,
+        )),
+        Host::WindowOpen => {
+            crate::window::open(string(args, 0), integer(args, 1), integer(args, 2))
+                .map(|window| V::Stream(crate::streams::window(window)))
+        }
+        Host::WindowEvents => {
+            crate::streams::with_window(stream(args, 0), |window| window.events())
+                .and_then(|events| events.map(V::Strings))
+        }
+        Host::WindowPresent => {
+            crate::streams::present(stream(args, 0), stream(args, 1)).map(|()| V::Nothing)
+        }
+        Host::WindowWidth => {
+            crate::streams::with_window(stream(args, 0), |window| window.size().0).map(V::Integer)
+        }
+        Host::WindowHeight => {
+            crate::streams::with_window(stream(args, 0), |window| window.size().1).map(V::Integer)
+        }
+        Host::WindowScale => {
+            crate::streams::with_window(stream(args, 0), |window| window.scale()).map(V::Float)
+        }
         Host::ValueFail => Err(("ValueError", string(args, 0).to_string())),
         Host::ZoneOffset => crate::zones::offset(string(args, 0), integer(args, 1)).map(V::Integer),
         Host::ZoneCheck => crate::zones::check(string(args, 0)).map(|()| V::Nothing),

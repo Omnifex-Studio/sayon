@@ -71,6 +71,12 @@ pub fn host_capability(host: Host) -> Option<Capability> {
         | Host::Resolve => Network,
         Host::Secure => Tls,
         Host::Fetch | Host::FetchHead | Host::FetchBody => Http,
+        Host::WindowOpen
+        | Host::WindowEvents
+        | Host::WindowPresent
+        | Host::WindowWidth
+        | Host::WindowHeight
+        | Host::WindowScale => Graphics,
         Host::ZoneOffset | Host::ZoneCheck | Host::LocalZone | Host::ZonesVersion => TimeZones,
         _ => return None,
     })

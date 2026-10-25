@@ -810,6 +810,7 @@ Standard modules are imported like any module, with a `standard/` path. Each mod
 | `standard/json.sayon` | the `Json` enum, `parse`, `encode`, `pretty`, `number_value`, `text_value`, `flag_value`, `field`, `item`, `from_integer`; typed values: `decode`, `encode_value`, `from_json`, `to_json`; streams: `items`, `lines`, `write_items` (an `ItemWriter` with `add`, `add_value`, `finish`) |
 | `standard/threads.sayon` | `spawn`, `join`, `detach`, `pause`, `new_channel`, `new_unbounded_channel`, `after`, `send`, `recoverable_send` (a `SendResult<T>`), `receive`, `receive_result` (a `ReceiveResult<T>`), `close`, `select`; see [Tasks and channels](#tasks-and-channels) |
 | `standard/network.sayon` | `connect` for a `Connection` (`read_line`, `lines`, `read`, `read_bytes`, `write`, `write_line`, `write_bytes`, `flush`, `finish_sending`, `set_timeout`, `local_address`, `peer_address`, `close`), `listen` for a `Listener` (`accept`, `address`, `set_timeout`, `close`), `bind` for a `DatagramSocket` (`send`, `receive`, `address`, `set_timeout`, `close`), `resolve`, `address_text`; HTTP: `get`, `post`, `request`, and `Response` (`text`, `header`, `succeeded`); see [Networking](#networking) |
+| `standard/graphics.sayon` | `canvas` and `image` for a `Canvas` (`clear`, `fill_rectangle`, `stroke_rectangle`, `fill_circle`, `fill_polygon`, `line`, `draw`, `text`, `pixel`, `bytes`), `text_width`, `text_height`, colors (`Color`, `rgb`, `rgba`, `BLACK`, `WHITE`, `RED`, `GREEN`, `BLUE`, `TRANSPARENT`), `Point`; `open` for a `Window` (`events`, `present`, `width`, `height`, `scale`, `is_open`, `close`) and its `Event`s; see [Graphics](#graphics) |
 | `standard/time.sayon` | `Duration` (`nanoseconds`, `microseconds`, `milliseconds`, `seconds`, `minutes`, `hours`, `add`, `subtract`, `scale`, `in_seconds`, `in_milliseconds`, `describe`), the monotonic clock (`start`, `elapsed`, `between`, `sleep`), `deadline` for a `Deadline` (`remaining`, `passed`, `wait`), `ticker` for a `Ticker` (`wait`), and UTC dates (`DateTime`, `now`, `unix_seconds`, `from_unix`, `to_unix`, `shift`, `difference`, `weekday`, `is_leap_year`, `days_in_month`, `format` and `parse` for ISO 8601), time zones (`zone` for a `Zone` with `at`, `moment`, `offset`; `ZonedTime` with `format`, `moment`; `local_zone`, `zones_version`) |
 | `standard/collections.sayon` | `sort` and `sort_by` (stable), `reverse`; `Set<T>` with `new_set`, `set_add`, `set_contains`, `set_remove`, `set_size`, `set_values` (as methods: `set.add(value)`); `Queue<T>` with `new_queue`, `queue_add`, `queue_take`, `queue_size` |
 | `standard/memory.sayon` | `read`, `write`, `size`, `read_bytes`, `write_bytes`, `read_text`, `offset`, `address`; see [C functions and unsafe code](#c-functions-and-unsafe-code) |
@@ -1055,6 +1056,37 @@ In a web page the browser makes each request, with its `fetch`, and the other ta
 - A page reads another site's responses only when that site allows it (CORS), and sees only the headers it exposes. The browser sets some headers itself, such as `user-agent`, and leaves out those the program sets for them.
 - A URL can be relative to the page. A request the browser could not make fails with `NetworkError`, with only as much of why as the browser tells: it keeps from the page whether the connection was refused or the site does not allow it.
 
+### Graphics
+
+`standard/graphics.sayon` draws on canvases and shows them in windows.
+
+```sayon
+graphics = import("standard/graphics.sayon")
+
+window = graphics.open("Hello", 320, 200)
+canvas = graphics.canvas(window.width(), window.height())
+while window.is_open()
+    for event in window.events()
+        match event
+            case resized(width, height)
+                canvas = graphics.canvas(width, height)
+            case key_down(key)
+                print("pressed", key)
+            case _
+                continue
+    canvas.clear(graphics.BLACK)
+    canvas.fill_circle(160, 100, 40, graphics.rgb(255, 160, 0))
+    canvas.text("Hello", 20, 20, 16, graphics.WHITE)
+    window.present(canvas)
+```
+
+- A `Canvas` is pixels to draw on: `graphics.canvas(width, height)` starts transparent, and `graphics.image(width, height, bytes)` takes red, green, blue, and alpha bytes for each pixel, row by row from the top, as `canvas.bytes()` gives them. Drawing gives the same pixels on every system, in the interpreter and compiled, and needs no window, so a program can draw where there is no screen, as under WASI.
+- `clear` sets every pixel; `fill_rectangle`, `stroke_rectangle`, `fill_circle`, `fill_polygon`, and `line` (with a `thickness`) blend a `Color` over what is there, as `draw` does another canvas. Coordinates count pixels from the top left corner, rightward and downward. Shapes cover the pixels whose centers they hold; a polygon's points are pixel corners, so a square polygon covers what the rectangle of its size does, and a line runs between the centers of the pixels it names. Colors are `rgb(red, green, blue)` and `rgba(..., alpha)`, each part 0 to 255.
+- `text(text, x, y, size, color)` draws in a built-in font of 8 by 8 pixels, scaled so that each character takes a square cell of `size` pixels; a line break starts a line below, and `text_width` and `text_height` measure text. The font is font8x8, in the public domain, and covers ASCII, the Latin-1 supplement, Greek, box drawing, and block elements; another character shows as a box.
+- `graphics.open(title, width, height)` opens a window: on a desktop a window of its own, in a web page a canvas added to the page, and in an Android app the app's screen, whatever its size. `width` and `height` are the system's points, and the window's own `width()` and `height()` are its pixels, which `scale()` relates, such as 2 on a screen of twice the usual density; a canvas of the window's size fills it a pixel for a pixel. `present(canvas)` shows a canvas, over black, its top left corner at the window's, and waits until the next frame is due, about a sixtieth of a second after the last, letting other tasks run.
+- `events()` gives what happened since it was last asked: `closed` (the user asked to close it; `is_open()` is then false, and the program decides when to `close()`), `resized(width, height)`, which comes first with the window's size, `key_down(key)` and `key_up(key)`, `pointer_down(x, y, button)`, `pointer_up(...)`, and `pointer_moved(x, y)` for a mouse or a finger (button 1 for the primary or a touch, 2 the secondary, 3 the middle), `focused(focused)`, and `paused` and `resumed` when it is minimized or goes to the background. Keys are named as web pages name them: `"a"` to `"z"` and `"0"` to `"9"` by where the key is, `" "`, `"Enter"`, `"Escape"`, `"ArrowLeft"`, and so on.
+- Opening a window where there is no screen fails with `GraphicsError`: under WASI, in Node, from `adb shell`, and on Linux without an X display. A window is used on the thread that opened it.
+
 ### Display
 
 `print` and `tostring` display values as follows. Floats always show a decimal point or an exponent (`3.0`, `0.1`, `1e20`, `inf`, `nan`), and integers never do. Strings appear as text at the top level and quoted inside collections, so collections look like the literals that build them: `[1, "text", true]` and `["name" = "Ada"]`. Structures and enum values look like the calls that build them: `Point(x = 1.0, y = 2.0)`, `circle(5.0)`, `point`. `typeof` names a structure or enum by its type name, such as `Point`.
@@ -1228,6 +1260,7 @@ Each target provides capabilities: what its programs can ask of the system.
 | `network` | TCP and UDP sockets, resolving names | web, WASI |
 | `http` | the HTTP client | WASI |
 | `tls` | `network.connect_secure`, `connection.secure`, `https://` | web, WASI, Android, iOS |
+| `graphics` | `graphics.open`: windows and the screen (drawing on a canvas needs none) | WASI |
 | `tasks` | tasks, channels, `sleep`, `select` | none |
 | `threads` | `threads.spawn_parallel` | web, WASI |
 | `foreign` | C functions and `standard/memory` | web |

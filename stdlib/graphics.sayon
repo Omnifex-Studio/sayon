@@ -1,0 +1,274 @@
+# Drawing, and windows to show it in.
+#
+#     graphics = import("standard/graphics.sayon")
+#
+#     window = graphics.open("Hello", 320, 200)
+#     canvas = graphics.canvas(window.width(), window.height())
+#     while window.is_open()
+#         for event in window.events()
+#             match event
+#                 case resized(width, height)
+#                     canvas = graphics.canvas(width, height)
+#                 case _
+#                     continue
+#         canvas.clear(graphics.BLACK)
+#         canvas.fill_circle(100, 100, 40, graphics.rgb(255, 160, 0))
+#         canvas.text("Hello", 20, 20, 16, graphics.WHITE)
+#         window.present(canvas)
+#
+# A canvas is pixels to draw on, which the runtime holds; drawing gives the
+# same pixels on every system, in the interpreter and in compiled programs
+# alike, with no window needed. A window shows a canvas: on a desktop, a
+# window of its own; in a web page, a canvas element of the page; in an
+# Android app, the app's screen. Its sizes are the screen's pixels, so a
+# canvas of the window's size fills it a pixel for a pixel. `present`
+# shows a canvas and waits for the next frame, about a sixtieth of a second
+# after the last, letting other tasks run meanwhile.
+#
+# Shapes cover the pixels whose centers they hold. Coordinates count
+# pixels from the top left corner, rightward and downward; a polygon's
+# points are pixel corners, and a line runs between pixel centers. Text is
+# drawn in a built-in font of 8 by 8 pixels, scaled: each character takes
+# a square cell of `size` pixels. It covers ASCII, the Latin-1 supplement,
+# Greek, box drawing, and block elements, and shows a box for any other
+# character. Opening a window where there is no screen fails with
+# GraphicsError.
+
+time = import("standard/time.sayon")
+
+# ----- colors ------------------------------------------------------------------
+
+# A color: red, green, and blue, and how opaque it is, each 0 to 255.
+type Color = [red: integer, green: integer, blue: integer, alpha: integer]
+
+# An opaque color.
+function rgb(red: integer, green: integer, blue: integer) -> Color
+    return Color(red = red, green = green, blue = blue, alpha = 255)
+
+# A color that lets what is below show through, as `alpha` (0 to 255) says.
+function rgba(red: integer, green: integer, blue: integer, alpha: integer) -> Color
+    return Color(red = red, green = green, blue = blue, alpha = alpha)
+
+constant BLACK = Color(red = 0, green = 0, blue = 0, alpha = 255)
+constant WHITE = Color(red = 255, green = 255, blue = 255, alpha = 255)
+constant RED = Color(red = 255, green = 0, blue = 0, alpha = 255)
+constant GREEN = Color(red = 0, green = 255, blue = 0, alpha = 255)
+constant BLUE = Color(red = 0, green = 0, blue = 255, alpha = 255)
+constant TRANSPARENT = Color(red = 0, green = 0, blue = 0, alpha = 0)
+
+# The color packed as the runtime takes it, `0xRRGGBBAA`.
+private function packed(color: Color) -> integer
+    for part in [color.red, color.green, color.blue, color.alpha]
+        if part < 0 or part > 255
+            host_value_fail("each part of a color is 0 to 255, not {part}")
+    return ((color.red * 256 + color.green) * 256 + color.blue) * 256 + color.alpha
+
+private function unpacked(value: integer) -> Color
+    return Color(red = value / 16777216 % 256, green = value / 65536 % 256, blue = value / 256 % 256, alpha = value % 256)
+
+# ----- canvases ----------------------------------------------------------------
+
+# Pixels to draw on, `width` by `height`.
+type Canvas = [pixels: HostStream, width: integer, height: integer]
+
+# A point, in pixels from the top left corner.
+type Point = [x: integer, y: integer]
+
+# A canvas of transparent pixels. Each side is 1 to 16384 pixels, and
+# 67108864 pixels at most in all; other sizes fail with ValueError.
+function canvas(width: integer, height: integer) -> Canvas
+    return Canvas(pixels = host_canvas_new(width, height), width = width, height = height)
+
+# A canvas of given pixels: red, green, blue, and alpha bytes for each,
+# row by row from the top, as from `canvas.bytes()`.
+function image(width: integer, height: integer, bytes: Array<byte>) -> Canvas
+    return Canvas(pixels = host_canvas_from_bytes(width, height, bytes), width = width, height = height)
+
+# Makes every pixel `color`, replacing what was there.
+function canvas_clear(update canvas: Canvas, color: Color)
+    host_canvas_clear(canvas.pixels, packed(color))
+
+function canvas_fill_rectangle(update canvas: Canvas, x: integer, y: integer, width: integer, height: integer, color: Color)
+    host_canvas_rectangle(canvas.pixels, x, y, width, height, packed(color))
+
+# A rectangle's outline, `thickness` pixels wide, inside the rectangle.
+function canvas_stroke_rectangle(update canvas: Canvas, x: integer, y: integer, width: integer, height: integer, color: Color, thickness = 1)
+    side = thickness
+    if side * 2 > height
+        side = (height + 1) / 2
+    host_canvas_rectangle(canvas.pixels, x, y, width, side, packed(color))
+    host_canvas_rectangle(canvas.pixels, x, y + height - side, width, side, packed(color))
+    inner = height - 2 * side
+    if inner > 0
+        host_canvas_rectangle(canvas.pixels, x, y + side, thickness, inner, packed(color))
+        host_canvas_rectangle(canvas.pixels, x + width - thickness, y + side, thickness, inner, packed(color))
+
+# A disc around the center of the pixel `x`, `y`.
+function canvas_fill_circle(update canvas: Canvas, x: integer, y: integer, radius: integer, color: Color)
+    host_canvas_circle(canvas.pixels, x, y, radius, packed(color))
+
+# The inside of a polygon, by the even-odd rule.
+function canvas_fill_polygon(update canvas: Canvas, points: Array<Point>, color: Color)
+    coordinates: Array<integer> = []
+    for point in points
+        push(coordinates, point.x)
+        push(coordinates, point.y)
+    host_canvas_polygon(canvas.pixels, coordinates, packed(color))
+
+# A line from the center of one pixel to the center of another,
+# `thickness` pixels wide.
+function canvas_line(update canvas: Canvas, x1: integer, y1: integer, x2: integer, y2: integer, color: Color, thickness = 1)
+    host_canvas_line(canvas.pixels, x1, y1, x2, y2, thickness, packed(color))
+
+# Draws another canvas, such as an image, with its top left corner at `x`,
+# `y`, over what is there.
+function canvas_draw(update canvas: Canvas, image: Canvas, x: integer, y: integer)
+    host_canvas_draw(canvas.pixels, image.pixels, x, y)
+
+# Draws text in the built-in font, its top left corner at `x`, `y`, each
+# character in a cell of `size` pixels; a line break starts a line below.
+function canvas_text(update canvas: Canvas, text: string, x: integer, y: integer, size: integer, color: Color)
+    host_canvas_text(canvas.pixels, text, x, y, size, packed(color))
+
+# How wide text is in the built-in font: its longest line's characters
+# times `size`.
+function text_width(text: string, size: integer) -> integer
+    return host_text_width(text, size)
+
+# How high text is: its lines times `size`.
+function text_height(text: string, size: integer) -> integer
+    return host_text_height(text, size)
+
+# The color of a pixel; transparent outside the canvas.
+function canvas_pixel(canvas: Canvas, x: integer, y: integer) -> Color
+    return unpacked(host_canvas_pixel(canvas.pixels, x, y))
+
+# The pixels, as `image` takes them.
+function canvas_bytes(canvas: Canvas) -> Array<byte>
+    return host_canvas_bytes(canvas.pixels)
+
+# ----- windows -----------------------------------------------------------------
+
+# What happened to a window since the program last asked. A pointer is a
+# mouse or a finger; its button is 1 for the primary one or a touch, 2 for
+# the secondary, and 3 for the middle. Keys are named as web pages name
+# them: "a" to "z", "0" to "9", " ", "Enter", "Escape", "Backspace", "Tab",
+# "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Shift", "Control",
+# "Alt", "Home", "End", "PageUp", "PageDown", "Insert", "Delete", "F1" to
+# "F12", and "Unidentified" for the rest.
+enum Event
+    closed
+    resized(width: integer, height: integer)
+    key_down(key: string)
+    key_up(key: string)
+    pointer_down(x: integer, y: integer, button: integer)
+    pointer_up(x: integer, y: integer, button: integer)
+    pointer_moved(x: integer, y: integer)
+    focused(focused: boolean)
+    paused
+    resumed
+
+# A window, and when its next frame is due.
+type Window = [handle: HostStream, open: boolean, next_frame: integer]
+
+# The nanoseconds between frames: sixty a second.
+constant FRAME = 16_666_667
+
+# Opens a window `width` by `height` points (the system's measure, which
+# `window.scale()` turns into pixels), titled `title`. In a web page it is a
+# canvas added to the page; in an Android app it is the app's screen,
+# whatever its size. Its first event tells its size in pixels. Fails with
+# GraphicsError where there is no screen, such as under WASI, in Node, or
+# from `adb shell`.
+function open(title: string, width: integer, height: integer) -> Window
+    return Window(handle = host_window_open(title, width, height), open = true, next_frame = 0)
+
+# The events since the last call, in order. After `closed`, the window is
+# no longer open; the program decides when to close it.
+function window_events(update window: Window) -> Array<Event>
+    fields = host_window_events(window.handle)
+    events: Array<Event> = []
+    index = 0
+    while index < length(fields)
+        name = clone(fields[index])
+        if name == "closed"
+            window.open = false
+            push(events, Event.closed)
+            index += 1
+        elseif name == "resized"
+            push(events, Event.resized(number(fields[index + 1]), number(fields[index + 2])))
+            index += 3
+        elseif name == "key_down"
+            push(events, Event.key_down(clone(fields[index + 1])))
+            index += 2
+        elseif name == "key_up"
+            push(events, Event.key_up(clone(fields[index + 1])))
+            index += 2
+        elseif name == "pointer_down"
+            push(events, Event.pointer_down(number(fields[index + 1]), number(fields[index + 2]), number(fields[index + 3])))
+            index += 4
+        elseif name == "pointer_up"
+            push(events, Event.pointer_up(number(fields[index + 1]), number(fields[index + 2]), number(fields[index + 3])))
+            index += 4
+        elseif name == "pointer_moved"
+            push(events, Event.pointer_moved(number(fields[index + 1]), number(fields[index + 2])))
+            index += 3
+        elseif name == "focused"
+            push(events, Event.focused(fields[index + 1] == "true"))
+            index += 2
+        elseif name == "paused"
+            push(events, Event.paused)
+            index += 1
+        else
+            push(events, Event.resumed)
+            index += 1
+    return events
+
+private function number(text: string) -> integer
+    value = 0
+    negative = false
+    for character in text
+        if character == "-"
+            negative = true
+        else
+            value = value * 10 + (host_code(character) - 48)
+    if negative
+        return -value
+    return value
+
+# Shows a canvas in the window, its top left corner at the window's, over
+# black, then waits until the next frame is due, letting other tasks run.
+# A program whose frames take longer goes on at once, but in a web page it
+# always waits a little: the page shows the frame, and takes the user's
+# input, only while the program waits.
+function window_present(update window: Window, canvas: Canvas)
+    host_window_present(window.handle, canvas.pixels)
+    now = time.start().nanoseconds
+    wait = window.next_frame - now
+    if wait > 0
+        window.next_frame += FRAME
+    else
+        window.next_frame = now + FRAME
+    if platform == "web" and wait < 1_000_000
+        wait = 1_000_000
+    time.sleep(time.nanoseconds(wait))
+
+# The window's surface, in pixels.
+function window_width(window: Window) -> integer
+    return host_window_width(window.handle)
+
+function window_height(window: Window) -> integer
+    return host_window_height(window.handle)
+
+# The screen's pixels for a point of the system's measure, such as 1.5 or 2
+# on screens of higher density.
+function window_scale(window: Window) -> float
+    return host_window_scale(window.handle)
+
+# Whether the user has not asked to close the window.
+function window_is_open(window: Window) -> boolean
+    return window.open
+
+# Closes the window. A window is also closed once nothing holds it.
+function window_close(own window: Window)
+    host_stream_close(window.handle)
