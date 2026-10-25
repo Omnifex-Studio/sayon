@@ -1,0 +1,15 @@
+200 OK Hello, HTTP Hi
+nothing true true
+a, b
+Hello, again
+200 Hello, HTTP true
+201 Created POST some text hi there
+POST more
+256 0 200 255
+404 Not Found missing false
+another task ran meanwhile
+late
+HttpError: the body from http://127.0.0.1:47613/large is longer than the limit of 10 bytes
+HttpError: http://127.0.0.1:47613/moved redirected more than 0 times
+TimeoutError: no answer within 100 milliseconds
+no failure: 200

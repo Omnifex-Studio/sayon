@@ -70,6 +70,7 @@ pub fn host_capability(host: Host) -> Option<Capability> {
         | Host::FinishSending
         | Host::Resolve => Network,
         Host::Secure => Tls,
+        Host::Fetch | Host::FetchHead | Host::FetchBody => Http,
         Host::ZoneOffset | Host::ZoneCheck | Host::LocalZone | Host::ZonesVersion => TimeZones,
         _ => return None,
     })

@@ -273,8 +273,49 @@ function post(url: string, body: string, content_type = "text/plain; charset=utf
 # HttpError, as do a response that is not HTTP and a URL that is neither
 # `http://` nor `https://`, which goes through TLS. A status that reports a failure, such as 404, is a response
 # like any other; `response.succeeded()` tells it apart.
+#
+# In a web page the browser makes the request, with its `fetch`, and the
+# other tasks run meanwhile. The browser follows redirects itself, up to
+# its own limit, so `redirects` there only tells whether to follow any;
+# `timeout` is how long the wait for the response, and then for each part
+# of its body, may last; and a URL can be relative to the page. The
+# browser keeps a page from reading another site's responses unless that
+# site allows it (CORS), and from setting some headers, such as
+# `user-agent`. A request it could not make fails with NetworkError, with
+# only as much of why as the browser tells.
 function request(method: string, url: string, headers: Dict<string, string> = [], body: Array<byte> = [], timeout = time.seconds(30), redirects = 10, limit = 16_777_216) -> Response
-    verb = strings.upper(method)
+    if platform == "web"
+        return fetch(strings.upper(method), url, headers, body, timeout, redirects, limit)
+    else
+        return follow(strings.upper(method), url, headers, body, timeout, redirects, limit)
+
+# A request a web page has the browser make.
+private function fetch(method: string, url: string, headers: Dict<string, string>, body: Array<byte>, timeout: time.Duration, redirects: integer, limit: integer) -> Response
+    fields: Array<string> = []
+    for name, value in headers
+        push(fields, clone(name))
+        push(fields, clone(value))
+    fetched = host_fetch(method, url, fields, body, timeout.nanoseconds, redirects, limit)
+    # The status, reason, and URL, then each header's name and value.
+    head = host_fetch_head(fetched)
+    status = decimal(head[0])
+    if status == nothing
+        host_http_fail("{url} answered with a status that is not a number")
+    received: Dict<string, string> = []
+    index = 3
+    while index + 1 < length(head)
+        name = clone(head[index])
+        value = clone(head[index + 1])
+        if haskey(received, name)
+            value = received[name] + ", " + value
+        received[name] = value
+        index += 2
+    return Response(status = status, reason = clone(head[1]), headers = received, body = host_fetch_body(fetched), url = clone(head[2]))
+
+# A request over a connection of its own, and the ones its redirects lead
+# to.
+private function follow(method: string, url: string, headers: Dict<string, string>, body: Array<byte>, timeout: time.Duration, redirects: integer, limit: integer) -> Response
+    verb = clone(method)
     current = clone(url)
     content = clone(body)
     followed = 0

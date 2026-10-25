@@ -76,7 +76,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Building for WASI (`--target wasi`) on any computer: WebAssembly modules for `wasm32-wasip1`, run under wasmtime with the same behavior as the interpreter | experimental | M4 |
 | Tasks and channels in WebAssembly programs (WASI): functions that can wait lowered to LLVM coroutines, a scheduler without fibers taking the same turns as the interpreter's | experimental | M4 |
 | Building for web pages (`--target web`) on any computer: a `wasm32-unknown-unknown` module with generated JavaScript glue and a page; the program never blocks the page, its tasks waking through the event loop; checked in Edge, Chrome, and Firefox and in Node against the interpreter | experimental | M4 |
-| HTTP in web pages, through the browser's `fetch` | planned | M4 |
+| HTTP in web pages: `standard/network`'s `get`, `post`, and `request` through the browser's `fetch`, the task waiting while the others run; checked in Edge, Chrome, Firefox, and Node against the interpreter | experimental | M4 |
 | Building on one system for another (Android and the other desktop systems) | planned | M4 to M7, with each target |
 | Diagnostics with stable codes and source excerpts | experimental | M1 |
 | VS Code syntax highlighting and file icon | experimental | M1 |

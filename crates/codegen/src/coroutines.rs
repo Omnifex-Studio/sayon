@@ -27,17 +27,20 @@ use crate::Dialect;
 use sayon_ir::{FunctionId, Inst, Module, Op, Rvalue, Terminator};
 use std::collections::HashSet;
 
-/// Whether an operation can wait for another task.
+/// Whether an operation can wait for another task, or for the host.
 pub fn waits(op: &Op) -> bool {
-    matches!(
-        op,
-        Op::Join { .. }
-            | Op::Yield
-            | Op::Sleep { .. }
-            | Op::Send { .. }
-            | Op::Receive { .. }
-            | Op::Select { .. }
-    )
+    match op {
+        Op::Host { function, .. } => function.suspends(),
+        _ => matches!(
+            op,
+            Op::Join { .. }
+                | Op::Yield
+                | Op::Sleep { .. }
+                | Op::Send { .. }
+                | Op::Receive { .. }
+                | Op::Select { .. }
+        ),
+    }
 }
 
 /// Whether the program's tasks need coroutines: on a target without
@@ -146,8 +149,9 @@ waiting:
 
 /// What a web page's glue calls to run the program: `sayon_run` starts
 /// `@sayon.main`, or resumes it once the browser has waited, and gives the
-/// exit status, or -1 while every task sleeps, when the glue is to wait
-/// `sayon_wait_milliseconds` and call it again. A page is never blocked.
+/// exit status, or -1 while every task sleeps or waits for a response the
+/// browser fetches, when the glue is to wait `sayon_wait_milliseconds` (or
+/// for a response) and call it again. A page is never blocked.
 pub const WEB_ENTRY: &str = "\
 @sayon.exit = internal global i32 0
 @sayon.main.frame = internal global ptr null

@@ -175,6 +175,9 @@ hosts! {
     Secure = "secure"(Stream, String) -> Nothing;
     Resolve = "resolve"(String) -> StringArray;
     HttpFail = "http_fail"(String) -> Nothing;
+    Fetch = "fetch"(String, String, StringArray, Bytes, Integer, Integer, Integer) -> Stream;
+    FetchHead = "fetch_head"(Stream) -> StringArray;
+    FetchBody = "fetch_body"(Stream) -> Bytes;
     ValueFail = "value_fail"(String) -> Nothing;
     ZoneOffset = "zone_offset"(String, Integer) -> Integer;
     ZoneCheck = "zone_check"(String) -> Nothing;
@@ -213,6 +216,13 @@ impl Host {
                 | Host::Secure
                 | Host::ProcessWait
         )
+    }
+
+    /// Whether the primitive stops the task to wait for its host, which
+    /// runs it meanwhile: in a web page, a request the browser fetches.
+    /// Compiled code waits for it as for another task.
+    pub fn suspends(self) -> bool {
+        matches!(self, Host::Fetch)
     }
 }
 
@@ -596,6 +606,11 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
         Host::FinishSending => crate::streams::finish_sending(stream(args, 0)).map(|()| V::Nothing),
         Host::Resolve => crate::network::resolve(string(args, 0)).map(V::Strings),
         Host::HttpFail => Err(("HttpError", string(args, 0).to_string())),
+        // Only a page's code calls it, through `sayon_host_call`, which
+        // lets the task wait for the browser.
+        Host::Fetch => Err(("HttpError", "only web pages fetch".to_string())),
+        Host::FetchHead => crate::streams::fetched_head(stream(args, 0)).map(V::Strings),
+        Host::FetchBody => crate::streams::fetched_body(stream(args, 0)).map(V::Bytes),
         Host::ValueFail => Err(("ValueError", string(args, 0).to_string())),
         Host::ZoneOffset => crate::zones::offset(string(args, 0), integer(args, 1)).map(V::Integer),
         Host::ZoneCheck => crate::zones::check(string(args, 0)).map(|()| V::Nothing),

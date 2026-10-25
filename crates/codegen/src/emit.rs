@@ -455,8 +455,9 @@ impl<'m> Codegen<'m> {
         body.line(format!("{finished} = call i32 @sayon_tasks_wait_main()"));
         body.line(format!("store i32 {finished}, ptr {result}"));
         if self.module.target.platform == "web" {
-            // While every task sleeps, `main` stops and the browser waits,
-            // then resumes it to run the tasks on.
+            // While every task sleeps or waits for a response, `main`
+            // stops and the browser waits, then resumes it to run the tasks
+            // on.
             let sleeping = body.tmp();
             body.line(format!("{sleeping} = icmp eq i32 {finished}, 2"));
             let host = body.label("host");

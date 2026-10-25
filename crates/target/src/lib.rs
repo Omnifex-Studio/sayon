@@ -280,11 +280,20 @@ const MOBILE: &[Capability] = &[
     Collections,
 ];
 
-/// What a page can use: the console, and the event loop for tasks. HTTP
-/// comes with an adapter for the browser's `fetch`, since the HTTP client
-/// works over sockets. Sockets, files, other programs, and C are not a
-/// page's.
-const WEB: &[Capability] = &[Console, Tasks, Clock, Random, Json, Math, Text, Collections];
+/// What a page can use: the console, the event loop for tasks, and HTTP
+/// through the browser's `fetch`. Sockets, files, other programs, and C are
+/// not a page's.
+const WEB: &[Capability] = &[
+    Console,
+    Http,
+    Tasks,
+    Clock,
+    Random,
+    Json,
+    Math,
+    Text,
+    Collections,
+];
 
 /// What WASI preview 1 offers: the console, preopened files, the
 /// environment, and the C library compiled to WebAssembly; no sockets,

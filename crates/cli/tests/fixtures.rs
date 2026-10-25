@@ -123,6 +123,7 @@ fn online_programs_produce_their_recorded_output() {
 /// Runs each program under `dir` and compares its output, errors, and status
 /// with the recorded ones.
 fn run_programs(dir: &Path) {
+    serve_http();
     let mut failures = Vec::new();
     for source in sources(dir) {
         let name = source.file_name().unwrap().to_string_lossy().to_string();
@@ -185,6 +186,7 @@ fn native_programs_match_the_interpreter() {
 /// Builds each program under `dir` natively and compares its behavior with
 /// the interpreter's recorded one.
 fn run_native_programs(dir: &Path) {
+    serve_http();
     let mut failures = Vec::new();
     for source in sources(dir) {
         let name = source.file_name().unwrap().to_string_lossy().to_string();
@@ -277,6 +279,7 @@ fn web_programs_match_the_interpreter_in_node() {
         version, NODE_VERSION,
         "the web checks are pinned to Node {NODE_VERSION}"
     );
+    serve_http();
     let runner = tests_dir().join("web").join("node.mjs");
     let dir = tests_dir().join("programs");
     let mut built = build_programs(&dir, "web", "node");
@@ -320,6 +323,7 @@ fn web_programs_match_the_interpreter_in_browsers() {
         return;
     }
     prepare_runtime("wasm32-unknown-unknown", &[]);
+    serve_http();
     let dir = tests_dir().join("programs");
     let mut built = build_programs(&dir, "web", "browsers");
     let mut failures = std::mem::take(&mut built.failures);
@@ -556,6 +560,126 @@ fn serve(mut stream: std::net::TcpStream, root: &Path, results: &Results) {
         Ok(data) if file.starts_with(root) => reply("200 OK", kind, &data),
         _ => reply("404 Not Found", "text/plain", b"not found"),
     }
+}
+
+/// Where the HTTP server that `tests/programs/http.sayon` makes its requests
+/// to listens: an address fixed in advance, which the program names, since
+/// a program built for a web page has no other way to learn it.
+const HTTP_SERVER: &str = "127.0.0.1:47613";
+
+/// Starts the server at [`HTTP_SERVER`], once for all the checks, which run
+/// at once. It answers each connection on a thread of its own, and lets web
+/// pages of any origin read its responses.
+fn serve_http() {
+    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    STARTED.get_or_init(|| {
+        let listener = std::net::TcpListener::bind(HTTP_SERVER)
+            .unwrap_or_else(|e| panic!("the test HTTP server cannot listen on {HTTP_SERVER}: {e}"));
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                std::thread::spawn(move || answer_http(stream));
+            }
+        });
+    });
+}
+
+/// Answers one request to the server at [`HTTP_SERVER`].
+fn answer_http(mut stream: std::net::TcpStream) {
+    use std::io::{BufRead, BufReader, Read};
+    let Ok(clone) = stream.try_clone() else {
+        return;
+    };
+    let mut reader = BufReader::new(clone);
+    let mut request = String::new();
+    if reader.read_line(&mut request).is_err() {
+        return;
+    }
+    let mut headers: Vec<(String, String)> = Vec::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            headers.push((name.trim().to_lowercase(), value.trim().to_string()));
+        }
+    }
+    let header = |name: &str| {
+        headers
+            .iter()
+            .find(|(key, _)| key == name)
+            .map_or("", |(_, value)| value.as_str())
+            .to_string()
+    };
+    let mut body = vec![0u8; header("content-length").parse().unwrap_or(0)];
+    let _ = reader.read_exact(&mut body);
+    let mut words = request.split_whitespace();
+    let method = words.next().unwrap_or("").to_string();
+    let path = words.next().unwrap_or("/").to_string();
+    let (status, extra, data): (&str, Vec<String>, Vec<u8>) = match (method.as_str(), path.as_str())
+    {
+        // A page asks first whether it may send what a form could not.
+        ("OPTIONS", _) => (
+            "204 No Content",
+            vec![
+                "access-control-allow-methods: GET, POST, PUT, DELETE".to_string(),
+                "access-control-allow-headers: *".to_string(),
+            ],
+            Vec::new(),
+        ),
+        (_, "/hello") => (
+            "200 OK",
+            vec!["content-type: text/plain".into(), "x-greeting: Hi".into()],
+            b"Hello, HTTP".to_vec(),
+        ),
+        (_, "/twice") => (
+            "200 OK",
+            vec!["x-twice: a".into(), "x-twice: b".into()],
+            Vec::new(),
+        ),
+        (_, "/chunked") => (
+            "200 OK",
+            vec!["transfer-encoding: chunked".into()],
+            b"5\r\nHello\r\n7\r\n, again\r\n0\r\n\r\n".to_vec(),
+        ),
+        (_, "/moved") => ("302 Found", vec!["location: /hello".into()], Vec::new()),
+        (_, "/echo") => {
+            let mut echoed = format!("{method} ").into_bytes();
+            echoed.extend(&body);
+            (
+                "201 Created",
+                vec![format!("x-echo: {}", header("x-sayon"))],
+                echoed,
+            )
+        }
+        (_, "/bytes") => ("200 OK", Vec::new(), (0..=255).collect()),
+        (_, "/large") => ("200 OK", Vec::new(), vec![b'x'; 100]),
+        (_, "/later") => {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            ("200 OK", Vec::new(), b"late".to_vec())
+        }
+        _ => ("404 Not Found", Vec::new(), b"missing".to_vec()),
+    };
+    let mut head = format!("HTTP/1.1 {status}\r\n");
+    for line in &extra {
+        head.push_str(&format!("{line}\r\n"));
+    }
+    head.push_str("access-control-allow-origin: *\r\naccess-control-expose-headers: *\r\n");
+    head.push_str("cache-control: no-store\r\nconnection: close\r\n");
+    if !extra
+        .iter()
+        .any(|line| line.starts_with("transfer-encoding"))
+    {
+        head.push_str(&format!("content-length: {}\r\n", data.len()));
+    }
+    head.push_str("\r\n");
+    let _ = stream.write_all(head.as_bytes());
+    let _ = stream.write_all(&data);
+    // As the runner's server does: finish sending, then wait for the
+    // client to close.
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+    let _ = std::io::copy(&mut stream, &mut std::io::sink());
 }
 
 /// Stops a browser and the processes it started.

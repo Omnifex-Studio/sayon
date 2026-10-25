@@ -436,6 +436,12 @@ enum Wait {
     Yield,
     /// A socket, or a connection being made, until a deadline.
     Io(IoWait, Option<Instant>),
+    /// In a web page: a request the browser fetches, until it settles.
+    #[cfg_attr(
+        not(all(target_family = "wasm", target_os = "unknown")),
+        allow(dead_code)
+    )]
+    Response(i32),
 }
 
 impl Wait {
@@ -454,6 +460,7 @@ impl Wait {
                 Wait::Io(wait, deadline) => {
                     deadline.is_some_and(|deadline| now >= deadline) || network::ready(wait)
                 }
+                Wait::Response(request) => crate::fetch::settled(*request),
             }
         }
     }
@@ -510,20 +517,22 @@ struct Scheduler {
     current: usize,
     stopping: bool,
     exit_status: Option<i32>,
-    /// In a web page, when every task sleeps: how long the browser is to
-    /// wait before running the scheduler again.
-    host_wait: Option<Duration>,
+    /// In a web page, when every task sleeps or waits for a response the
+    /// browser fetches: how long the browser is to wait before running the
+    /// scheduler again, or `Some(None)` to wait for a response alone.
+    host_wait: Option<Option<Duration>>,
     /// Without fibers: how the next fiber was last chosen, to choose again
     /// once the browser has waited.
     choose: fn() -> usize,
 }
 
 /// Whether the tasks' scheduler must never block: in a web page, control
-/// goes back to the browser's event loop while every task sleeps.
+/// goes back to the browser's event loop while every task sleeps or waits
+/// for a response the browser fetches.
 const EVENT_LOOP: bool = cfg!(all(target_family = "wasm", target_os = "unknown"));
 
 /// The choice of fiber that gives control back to the browser, until the
-/// earliest sleeping task may go on.
+/// earliest sleeping task may go on or a response arrives.
 const HOST: usize = usize::MAX;
 
 thread_local! {
@@ -677,7 +686,7 @@ fn retire_unstarted() {
 
 /// The next fiber after the running one, round, that can go on; when none
 /// can yet but one sleeps or waits for a socket, after waiting for the
-/// earliest to be able to.
+/// earliest to be able to. In a web page, none while the browser is to wait.
 fn next_fiber() -> Option<usize> {
     retire_unstarted();
     loop {
@@ -694,8 +703,10 @@ fn next_fiber() -> Option<usize> {
         let mut wake: Option<Instant> = None;
         let mut sockets = Vec::new();
         let mut elsewhere = false;
+        let mut fetching = false;
         for fiber in waiting {
             elsewhere |= waits_elsewhere(&fiber.wait);
+            fetching |= matches!(fiber.wait, Wait::Response(_));
             let until = match &fiber.wait {
                 Wait::Sleep(until) => Some(*until),
                 Wait::Io(wait, deadline) => {
@@ -721,8 +732,12 @@ fn next_fiber() -> Option<usize> {
             network::wait_any(&[], Some(timeout?));
         } else if EVENT_LOOP {
             // A page cannot sleep: the browser runs the scheduler again
-            // once the earliest sleeping task may go on.
-            scheduler().host_wait = Some(timeout?);
+            // once the earliest sleeping task may go on, or a response it
+            // fetches arrives.
+            if timeout.is_none() && !fetching {
+                return None;
+            }
+            scheduler().host_wait = Some(timeout);
             return None;
         } else {
             std::thread::sleep(timeout?);
@@ -876,6 +891,36 @@ unsafe fn interrupted(
     }
 }
 
+/// In a web page: lets the running task wait for the browser to settle
+/// `request`, which it fetches, while the other tasks run, then gives the
+/// status of `finish`, which takes the response. A task that cannot wait,
+/// or is cancelled meanwhile, abandons the request.
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
+pub(crate) unsafe fn await_response(
+    err: *mut *mut SayonError,
+    request: i32,
+    location: *const c_char,
+    finish: impl FnOnce() -> i32 + Copy + 'static,
+) -> i32 {
+    // SAFETY: the caller's error slot.
+    unsafe {
+        let again = move || await_response(err, request, location, finish);
+        if let Some(Err(why)) = resumed() {
+            crate::fetch::abandon(request);
+            return interrupted(err, why, location, again);
+        }
+        while !crate::fetch::settled(request) {
+            if let Err(why) = wait(Wait::Response(request)) {
+                if !matches!(why, Interrupted::Suspended) {
+                    crate::fetch::abandon(request);
+                }
+                return interrupted(err, why, location, again);
+            }
+        }
+        finish()
+    }
+}
+
 /// Runs a function value on the running fiber: its code with its
 /// environment. Gives the status, after storing the result or the error.
 pub(crate) unsafe fn call_function(
@@ -944,7 +989,8 @@ fn finish_task(index: usize, status: i32) {
 
 /// The fiber to run after a task finished: the next that can go on; when
 /// the tasks left wait for each other, one of them, which fails; with none
-/// left, the main task's. In a web page, [`HOST`] while every task sleeps.
+/// left, the main task's. In a web page, [`HOST`] while the browser is to
+/// wait.
 fn after_finish() -> usize {
     next_fiber().unwrap_or_else(|| {
         let s = scheduler();
@@ -1024,8 +1070,8 @@ fn run(index: usize) -> Ran {
 
 /// Without fibers: the fiber to run after the running one stopped to wait:
 /// the next that can go on, or, when none can, the one that stopped, which
-/// then finds that every task waits. In a web page, [`HOST`] while every
-/// task sleeps.
+/// then finds that every task waits. In a web page, [`HOST`] while the
+/// browser is to wait.
 fn after_wait() -> usize {
     next_fiber().unwrap_or_else(|| {
         let s = scheduler();
@@ -1038,8 +1084,8 @@ fn after_wait() -> usize {
 }
 
 /// Without fibers: runs the fibers from `next` until the main task's
-/// functions finish, giving their status, or in a web page until every task
-/// sleeps, giving [`SUSPENDED`].
+/// functions finish, giving their status, or in a web page until the
+/// browser is to wait, giving [`SUSPENDED`].
 fn drive(mut next: usize) -> i32 {
     loop {
         if next == HOST {
@@ -1077,12 +1123,16 @@ pub extern "C" fn sayon_tasks_go_on() -> i32 {
 }
 
 /// In a web page: the milliseconds the browser is to wait before calling
-/// `sayon_tasks_go_on`, rounded up, so that a sleeping task can go on then.
+/// `sayon_tasks_go_on`, rounded up, so that a sleeping task can go on then;
+/// -1 to wait until a response it fetches arrives. It calls it sooner when
+/// one does.
 #[unsafe(no_mangle)]
 pub extern "C" fn sayon_wait_milliseconds() -> f64 {
-    scheduler()
-        .host_wait
-        .map_or(0.0, |wait| (wait.as_secs_f64() * 1000.0).ceil())
+    match scheduler().host_wait {
+        Some(Some(wait)) => (wait.as_secs_f64() * 1000.0).ceil(),
+        Some(None) => -1.0,
+        None => 0.0,
+    }
 }
 
 /// Without fibers: calls the running task's waiting operation again, once

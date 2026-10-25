@@ -1639,6 +1639,34 @@ fn call_waiting(
     }
 }
 
+/// In a web page: has the browser fetch the request `host_fetch`'s
+/// arguments describe, and lets the task wait for it while the others run.
+/// The stream holding the response goes through `out`.
+#[cfg(all(target_family = "wasm", target_os = "unknown"))]
+unsafe fn fetch(
+    err: *mut *mut SayonError,
+    values: &[crate::host::HostArg],
+    out: *mut u8,
+    location: *const c_char,
+) -> i32 {
+    // SAFETY: the caller's error slot, and its result of a stream.
+    unsafe {
+        let request = match crate::fetch::start(values) {
+            Ok(request) => request,
+            Err((code, message)) => return set_error(err, code, message, location),
+        };
+        let finish = move || match crate::fetch::finish(request) {
+            Ok(stream) => {
+                allocated();
+                *(out as *mut i64) = stream;
+                0
+            }
+            Err((code, message)) => set_error(err, code, message, location),
+        };
+        crate::tasks::await_response(err, request, location, finish)
+    }
+}
+
 /// Calls a host primitive. `args` points to one pointer per argument value,
 /// in the primitive's parameter order. The result is written through `out`;
 /// for an optional string, whether it is present is written through
@@ -1690,6 +1718,10 @@ pub unsafe extern "C" fn sayon_host_call(
                     panic!("unsupported host parameter")
                 }
             });
+        }
+        #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+        if host == Host::Fetch {
+            return fetch(err, &values, out, location);
         }
         match call_waiting(host, &values) {
             Ok(HostValue::String(text)) => *(out as *mut SayonStr) = owned(text),

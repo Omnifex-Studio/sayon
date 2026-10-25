@@ -39,7 +39,16 @@ enum Handle {
     PipeIn(Arc<PipeInput>),
     /// A started program's input, written to.
     PipeOut(Arc<PipeOutput>),
+    /// A response the browser fetched for a web page.
+    Fetched(Box<Fetched>),
     Closed,
+}
+
+/// A response the browser fetched: its head, as `host_fetch_head` gives it,
+/// and its body, until `host_fetch_body` takes it.
+pub struct Fetched {
+    pub head: Vec<String>,
+    pub body: Vec<u8>,
 }
 
 enum Socket {
@@ -102,7 +111,7 @@ fn reader<T>(
         Handle::Output | Handle::Errors | Handle::PipeOut(_) => {
             Err(("IOError", format!("{} is written, not read", entry.path)))
         }
-        Handle::Socket(_) | Handle::Process(_) | Handle::PipeIn(_) => {
+        Handle::Socket(_) | Handle::Process(_) | Handle::Fetched(_) | Handle::PipeIn(_) => {
             Err(not_connection(&entry.path))
         }
         Handle::Closed => Err(closed(&entry.path)),
@@ -214,6 +223,7 @@ fn writer<T>(
         }
         Handle::Socket(_)
         | Handle::Process(_)
+        | Handle::Fetched(_)
         | Handle::Output
         | Handle::Errors
         | Handle::PipeOut(_) => Err(not_connection(&entry.path)),
@@ -235,6 +245,35 @@ fn insert(handle: Handle, path: &str) -> i64 {
         },
     );
     id
+}
+
+/// A stream holding a response the browser fetched from `url`.
+pub fn fetched(url: &str, response: Fetched) -> i64 {
+    insert(Handle::Fetched(Box::new(response)), url)
+}
+
+/// Runs `f` on the response a stream holds.
+fn response<T>(id: i64, f: impl FnOnce(&mut Fetched) -> T) -> Result<T, HostError> {
+    let mut table = table();
+    let entry = table
+        .entries
+        .get_mut(&id)
+        .ok_or(("IOError", "the response is closed".to_string()))?;
+    match &mut entry.handle {
+        Handle::Fetched(response) => Ok(f(response)),
+        _ => Err(("IOError", format!("{} is not a response", entry.path))),
+    }
+}
+
+/// The status, reason, and URL of a fetched response, then its headers'
+/// names and values in turn.
+pub fn fetched_head(id: i64) -> Result<Vec<String>, HostError> {
+    response(id, |response| response.head.clone())
+}
+
+/// Takes the body of a fetched response.
+pub fn fetched_body(id: i64) -> Result<Vec<u8>, HostError> {
+    response(id, |response| std::mem::take(&mut response.body))
 }
 
 /// A stream reading standard input.
@@ -786,6 +825,7 @@ pub fn position(id: i64) -> Result<i64, HostError> {
         | Handle::Errors
         | Handle::Socket(_)
         | Handle::Process(_)
+        | Handle::Fetched(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_) => return Err(unpositioned(&path)),
         Handle::Closed => return Err(closed(&path)),
@@ -819,6 +859,7 @@ pub fn seek(id: i64, position: i64) -> Result<(), HostError> {
         | Handle::Errors
         | Handle::Socket(_)
         | Handle::Process(_)
+        | Handle::Fetched(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_) => return Err(unpositioned(&path)),
         Handle::Closed => return Err(closed(&path)),
@@ -860,6 +901,7 @@ pub fn close(id: i64) -> Result<(), HostError> {
         | Handle::Errors
         | Handle::Socket(_)
         | Handle::Process(_)
+        | Handle::Fetched(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_) => Ok(()),
         Handle::Closed => Err(("IOError", format!("\"{path}\" is already closed"))),
@@ -895,6 +937,7 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
         }
         Handle::Socket(_)
         | Handle::Process(_)
+        | Handle::Fetched(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_)
         | Handle::Output
@@ -913,6 +956,7 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
         }
         Handle::Socket(_)
         | Handle::Process(_)
+        | Handle::Fetched(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_)
         | Handle::Output

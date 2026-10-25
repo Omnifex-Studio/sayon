@@ -1049,6 +1049,12 @@ threads.join(server)
 
 `network.get(url)`, `network.post(url, text)`, and `network.request(method, url, headers, body, timeout, redirects, limit)` make HTTP/1.1 requests and give a `Response`: its `status` and `reason`, its `headers` with lowercase names, its `body` as bytes, and the `url` that answered. `response.text()` reads the body as text, `response.header(name)` finds a header in any letter case, and `response.succeeded()` tells a status from 200 to 299. Requests follow up to 10 redirects and accept bodies up to 16 MiB unless told otherwise; a failing status such as 404 is a response, not an error, while an answer that is not HTTP fails with `HttpError`. Both `http://` and `https://` URLs work, and a redirect may lead from one to the other; an `https://` request goes through TLS.
 
+In a web page the browser makes each request, with its `fetch`, and the other tasks run while one waits for its response. The response is the same, with a few differences that come from the browser:
+
+- The browser follows redirects itself, up to its own limit, so `redirects` only tells whether to follow any; `timeout` is how long the wait for the response, and then for each part of its body, may last.
+- A page reads another site's responses only when that site allows it (CORS), and sees only the headers it exposes. The browser sets some headers itself, such as `user-agent`, and leaves out those the program sets for them.
+- A URL can be relative to the page. A request the browser could not make fails with `NetworkError`, with only as much of why as the browser tells: it keeps from the page whether the connection was refused or the site does not allow it.
+
 ### Display
 
 `print` and `tostring` display values as follows. Floats always show a decimal point or an exponent (`3.0`, `0.1`, `1e20`, `inf`, `nan`), and integers never do. Strings appear as text at the top level and quoted inside collections, so collections look like the literals that build them: `[1, "text", true]` and `["name" = "Ada"]`. Structures and enum values look like the calls that build them: `Point(x = 1.0, y = 2.0)`, `circle(5.0)`, `point`. `typeof` names a structure or enum by its type name, such as `Point`.
@@ -1168,9 +1174,9 @@ import { run } from "./hello-web.js";
 const status = await run({ write: (stream, text) => show(stream, text) });
 ```
 
-`run` loads the module from beside the glue, starts the program, and gives its exit status when it ends; `write` receives what the program writes to its output (1) and errors (2), by default the console a line at a time. The page is never blocked: while every task sleeps, the program returns to the browser, which wakes it with a timer. Ending the program, with `os.exit` or a fault, stops only the program, not the page.
+`run` loads the module from beside the glue, starts the program, and gives its exit status when it ends; `write` receives what the program writes to its output (1) and errors (2), by default the console a line at a time. The page is never blocked: while every task sleeps or waits for a response, the program returns to the browser, which wakes it with a timer or when the response arrives. Ending the program, with `os.exit` or a fault, stops only the program, not the page.
 
-The module imports nothing but the glue's small set of host functions (output, clocks, random numbers, and ending); a page has no files, standard input, environment, sockets, threads, other programs, or C functions, and so far no HTTP client: pages will use `fetch`, which needs its own adapter. Sayon's tests run each example in Edge, Chrome, and Firefox, headless, from a server on the same computer, and in Node 24, and compare each with the interpreter.
+The module imports nothing but the glue's small set of host functions (output, clocks, random numbers, fetching, and ending); a page has no files, standard input, environment, sockets, threads, other programs, or C functions. Its HTTP requests are the browser's: `network.get`, `post`, and `request` work as elsewhere through `fetch` (see [Networking](#networking)). Sayon's tests run each example in Edge, Chrome, and Firefox, headless, from a server on the same computer, and in Node 24, and compare each with the interpreter.
 
 ### Platform branches
 
@@ -1201,7 +1207,7 @@ Each target provides capabilities: what its programs can ask of the system.
 | `environment` | environment variables, the current directory, program arguments | web, Android, iOS |
 | `processes` | `os.run`, `os.start` | web, WASI, Android, iOS |
 | `network` | TCP and UDP sockets, resolving names | web, WASI |
-| `http` | the HTTP client | web (until its `fetch` adapter), WASI |
+| `http` | the HTTP client | WASI |
 | `tls` | `network.connect_secure`, `connection.secure`, `https://` | web, WASI, Android, iOS |
 | `tasks` | tasks, channels, `sleep`, `select` | none |
 | `threads` | `threads.spawn_parallel` | web, WASI |

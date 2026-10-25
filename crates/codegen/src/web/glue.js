@@ -5,8 +5,9 @@
 //   const status = await run();
 //
 // `run` loads the module from beside this file, starts the program, and
-// gives its exit status once it ends. While all its tasks sleep, the page
-// goes on: the program never blocks the browser's event loop.
+// gives its exit status once it ends. While all its tasks sleep or wait for
+// responses the browser fetches for them, the page goes on: the program
+// never blocks the browser's event loop.
 //
 // Options: `write(stream, text)` receives what the program writes to its
 // output (1) and errors (2), by default the console a line at a time;
@@ -18,9 +19,32 @@ const MODULE = "__MODULE__";
 /// The status of a program that stopped on a fault, as a native one would.
 const FATAL = 3;
 
+/// The most milliseconds a timer waits: a longer one would fire at once.
+const LONGEST = 2147483647;
+
+/// How a request the program has the browser fetch stands: waiting, with
+/// its response, or failed (see the runtime's `fetch.rs`).
+const WAITING = 0;
+const ANSWERED = 1;
+const FAILED = 2;
+
+/// Why a request failed, besides the browser's being unable to fetch it.
+const UNFETCHED = 0;
+const TIMED_OUT = 1;
+const TOO_LONG = 2;
+const REDIRECTED = 3;
+
 class Exit {
   constructor(status) {
     this.status = status;
+  }
+}
+
+/// A request's failure of a kind the program tells of itself.
+class Failure {
+  constructor(kind, detail = "") {
+    this.kind = kind;
+    this.detail = detail;
   }
 }
 
@@ -29,6 +53,12 @@ export async function run({ write = consoleWriter(), options = {}, wasm } = {}) 
   const view = (pointer, length) => new Uint8Array(memory.buffer, pointer, length);
   // Text can be cut inside a character between two writes.
   const decoders = [null, new TextDecoder(), new TextDecoder()];
+  const text = (pointer, length) => new TextDecoder().decode(view(pointer, length));
+  // The requests the browser fetches for the program, by number.
+  const requests = new Map();
+  let requested = 0;
+  // Ends the glue's wait early, when a request settles.
+  let wake = () => {};
   const host = {
     host_write(stream, pointer, length) {
       write(stream, decoders[stream].decode(view(pointer, length), { stream: true }));
@@ -48,6 +78,43 @@ export async function run({ write = consoleWriter(), options = {}, wasm } = {}) 
         crypto.getRandomValues(view(pointer + at, Math.min(65536, length - at)));
       }
     },
+    host_fetch(method, methodLength, url, urlLength, fields, count, body, bodyLength, timeout, redirects, limit) {
+      // Each string's address and length, the headers' names and values in turn.
+      const words = new Uint32Array(memory.buffer, fields, count * 2);
+      const headers = [];
+      for (let at = 0; at + 1 < count; at += 2) {
+        headers.push([
+          text(words[2 * at], words[2 * at + 1]),
+          text(words[2 * at + 2], words[2 * at + 3]),
+        ]);
+      }
+      const request = { state: WAITING, controller: new AbortController() };
+      const number = ++requested;
+      requests.set(number, request);
+      const init = {
+        method: text(method, methodLength),
+        headers,
+        // The program's memory can move before the browser sends the body.
+        body: bodyLength > 0 ? view(body, bodyLength).slice() : undefined,
+        signal: request.controller.signal,
+      };
+      settle(request, text(url, urlLength), init, timeout, redirects, limit).then(() => {
+        if (requests.has(number)) wake();
+      });
+      return number;
+    },
+    host_fetch_state: (number) => requests.get(number).state,
+    host_fetch_status: (number) => requests.get(number).status,
+    host_fetch_length: (number, part) => requests.get(number).parts[part].length,
+    host_fetch_copy(number, part, pointer) {
+      const bytes = requests.get(number).parts[part];
+      view(pointer, bytes.length).set(bytes);
+    },
+    host_fetch_close(number) {
+      const request = requests.get(number);
+      requests.delete(number);
+      if (request.state === WAITING) request.controller.abort();
+    },
   };
   const bytes = wasm ?? (await load(new URL(MODULE, import.meta.url)));
   const { instance } = await WebAssembly.instantiate(bytes, { sayon: host });
@@ -56,8 +123,18 @@ export async function run({ write = consoleWriter(), options = {}, wasm } = {}) 
   try {
     status = instance.exports.sayon_run();
     while (status < 0) {
+      // As long as the earliest sleeping task asks, or with -1 until a
+      // response arrives; a response arriving sooner ends the wait.
       const wait = instance.exports.sayon_wait_milliseconds();
-      await new Promise((resolve) => setTimeout(resolve, wait));
+      await new Promise((resolve) => {
+        // A longer sleep is asked for again when the timer fires.
+        const timer = wait < 0 ? undefined : setTimeout(resolve, Math.min(wait, LONGEST));
+        wake = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+      wake = () => {};
       status = instance.exports.sayon_run();
     }
   } catch (problem) {
@@ -74,6 +151,83 @@ export async function run({ write = consoleWriter(), options = {}, wasm } = {}) 
   }
   write.finish?.();
   return status;
+}
+
+/// Fetches a request, and settles it with its response or its failure:
+/// the parts of the one or the other, as bytes, for the program to copy.
+async function settle(request, url, init, timeout, redirects, limit) {
+  const encoder = new TextEncoder();
+  // Each wait, for the response and then for each part of its body, may
+  // last `timeout` milliseconds.
+  let timer;
+  let timedOut = false;
+  const restart = () => {
+    clearTimeout(timer);
+    if (timeout > 0) {
+      timer = setTimeout(
+        () => {
+          timedOut = true;
+          request.controller.abort();
+        },
+        Math.min(timeout, LONGEST),
+      );
+    }
+  };
+  try {
+    restart();
+    const response = await fetch(url, init);
+    // The browser follows redirects itself, so only following none is
+    // the program's to ask for.
+    if (response.redirected && redirects === 0) throw new Failure(REDIRECTED);
+    const tooLong = new Failure(TOO_LONG, response.url);
+    if (Number(response.headers.get("content-length")) > limit) throw tooLong;
+    const chunks = [];
+    let size = 0;
+    if (response.body) {
+      const reader = response.body.getReader();
+      for (;;) {
+        restart();
+        const { done, value } = await reader.read();
+        if (done) break;
+        size += value.length;
+        if (size > limit) throw tooLong;
+        chunks.push(value);
+      }
+    }
+    const body = new Uint8Array(size);
+    let at = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, at);
+      at += chunk.length;
+    }
+    // Names come lowercase, and the values of one name joined.
+    const headers = [...response.headers].map(([name, value]) => `${name}\n${value}\n`).join("");
+    request.status = response.status;
+    request.parts = [response.statusText, response.url, headers].map((part) => encoder.encode(part));
+    request.parts.push(body);
+    request.state = ANSWERED;
+  } catch (problem) {
+    const failure =
+      problem instanceof Failure
+        ? problem
+        : timedOut
+          ? new Failure(TIMED_OUT)
+          : new Failure(UNFETCHED, reason(problem));
+    request.controller.abort();
+    request.status = failure.kind;
+    request.parts = [encoder.encode(failure.detail)];
+    request.state = FAILED;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/// What a failed fetch tells of why, with what caused it where there is
+/// more to say: Node names the system's error.
+function reason(problem) {
+  const cause = problem?.cause;
+  const detail = cause?.code ?? cause?.message;
+  return detail ? `${problem.message} (${detail})` : `${problem?.message ?? problem}`;
 }
 
 /// Shows the program's output on the console, a line at a time.

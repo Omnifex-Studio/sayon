@@ -18,6 +18,7 @@ pub mod callbacks;
 pub mod clock;
 pub mod console;
 pub mod encodings;
+pub mod fetch;
 pub mod ffi;
 pub mod finally;
 pub mod graphemes;
