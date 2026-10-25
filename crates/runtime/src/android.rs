@@ -319,6 +319,8 @@ pub unsafe extern "C" fn ANativeActivity_onCreate(
         callbacks.native_window_destroyed = Some(window_destroyed);
         callbacks.input_queue_created = Some(input_queue_created);
         callbacks.input_queue_destroyed = Some(input_queue_destroyed);
+        // What only Java has, such as TLS, goes through the app's Java VM.
+        crate::jni::set_vm((*activity).vm);
         // The screen's density, in Android's measure: 160 for a point.
         let configuration = AConfiguration_new();
         AConfiguration_fromAssetManager(configuration, (*activity).asset_manager);

@@ -591,7 +591,7 @@ A host has no address the system can find, a port is already in use by another s
 
 ### TlsError
 
-TLS with a server failed. Most often the server's certificate is not one the system accepts: it has expired, it is for another name than the one connected to, or it does not come from an authority the system trusts; the message says which. TLS also fails when the other side does not answer in TLS, when the two sides share no version of it, and on systems where Sayon finds no TLS: one without OpenSSL's `libssl`, or one it does not support yet, such as macOS.
+TLS with a server failed. Most often the server's certificate is not one the system accepts: it has expired, it is for another name than the one connected to, or it does not come from an authority the system trusts; the message says which. TLS also fails when the other side does not answer in TLS, when the two sides share no version of it, and on systems where Sayon finds no TLS: one without OpenSSL's `libssl`, a program run from `adb shell` on Android, where TLS is the Java libraries' that only an app has, or a system it does not support yet, such as macOS.
 
 ### TimeoutError
 

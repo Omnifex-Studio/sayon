@@ -405,6 +405,13 @@ const ANDROID_APPS: &[&str] = &[
     "uncaught.sayon",
     "main_status.sayon",
     "files.sayon",
+    "tls.sayon",
+];
+
+/// The programs the Android check runs only as apps, and why.
+const ANDROID_SHELL_LEFT_OUT: &[&str] = &[
+    // TLS on Android is Java's, which a program run from a shell lacks.
+    "tls.sayon",
 ];
 
 /// Builds every example for Android (x86-64) and runs it on an emulator or
@@ -438,7 +445,8 @@ fn android_programs_match_the_interpreter() {
     let port = HTTP_SERVER.rsplit(':').next().unwrap();
     device.adb(&["reverse", &format!("tcp:{port}"), &format!("tcp:{port}")]);
     let dir = tests_dir().join("programs");
-    let (built, mut failures) = run_android_programs(&device, &dir, "android-x64", &[]);
+    let (built, mut failures) =
+        run_android_programs(&device, &dir, "android-x64", ANDROID_SHELL_LEFT_OUT);
     let windows = tests_dir().join("windows");
     let apps = ANDROID_APPS
         .iter()
@@ -475,6 +483,8 @@ const ANDROID_ARM64_LEFT_OUT: &[&str] = &[
     // Passing C structures by the ARM64 convention is still to come, so
     // compiled programs raise ForeignError there instead.
     "foreign_structures.sayon",
+    // As on x86-64, a program run from a shell has no TLS.
+    "tls.sayon",
 ];
 
 /// Builds every example for an Android target as a program for

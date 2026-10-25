@@ -1043,7 +1043,7 @@ threads.join(server)
 
 - A `Connection` reads and writes like a file: `read_line`, `lines`, `read` (everything until the other side finishes), `read_bytes` (as many bytes as have arrived, up to a count), `write`, `write_line`, `write_bytes`, `flush`, `close`. `finish_sending()` ends what this side sends while it can still read, and `local_address()` and `peer_address()` give `Address` values with a `host` and a `port`.
 - `network.listen(host, port)` gives a `Listener`, whose `accept()` waits for the next connection; `network.bind(host, port)` gives a `DatagramSocket`, which `send`s datagrams to a host and `receive`s them as a `Datagram` of `bytes` and its `sender`. `network.resolve(host)` gives a host's numeric addresses.
-- `network.connect_secure(host, port)` connects and starts TLS, and `connection.secure(name)` starts it on a connection made already, for protocols that begin in plain text. The system's TLS checks the server's certificate against the certificates it trusts, and that it is for the name given, which also goes to the server; a failure is a `TlsError` that says what was wrong, such as an expired certificate or one for another name. What the connection reads and writes after that is encrypted, with every operation the same. TLS comes from the system: SChannel on Windows, and OpenSSL's `libssl` on Linux; where there is neither, it fails with `TlsError`.
+- `network.connect_secure(host, port)` connects and starts TLS, and `connection.secure(name)` starts it on a connection made already, for protocols that begin in plain text. The system's TLS checks the server's certificate against the certificates it trusts, and that it is for the name given, which also goes to the server; a failure is a `TlsError` that says what was wrong, such as an expired certificate or one for another name. What the connection reads and writes after that is encrypted, with every operation the same. TLS comes from the system: SChannel on Windows, OpenSSL's `libssl` on Linux, and in an Android app the platform's own, which trusts what the phone and its user trust; where there is none, as in a program run from `adb shell`, it fails with `TlsError`.
 - A host with several addresses is connected on the first that answers: attempts start a quarter of a second apart, between IPv6 and IPv4 by turns, so that a kind of address that does not work on a network costs little.
 - Waiting for the network lets other tasks run, so one program can be both a server and its client. `connect` takes a `timeout` (30 seconds unless given), and `set_timeout(duration)` gives a connection, listener, or datagram socket one for each of its operations; an operation that waits longer fails with `TimeoutError`. Other failures are `ConnectionError`, `AddressError`, `TlsError`, and `NetworkError`.
 - What a connection writes goes out as the other side takes it; a write waits only when a megabyte is still waiting to go, and `flush` and `close` wait until all of it has gone.
@@ -1227,7 +1227,7 @@ adb logcat -s sayon sayon-app                  # what it prints
 
 Building needs the Android SDK (`ANDROID_HOME`, or where Android Studio puts it) with its NDK, build tools, and platform `android-36`, and a JDK, 17 or newer, for signing (`JAVA_HOME`); `sayon target setup android-x64` says what is missing. `--executable` builds a program to run from `adb shell` instead, with the shell's own output and errors and an exit status, as Sayon's tests run each example; that shows the runtime works, not that an app does, which is why the tests run some examples as apps too.
 
-An app has the network, threads, C functions, and files of its own: a program starts in the app's private directory, so the files it names by relative paths are the app's. It has no standard input, environment, or other programs. TLS and time zones come with adapters of their own later, so `https://` and the HTTP client, which can reach TLS, are not an Android program's yet; C structures pass by value only on `android-x64` so far.
+An app has the network, threads, C functions, and files of its own: a program starts in the app's private directory, so the files it names by relative paths are the app's. It has no standard input, environment, or other programs. TLS, and so `https://`, is Android's own, which comes from its Java libraries: an app has it, and a program run from `adb shell` does not. Time zones come with an adapter of their own later, and C structures pass by value only on `android-x64` so far.
 
 ### Platform branches
 
@@ -1259,7 +1259,7 @@ Each target provides capabilities: what its programs can ask of the system.
 | `processes` | `os.run`, `os.start` | web, WASI, Android, iOS |
 | `network` | TCP and UDP sockets, resolving names | web, WASI |
 | `http` | the HTTP client | WASI |
-| `tls` | `network.connect_secure`, `connection.secure`, `https://` | web, WASI, Android, iOS |
+| `tls` | `network.connect_secure`, `connection.secure`, `https://` | web, WASI |
 | `graphics` | `graphics.open`: windows and the screen (drawing on a canvas needs none) | WASI |
 | `tasks` | tasks, channels, `sleep`, `select` | none |
 | `threads` | `threads.spawn_parallel` | web, WASI |

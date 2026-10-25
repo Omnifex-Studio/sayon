@@ -1,7 +1,7 @@
 //! TLS for connections, from the operating system: SChannel on Windows,
-//! and OpenSSL on Linux and the other Unix systems that have it, loaded
-//! when first needed. The system's certificate store decides which servers
-//! are trusted.
+//! OpenSSL on Linux and the other Unix systems that have it, loaded when
+//! first needed, and in Android apps the platform's `SSLEngine`. The
+//! system's certificate store decides which servers are trusted.
 //!
 //! A session never touches the socket. The connection gives it what has
 //! arrived, and sends what it puts out, so that the handshake and every
@@ -731,7 +731,7 @@ mod platform {
     }
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "android")))]
 mod platform {
     use super::Step;
     use crate::host::HostError;
@@ -1133,6 +1133,546 @@ mod platform {
                 format!("TLS with {name} failed: {what} ({reason})"),
             )
         }
+    }
+}
+
+/// Android: the platform's own TLS, Java's `SSLEngine` (Conscrypt), which
+/// trusts what the system and the user trust. Apps cannot load the
+/// system's C library for TLS, so the runtime calls into Java (see `jni`);
+/// an engine works on buffers as a session here does, never touching the
+/// socket. A program run from `adb shell` has no Java VM, so no TLS.
+#[cfg(target_os = "android")]
+mod platform {
+    use super::Step;
+    use crate::host::HostError;
+    use crate::jni::{Env, Method, Object, Thrown, Value, env};
+    use std::sync::OnceLock;
+
+    pub(super) enum Decrypted {
+        More,
+        Closed,
+        /// The engine takes a new handshake in its stride, inside unwrap.
+        #[allow(dead_code)]
+        HandshakeAgain,
+    }
+
+    /// The classes and methods the session calls, found once; the classes
+    /// are global references.
+    struct Java {
+        context_class: Object,
+        default_context: Method,
+        create_engine: Method,
+        use_client_mode: Method,
+        parameters: Method,
+        identify_endpoint: Method,
+        set_parameters: Method,
+        begin_handshake: Method,
+        handshake_status: Method,
+        delegated_task: Method,
+        run: Method,
+        wrap: Method,
+        unwrap: Method,
+        close_outbound: Method,
+        session: Method,
+        packet_size: Method,
+        application_size: Method,
+        status: Method,
+        result_handshake_status: Method,
+        consumed: Method,
+        produced: Method,
+        ordinal: Method,
+        buffer_class: Object,
+        allocate_direct: Method,
+        clear: Method,
+        limit: Method,
+    }
+
+    // SAFETY: global references and method identities, which any thread
+    // attached to the VM may use.
+    unsafe impl Send for Java {}
+    unsafe impl Sync for Java {}
+
+    fn java(env: Env) -> Result<&'static Java, HostError> {
+        static JAVA: OnceLock<Option<Java>> = OnceLock::new();
+        JAVA.get_or_init(|| {
+            env.frame(|| {
+                let class = |name: &str| {
+                    let class = env.find_class(name);
+                    (env.check().is_ok() && !class.is_null()).then_some(class)
+                };
+                let context = class("javax/net/ssl/SSLContext")?;
+                let engine = class("javax/net/ssl/SSLEngine")?;
+                let parameters = class("javax/net/ssl/SSLParameters")?;
+                let session = class("javax/net/ssl/SSLSession")?;
+                let result = class("javax/net/ssl/SSLEngineResult")?;
+                let runnable = class("java/lang/Runnable")?;
+                let enumeration = class("java/lang/Enum")?;
+                let byte_buffer = class("java/nio/ByteBuffer")?;
+                let buffer = class("java/nio/Buffer")?;
+                let status = "()Ljavax/net/ssl/SSLEngineResult$HandshakeStatus;";
+                let exchange =
+                    "(Ljava/nio/ByteBuffer;Ljava/nio/ByteBuffer;)Ljavax/net/ssl/SSLEngineResult;";
+                let found = Java {
+                    context_class: env.global(context),
+                    default_context: env.static_method(
+                        context,
+                        "getDefault",
+                        "()Ljavax/net/ssl/SSLContext;",
+                    ),
+                    create_engine: env.method(
+                        context,
+                        "createSSLEngine",
+                        "(Ljava/lang/String;I)Ljavax/net/ssl/SSLEngine;",
+                    ),
+                    use_client_mode: env.method(engine, "setUseClientMode", "(Z)V"),
+                    parameters: env.method(
+                        engine,
+                        "getSSLParameters",
+                        "()Ljavax/net/ssl/SSLParameters;",
+                    ),
+                    identify_endpoint: env.method(
+                        parameters,
+                        "setEndpointIdentificationAlgorithm",
+                        "(Ljava/lang/String;)V",
+                    ),
+                    set_parameters: env.method(
+                        engine,
+                        "setSSLParameters",
+                        "(Ljavax/net/ssl/SSLParameters;)V",
+                    ),
+                    begin_handshake: env.method(engine, "beginHandshake", "()V"),
+                    handshake_status: env.method(engine, "getHandshakeStatus", status),
+                    delegated_task: env.method(
+                        engine,
+                        "getDelegatedTask",
+                        "()Ljava/lang/Runnable;",
+                    ),
+                    run: env.method(runnable, "run", "()V"),
+                    wrap: env.method(engine, "wrap", exchange),
+                    unwrap: env.method(engine, "unwrap", exchange),
+                    close_outbound: env.method(engine, "closeOutbound", "()V"),
+                    session: env.method(engine, "getSession", "()Ljavax/net/ssl/SSLSession;"),
+                    packet_size: env.method(session, "getPacketBufferSize", "()I"),
+                    application_size: env.method(session, "getApplicationBufferSize", "()I"),
+                    status: env.method(
+                        result,
+                        "getStatus",
+                        "()Ljavax/net/ssl/SSLEngineResult$Status;",
+                    ),
+                    result_handshake_status: env.method(result, "getHandshakeStatus", status),
+                    consumed: env.method(result, "bytesConsumed", "()I"),
+                    produced: env.method(result, "bytesProduced", "()I"),
+                    ordinal: env.method(enumeration, "ordinal", "()I"),
+                    buffer_class: env.global(byte_buffer),
+                    allocate_direct: env.static_method(
+                        byte_buffer,
+                        "allocateDirect",
+                        "(I)Ljava/nio/ByteBuffer;",
+                    ),
+                    clear: env.method(buffer, "clear", "()Ljava/nio/Buffer;"),
+                    limit: env.method(buffer, "limit", "(I)Ljava/nio/Buffer;"),
+                };
+                env.check().ok().map(|()| found)
+            })
+        })
+        .as_ref()
+        .ok_or_else(|| ("TlsError", "Android's TLS could not be found".to_string()))
+    }
+
+    /// `SSLEngineResult.Status`, by its order.
+    const BUFFER_UNDERFLOW: i32 = 0;
+    const CLOSED: i32 = 3;
+    /// `SSLEngineResult.HandshakeStatus`, by its order.
+    const NEED_TASK: i32 = 2;
+    const NEED_WRAP: i32 = 3;
+    const NEED_UNWRAP: i32 = 4;
+    const NEED_UNWRAP_AGAIN: i32 = 5;
+
+    /// A direct byte buffer of Java's, whose bytes the runtime reads and
+    /// writes in place.
+    struct Buffer {
+        object: Object,
+        address: *mut u8,
+        capacity: usize,
+    }
+
+    /// What a wrap or an unwrap did.
+    struct Outcome {
+        status: i32,
+        handshake: i32,
+        consumed: usize,
+        produced: usize,
+    }
+
+    pub(super) struct Session {
+        engine: Object,
+        /// What arrived, what goes out, what was decrypted, and what is to
+        /// be encrypted.
+        network_in: Buffer,
+        network_out: Buffer,
+        plain_in: Buffer,
+        plain_out: Buffer,
+        /// What the handshake decrypted already, for the first read.
+        early: Vec<u8>,
+        started: bool,
+        name: String,
+    }
+
+    // SAFETY: global references, used by one thread at a time, inside the
+    // connection's entry of the stream table, each attached to the VM.
+    unsafe impl Send for Session {}
+
+    fn no_java() -> HostError {
+        (
+            "TlsError",
+            "TLS on Android comes from its Java libraries, which only an app has; a program \
+             run from a shell has none"
+                .to_string(),
+        )
+    }
+
+    fn env_or_fail() -> Result<Env, HostError> {
+        env().ok_or_else(no_java)
+    }
+
+    impl Session {
+        pub(super) fn client(server: &str) -> Result<Session, HostError> {
+            let env = env_or_fail()?;
+            let java = java(env)?;
+            let name = server.to_string();
+            let failed = |thrown: Thrown| failure(&name, &thrown);
+            env.frame(|| {
+                let context = env.call_static_object(java.context_class, java.default_context, &[]);
+                env.check().map_err(failed)?;
+                let host = env.new_string(server);
+                let engine = env.call_object(
+                    context,
+                    java.create_engine,
+                    &[Value { l: host }, Value { i: 443 }],
+                );
+                env.check().map_err(failed)?;
+                env.call_void(engine, java.use_client_mode, &[Value { z: 1 }]);
+                // The certificate must be for the name, as for HTTPS.
+                let parameters = env.call_object(engine, java.parameters, &[]);
+                let https = env.new_string("HTTPS");
+                env.call_void(parameters, java.identify_endpoint, &[Value { l: https }]);
+                env.call_void(engine, java.set_parameters, &[Value { l: parameters }]);
+                env.check().map_err(failed)?;
+                let session = env.call_object(engine, java.session, &[]);
+                let packet = env.call_int(session, java.packet_size, &[]).max(16 * 1024) as usize;
+                let plain = env
+                    .call_int(session, java.application_size, &[])
+                    .max(16 * 1024) as usize;
+                env.check().map_err(failed)?;
+                let buffer = |capacity: usize| -> Result<Buffer, HostError> {
+                    let object = env.call_static_object(
+                        java.buffer_class,
+                        java.allocate_direct,
+                        &[Value { i: capacity as i32 }],
+                    );
+                    env.check().map_err(failed)?;
+                    let address = env.buffer_address(object);
+                    Ok(Buffer {
+                        object: env.global(object),
+                        address,
+                        capacity,
+                    })
+                };
+                Ok(Session {
+                    engine: env.global(engine),
+                    network_in: buffer(packet * 2)?,
+                    network_out: buffer(packet * 2)?,
+                    plain_in: buffer(plain * 2)?,
+                    plain_out: buffer(plain)?,
+                    early: Vec::new(),
+                    started: false,
+                    name: server.to_string(),
+                })
+            })
+        }
+
+        /// Makes a buffer hold `length` bytes from its start.
+        fn fill(&self, env: Env, java: &Java, buffer: &Buffer, bytes: &[u8]) -> usize {
+            let length = bytes.len().min(buffer.capacity);
+            // SAFETY: the buffer has room for `length` bytes.
+            unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), buffer.address, length) };
+            env.call_object(buffer.object, java.clear, &[]);
+            env.call_object(buffer.object, java.limit, &[Value { i: length as i32 }]);
+            length
+        }
+
+        /// Wraps (`true`) or unwraps what `source` holds into `target`, both
+        /// from their starts.
+        fn exchange(
+            &self,
+            env: Env,
+            java: &Java,
+            wrap: bool,
+            source: &Buffer,
+            target: &Buffer,
+        ) -> Result<Outcome, HostError> {
+            env.call_object(target.object, java.clear, &[]);
+            let method = if wrap { java.wrap } else { java.unwrap };
+            let result = env.call_object(
+                self.engine,
+                method,
+                &[Value { l: source.object }, Value { l: target.object }],
+            );
+            env.check().map_err(|thrown| failure(&self.name, &thrown))?;
+            let status = env.call_object(result, java.status, &[]);
+            let handshake = env.call_object(result, java.result_handshake_status, &[]);
+            Ok(Outcome {
+                status: env.call_int(status, java.ordinal, &[]),
+                handshake: env.call_int(handshake, java.ordinal, &[]),
+                consumed: env.call_int(result, java.consumed, &[]).max(0) as usize,
+                produced: env.call_int(result, java.produced, &[]).max(0) as usize,
+            })
+        }
+
+        /// What a buffer holds from its start.
+        fn take(buffer: &Buffer, length: usize, into: &mut Vec<u8>) {
+            // SAFETY: the engine put `length` bytes there.
+            unsafe {
+                into.extend_from_slice(std::slice::from_raw_parts(
+                    buffer.address,
+                    length.min(buffer.capacity),
+                ))
+            };
+        }
+
+        /// Wraps nothing, for the engine's own messages, into `output`.
+        fn wrap_own(
+            &self,
+            env: Env,
+            java: &Java,
+            output: &mut Vec<u8>,
+        ) -> Result<Outcome, HostError> {
+            self.fill(env, java, &self.plain_out, &[]);
+            let outcome = self.exchange(env, java, true, &self.plain_out, &self.network_out)?;
+            Self::take(&self.network_out, outcome.produced, output);
+            Ok(outcome)
+        }
+
+        /// Unwraps what has arrived, a record at a time, the plain bytes
+        /// into `plain`. Gives the last outcome, and whether more is needed.
+        fn unwrap_some(
+            &self,
+            env: Env,
+            java: &Java,
+            incoming: &mut Vec<u8>,
+            plain: &mut Vec<u8>,
+        ) -> Result<Option<Outcome>, HostError> {
+            let mut last = None;
+            while !incoming.is_empty() {
+                self.fill(env, java, &self.network_in, incoming);
+                let outcome = self.exchange(env, java, false, &self.network_in, &self.plain_in)?;
+                incoming.drain(..outcome.consumed.min(incoming.len()));
+                Self::take(&self.plain_in, outcome.produced, plain);
+                let stop = outcome.status == BUFFER_UNDERFLOW
+                    || outcome.status == CLOSED
+                    || (outcome.consumed == 0 && outcome.produced == 0)
+                    || outcome.handshake == NEED_WRAP
+                    || outcome.handshake == NEED_TASK;
+                last = Some(outcome);
+                if stop {
+                    break;
+                }
+            }
+            Ok(last)
+        }
+
+        fn run_tasks(&self, env: Env, java: &Java) -> Result<(), HostError> {
+            loop {
+                let task = env.call_object(self.engine, java.delegated_task, &[]);
+                env.check().map_err(|thrown| failure(&self.name, &thrown))?;
+                if task.is_null() {
+                    return Ok(());
+                }
+                env.call_void(task, java.run, &[]);
+                env.check().map_err(|thrown| failure(&self.name, &thrown))?;
+            }
+        }
+
+        fn status(&self, env: Env, java: &Java) -> Result<i32, HostError> {
+            let status = env.call_object(self.engine, java.handshake_status, &[]);
+            env.check().map_err(|thrown| failure(&self.name, &thrown))?;
+            Ok(env.call_int(status, java.ordinal, &[]))
+        }
+
+        pub(super) fn handshake(
+            &mut self,
+            incoming: &mut Vec<u8>,
+            output: &mut Vec<u8>,
+        ) -> Result<Step, HostError> {
+            let env = env_or_fail()?;
+            let java = java(env)?;
+            env.frame(|| {
+                if !std::mem::replace(&mut self.started, true) {
+                    env.call_void(self.engine, java.begin_handshake, &[]);
+                    env.check().map_err(|thrown| failure(&self.name, &thrown))?;
+                }
+                loop {
+                    match self.status(env, java)? {
+                        NEED_WRAP => {
+                            self.wrap_own(env, java, output)?;
+                        }
+                        NEED_UNWRAP | NEED_UNWRAP_AGAIN => {
+                            let mut early = std::mem::take(&mut self.early);
+                            let outcome = self.unwrap_some(env, java, incoming, &mut early)?;
+                            self.early = early;
+                            match outcome {
+                                None => return Ok(Step::NeedMore),
+                                Some(outcome) if outcome.status == BUFFER_UNDERFLOW => {
+                                    return Ok(Step::NeedMore);
+                                }
+                                Some(outcome) if outcome.status == CLOSED => {
+                                    return Err((
+                                        "TlsError",
+                                        format!("{} closed before TLS started", self.name),
+                                    ));
+                                }
+                                Some(_) => {}
+                            }
+                        }
+                        NEED_TASK => self.run_tasks(env, java)?,
+                        // Finished, or not handshaking at all.
+                        _ => return Ok(Step::Done),
+                    }
+                }
+            })
+        }
+
+        pub(super) fn decrypt(
+            &mut self,
+            incoming: &mut Vec<u8>,
+            plain: &mut Vec<u8>,
+            output: &mut Vec<u8>,
+        ) -> Result<Decrypted, HostError> {
+            let env = env_or_fail()?;
+            let java = java(env)?;
+            plain.append(&mut self.early);
+            env.frame(|| {
+                loop {
+                    let outcome = self.unwrap_some(env, java, incoming, plain)?;
+                    // Reading can need an answer, as TLS 1.3 gives a new key.
+                    match self.status(env, java)? {
+                        NEED_WRAP => {
+                            self.wrap_own(env, java, output)?;
+                            continue;
+                        }
+                        NEED_TASK => {
+                            self.run_tasks(env, java)?;
+                            continue;
+                        }
+                        _ => {}
+                    }
+                    return Ok(match outcome {
+                        Some(outcome) if outcome.status == CLOSED => Decrypted::Closed,
+                        _ => Decrypted::More,
+                    });
+                }
+            })
+        }
+
+        pub(super) fn encrypt(
+            &mut self,
+            bytes: &[u8],
+            output: &mut Vec<u8>,
+        ) -> Result<(), HostError> {
+            let env = env_or_fail()?;
+            let java = java(env)?;
+            env.frame(|| {
+                let mut written = 0;
+                while written < bytes.len() {
+                    let length = self.fill(env, java, &self.plain_out, &bytes[written..]);
+                    let outcome =
+                        self.exchange(env, java, true, &self.plain_out, &self.network_out)?;
+                    Self::take(&self.network_out, outcome.produced, output);
+                    if outcome.consumed == 0 && length > 0 {
+                        return Err((
+                            "TlsError",
+                            format!(
+                                "TLS with {} failed: what was written could not be encrypted",
+                                self.name
+                            ),
+                        ));
+                    }
+                    written += outcome.consumed;
+                }
+                Ok(())
+            })
+        }
+
+        pub(super) fn close(&mut self, output: &mut Vec<u8>) {
+            let Some(env) = env() else {
+                return;
+            };
+            let Ok(java) = java(env) else {
+                return;
+            };
+            env.frame(|| {
+                env.call_void(self.engine, java.close_outbound, &[]);
+                let _ = env.thrown();
+                for _ in 0..4 {
+                    match self.wrap_own(env, java, output) {
+                        Ok(outcome) if outcome.status != CLOSED && outcome.produced > 0 => continue,
+                        _ => break,
+                    }
+                }
+            });
+        }
+    }
+
+    impl Drop for Session {
+        fn drop(&mut self) {
+            if let Some(env) = env() {
+                for object in [
+                    self.engine,
+                    self.network_in.object,
+                    self.network_out.object,
+                    self.plain_in.object,
+                    self.plain_out.object,
+                ] {
+                    env.drop_global(object);
+                }
+            }
+        }
+    }
+
+    /// Why TLS failed, said as on the other systems.
+    fn failure(name: &str, thrown: &Thrown) -> HostError {
+        let text = &thrown.0;
+        let has = |part: &str| {
+            text.to_ascii_lowercase()
+                .contains(&part.to_ascii_lowercase())
+        };
+        let message = if has("CertificateExpiredException")
+            || has("CertificateNotYetValidException")
+            || has("expired")
+        {
+            format!("the certificate of {name} has expired, or is not valid yet")
+        } else if has("subjectAltNames") || has("not verified") {
+            format!("the certificate {name} gave is for another name")
+        } else if has("revoked") {
+            format!("the certificate of {name} was revoked")
+        } else if has("Trust anchor") || has("CertPathValidatorException") {
+            format!("the certificate of {name} is not from an authority this computer trusts")
+        } else if has("Unable to parse TLS packet header")
+            || has("WRONG_VERSION_NUMBER")
+            || has("unrecognized SSL message")
+            || has("NOT_SSL")
+            || has("Unsupported or unrecognized")
+        {
+            format!("{name} did not answer with TLS")
+        } else if has("UNSUPPORTED_PROTOCOL")
+            || has("NO_PROTOCOLS_AVAILABLE")
+            || has("HANDSHAKE_FAILURE")
+        {
+            format!("{name} and this computer have no version of TLS in common")
+        } else {
+            format!("TLS with {name} failed: {text}")
+        };
+        ("TlsError", message)
     }
 }
 

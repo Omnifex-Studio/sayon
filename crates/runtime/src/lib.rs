@@ -27,6 +27,8 @@ mod font_table;
 pub mod graphemes;
 pub mod graphics;
 pub mod host;
+#[cfg(target_os = "android")]
+mod jni;
 pub mod network;
 pub mod parallel;
 pub mod processes;

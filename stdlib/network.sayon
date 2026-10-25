@@ -20,7 +20,8 @@
 # rest; TLS adds TlsError, and HTTP HttpError.
 #
 # TLS comes from the system, which decides which servers' certificates it
-# trusts: SChannel and the certificate store on Windows. A connection from
+# trusts: SChannel and the certificate store on Windows, OpenSSL on Linux,
+# and in an Android app the platform's own TLS. A connection from
 # `connect_secure`, or made secure with `connection.secure(name)`, reads
 # and writes as before, and its bytes travel encrypted.
 
