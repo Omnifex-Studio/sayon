@@ -259,6 +259,23 @@ mod os {
 
 // ----- the scheduler ----------------------------------------------------------------------------
 
+/// Whether the tasks of a thread take turns by returning to the scheduler
+/// rather than by switching stacks: WebAssembly has no fibers. There, a
+/// waiting operation records what it waits for and gives [`SUSPENDED`]; the
+/// code generated for WebAssembly suspends the task's functions, each an
+/// LLVM coroutine, up to the scheduler, which resumes them once the task
+/// can go on, and they call the operation again (see [`run`]).
+const STACKLESS: bool = cfg!(target_family = "wasm");
+
+/// The status of an operation, or of a function, that stopped to wait.
+pub const SUSPENDED: i32 = 2;
+
+/// The frame of the function that last stopped to wait, for its caller to
+/// resume; null when a waiting operation of the runtime stopped. Only
+/// WebAssembly programs use it.
+#[unsafe(no_mangle)]
+pub static mut sayon_frame: *mut u8 = std::ptr::null_mut();
+
 /// What a task's handle and the scheduler know of the task. The handle and
 /// the scheduler each hold a reference.
 #[repr(C)]
@@ -276,6 +293,9 @@ pub struct TaskBlock {
     cancel: bool,
     joined: bool,
     detached: bool,
+    /// Where the task's function puts its error, which outlives the call
+    /// that starts it when the function stops to wait.
+    error: *mut SayonError,
 }
 
 enum Outcome {
@@ -455,6 +475,33 @@ struct Fiber {
     callbacks: usize,
     /// The finally functions the task runs, which cannot wait.
     finally: usize,
+    /// Without fibers: the frame of the task's function while it waits.
+    frame: *mut u8,
+    /// Without fibers: what the task waited for when the scheduler resumed
+    /// it, which its waiting operation goes on from.
+    resumed: Option<Wait>,
+    /// Without fibers: the waiting operation to call again on resuming.
+    again: Option<Box<dyn FnOnce() -> i32>>,
+}
+
+impl Fiber {
+    fn new(os: *mut c_void, task: *mut TaskBlock, started: bool) -> Fiber {
+        Fiber {
+            os,
+            task,
+            wait: Wait::None,
+            deadlock: false,
+            started,
+            done: false,
+            cursor: 0,
+            locks: 0,
+            callbacks: 0,
+            finally: 0,
+            frame: std::ptr::null_mut(),
+            resumed: None,
+            again: None,
+        }
+    }
 }
 
 struct Scheduler {
@@ -479,18 +526,7 @@ fn scheduler() -> &'static mut Scheduler {
     // one using it, and no caller keeps the reference across a switch.
     unsafe {
         (*scheduler_slot()).get_or_insert_with(|| Scheduler {
-            fibers: vec![Fiber {
-                os: std::ptr::null_mut(),
-                task: std::ptr::null_mut(),
-                wait: Wait::None,
-                deadlock: false,
-                started: true,
-                done: false,
-                cursor: 0,
-                locks: 0,
-                callbacks: 0,
-                finally: 0,
-            }],
+            fibers: vec![Fiber::new(std::ptr::null_mut(), std::ptr::null_mut(), true)],
             current: 0,
             stopping: false,
             exit_status: None,
@@ -691,10 +727,13 @@ enum Interrupted {
     Deadlock,
     /// The task cannot wait at all.
     Refused(Refusal),
+    /// Without fibers: the task stops here, and the scheduler resumes it
+    /// once it can go on.
+    Suspended,
 }
 
 /// Lets the running task wait, switching to another task until this one
-/// can go on.
+/// can go on. Without fibers, the wait is recorded and the task suspended.
 fn wait(what: Wait) -> Result<(), Interrupted> {
     let current = scheduler().current;
     if let Some(refusal) = refusal(current) {
@@ -704,6 +743,9 @@ fn wait(what: Wait) -> Result<(), Interrupted> {
         return Err(Interrupted::Cancelled);
     }
     scheduler().fibers[current].wait = what;
+    if STACKLESS {
+        return Err(Interrupted::Suspended);
+    }
     match next_fiber() {
         Some(index) => switch_to(index),
         None => {
@@ -719,6 +761,23 @@ fn wait(what: Wait) -> Result<(), Interrupted> {
         return Err(Interrupted::Cancelled);
     }
     Ok(())
+}
+
+/// Without fibers: what the running task's waiting operation waited for,
+/// when the scheduler has just resumed it there, as `wait` would end: an
+/// error when the task was cancelled or every task waits. `None` when the
+/// operation starts afresh, and always with fibers.
+fn resumed() -> Option<Result<Wait, Interrupted>> {
+    let current = scheduler().current;
+    let fiber = &mut scheduler().fibers[current];
+    let wait = fiber.resumed.take()?;
+    if std::mem::take(&mut fiber.deadlock) {
+        return Some(Err(Interrupted::Deadlock));
+    }
+    if is_cancelled(current) {
+        return Some(Err(Interrupted::Cancelled));
+    }
+    Some(Ok(wait))
 }
 
 /// Why a wait for a socket ended without it being ready.
@@ -740,7 +799,11 @@ pub(crate) fn wait_io(what: IoWait, deadline: Option<Instant>) -> Result<(), IoS
         return Err(IoStop::Cancelled);
     }
     scheduler().fibers[current].wait = Wait::Io(what.clone(), deadline);
-    if let Some(index) = next_fiber() {
+    if STACKLESS {
+        // Without fibers, the other tasks wait meanwhile.
+        let timeout = deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+        network::wait_any(std::slice::from_ref(&what), timeout);
+    } else if let Some(index) = next_fiber() {
         switch_to(index);
     }
     scheduler().fibers[current].wait = Wait::None;
@@ -753,10 +816,25 @@ pub(crate) fn wait_io(what: IoWait, deadline: Option<Instant>) -> Result<(), IoS
     Ok(())
 }
 
-unsafe fn interrupted(err: *mut *mut SayonError, why: Interrupted, location: *const c_char) -> i32 {
+/// The status of a waiting operation whose wait ended without what it
+/// waited for: an error in the caller's slot, or, when the task suspends,
+/// [`SUSPENDED`], keeping `again` for the scheduler to call on resuming it.
+unsafe fn interrupted(
+    err: *mut *mut SayonError,
+    why: Interrupted,
+    location: *const c_char,
+    again: impl FnOnce() -> i32 + 'static,
+) -> i32 {
     // SAFETY: the caller's error slot.
     unsafe {
         match why {
+            Interrupted::Suspended => {
+                let s = scheduler();
+                s.fibers[s.current].again = Some(Box::new(again));
+                // No function's frame: the operation itself is to resume.
+                *std::ptr::addr_of_mut!(sayon_frame) = std::ptr::null_mut();
+                SUSPENDED
+            }
             Interrupted::Cancelled => set_error(
                 err,
                 CANCELLED_CODE,
@@ -805,20 +883,27 @@ pub(crate) unsafe fn destroy_function_environment(environment: *mut u8) {
     }
 }
 
-/// The first function of every task's fiber. It never returns: when the
-/// task finishes, it switches to another fiber for good.
-unsafe extern "system" fn task_start(parameter: *mut c_void) {
-    let index = parameter as usize;
+/// Calls the function of the task of fiber `index`, which gives its status,
+/// or [`SUSPENDED`] when it stops to wait.
+unsafe fn start_task(index: usize) -> i32 {
     let task = scheduler().fibers[index].task;
     // SAFETY: the scheduler holds a reference to the task.
     unsafe {
-        let mut error: *mut SayonError = std::ptr::null_mut();
-        let status = call_function(
+        call_function(
             (*task).code,
             (*task).environment,
             (*task).result,
-            &mut error,
-        );
+            &mut (*task).error,
+        )
+    }
+}
+
+/// Records how the task of fiber `index` ended, from its function's status.
+fn finish_task(index: usize, status: i32) {
+    let task = scheduler().fibers[index].task;
+    // SAFETY: the scheduler holds a reference to the task.
+    unsafe {
+        let error = std::mem::replace(&mut (*task).error, std::ptr::null_mut());
         (*task).outcome = if status == 0 {
             Outcome::Succeeded
         } else {
@@ -833,9 +918,13 @@ unsafe extern "system" fn task_start(parameter: *mut c_void) {
         }
     }
     scheduler().fibers[index].done = true;
-    let next = next_fiber().unwrap_or_else(|| {
-        // The tasks left wait for each other: one of them fails; with none
-        // left, the main task carries on.
+}
+
+/// The fiber to run after a task finished: the next that can go on; when
+/// the tasks left wait for each other, one of them, which fails; with none
+/// left, the main task's.
+fn after_finish() -> usize {
+    next_fiber().unwrap_or_else(|| {
         let s = scheduler();
         match (0..s.fibers.len())
             .find(|&i| !s.fibers[i].done && !matches!(s.fibers[i].wait, Wait::None))
@@ -846,7 +935,116 @@ unsafe extern "system" fn task_start(parameter: *mut c_void) {
             }
             None => 0,
         }
-    });
+    })
+}
+
+// ----- without fibers ---------------------------------------------------------------------------
+
+/// How running a task's functions until they stopped ended.
+enum Ran {
+    /// They stopped to wait.
+    Suspended,
+    /// They finished, with this status.
+    Finished(i32),
+}
+
+#[cfg(target_family = "wasm")]
+unsafe extern "C" {
+    /// Resumes the suspended frame of a function, or with null the running
+    /// task's waiting operation, and gives its status, or [`SUSPENDED`]
+    /// when it stopped again. The code generated for WebAssembly defines it.
+    fn sayon_coroutine_resume(frame: *mut u8) -> i32;
+}
+
+/// Targets with fibers never suspend a frame.
+#[cfg(not(target_family = "wasm"))]
+unsafe extern "C" fn sayon_coroutine_resume(_frame: *mut u8) -> i32 {
+    unreachable!("tasks switch fibers on this target")
+}
+
+/// Without fibers: starts or resumes the task of fiber `index`, which runs
+/// until its functions stop to wait or finish.
+fn run(index: usize) -> Ran {
+    let s = scheduler();
+    s.current = index;
+    let fiber = &mut s.fibers[index];
+    let status = if fiber.started {
+        fiber.resumed = Some(std::mem::replace(&mut fiber.wait, Wait::None));
+        let frame = fiber.frame;
+        // SAFETY: the suspended frame of the task's first function.
+        unsafe { sayon_coroutine_resume(frame) }
+    } else {
+        fiber.started = true;
+        fiber.wait = Wait::None;
+        // SAFETY: the task of this fiber.
+        unsafe { start_task(index) }
+    };
+    // The task may have started others, so the fibers are looked up again.
+    let fiber = &mut scheduler().fibers[index];
+    if status == SUSPENDED {
+        if fiber.frame.is_null() {
+            // SAFETY: the frame the task's first function left on stopping.
+            fiber.frame = unsafe { *std::ptr::addr_of!(sayon_frame) };
+        }
+        return Ran::Suspended;
+    }
+    fiber.frame = std::ptr::null_mut();
+    fiber.resumed = None;
+    fiber.again = None;
+    if index != 0 {
+        finish_task(index, status);
+    }
+    Ran::Finished(status)
+}
+
+/// Without fibers: the fiber to run after the running one stopped to wait:
+/// the next that can go on, or, when none can, the one that stopped, which
+/// then finds that every task waits.
+fn after_wait() -> usize {
+    next_fiber().unwrap_or_else(|| {
+        let s = scheduler();
+        s.fibers[s.current].deadlock = true;
+        s.current
+    })
+}
+
+/// Without fibers: called when the main task's functions stopped to wait.
+/// Runs the tasks, resuming the main task's functions in their turn, until
+/// those finish, and gives their status.
+#[unsafe(no_mangle)]
+pub extern "C" fn sayon_tasks_wait_main() -> i32 {
+    // SAFETY: the frame the main task's first function left on stopping.
+    scheduler().fibers[0].frame = unsafe { *std::ptr::addr_of!(sayon_frame) };
+    let mut next = after_wait();
+    loop {
+        match run(next) {
+            Ran::Finished(status) if next == 0 => return status,
+            Ran::Finished(_) => next = after_finish(),
+            Ran::Suspended => next = after_wait(),
+        }
+    }
+}
+
+/// Without fibers: calls the running task's waiting operation again, once
+/// the scheduler has resumed the task.
+#[unsafe(no_mangle)]
+pub extern "C" fn sayon_task_retry() -> i32 {
+    let s = scheduler();
+    let again = s.fibers[s.current]
+        .again
+        .take()
+        .expect("a waiting operation to call again");
+    again()
+}
+
+/// The first function of every task's fiber. It never returns: when the
+/// task finishes, it switches to another fiber for good.
+unsafe extern "system" fn task_start(parameter: *mut c_void) {
+    let index = parameter as usize;
+    // SAFETY: the task of this fiber.
+    let status = unsafe { start_task(index) };
+    finish_task(index, status);
+    let next = after_finish();
     let target = scheduler().fibers[next].os;
     let s = scheduler();
     s.fibers[next].started = true;
@@ -868,12 +1066,13 @@ pub unsafe extern "C" fn sayon_task_spawn(
 ) {
     // SAFETY: `body` is a function value: its code and environment block.
     unsafe {
-        if scheduler().fibers[0].os.is_null() {
+        if !STACKLESS && scheduler().fibers[0].os.is_null() {
             scheduler().fibers[0].os = os::adopt_thread();
         }
+        let address = std::mem::size_of::<*const u8>();
         let code = *(body as *const *const u8);
-        let environment = *(body.add(8) as *const *mut u8);
-        std::ptr::write_bytes(body, 0, 16);
+        let environment = *(body.add(address) as *const *mut u8);
+        std::ptr::write_bytes(body, 0, 2 * address);
         let result = crate::ffi::sayon_alloc(result_size.max(1));
         allocated();
         let task = Box::into_raw(Box::new(TaskBlock {
@@ -888,21 +1087,15 @@ pub unsafe extern "C" fn sayon_task_spawn(
             cancel: false,
             joined: false,
             detached: false,
+            error: std::ptr::null_mut(),
         }));
         let index = scheduler().fibers.len();
-        let os = os::create(task_start, index);
-        scheduler().fibers.push(Fiber {
-            os,
-            task,
-            wait: Wait::None,
-            deadlock: false,
-            started: false,
-            done: false,
-            cursor: 0,
-            locks: 0,
-            callbacks: 0,
-            finally: 0,
-        });
+        let os = if STACKLESS {
+            std::ptr::null_mut()
+        } else {
+            os::create(task_start, index)
+        };
+        scheduler().fibers.push(Fiber::new(os, task, false));
         *out = task;
     }
 }
@@ -980,6 +1173,10 @@ pub unsafe extern "C" fn sayon_task_join(
             let block = task as *const crate::parallel::ParallelBlock;
             return crate::parallel::join_task(err, block, out, location);
         }
+        let again = move || sayon_task_join(err, slot, out, location);
+        if let Some(Err(why)) = resumed() {
+            return interrupted(err, why, location, again);
+        }
         loop {
             match std::mem::replace(&mut (*task).outcome, Outcome::Taken) {
                 Outcome::Succeeded => {
@@ -1002,7 +1199,7 @@ pub unsafe extern "C" fn sayon_task_join(
                 outcome => (*task).outcome = outcome,
             }
             if let Err(why) = wait(Wait::Join(task)) {
-                return interrupted(err, why, location);
+                return interrupted(err, why, location, again);
             }
         }
     }
@@ -1013,10 +1210,19 @@ pub unsafe extern "C" fn sayon_task_yield(
     err: *mut *mut SayonError,
     location: *const c_char,
 ) -> i32 {
-    match wait(Wait::Yield) {
-        Ok(()) => 0,
-        // SAFETY: the caller's error slot.
-        Err(why) => unsafe { interrupted(err, why, location) },
+    // SAFETY: the caller's error slot.
+    unsafe {
+        let again = move || sayon_task_yield(err, location);
+        let why = match resumed() {
+            // Resumed, the task has let the others run.
+            Some(Ok(_)) => return 0,
+            Some(Err(why)) => why,
+            None => match wait(Wait::Yield) {
+                Ok(()) => return 0,
+                Err(why) => why,
+            },
+        };
+        interrupted(err, why, location, again)
     }
 }
 
@@ -1026,17 +1232,27 @@ pub unsafe extern "C" fn sayon_task_sleep(
     nanoseconds: i64,
     location: *const c_char,
 ) -> i32 {
-    if nanoseconds <= 0 {
-        return 0;
-    }
-    let until = Instant::now() + Duration::from_nanos(nanoseconds as u64);
-    while Instant::now() < until {
-        if let Err(why) = wait(Wait::Sleep(until)) {
-            // SAFETY: the caller's error slot.
-            return unsafe { interrupted(err, why, location) };
+    // SAFETY: the caller's error slot.
+    unsafe {
+        let again = move || sayon_task_sleep(err, nanoseconds, location);
+        // Resumed, the task goes on sleeping until the time it chose.
+        let until = match resumed() {
+            Some(Err(why)) => return interrupted(err, why, location, again),
+            Some(Ok(Wait::Sleep(until))) => until,
+            _ => {
+                if nanoseconds <= 0 {
+                    return 0;
+                }
+                Instant::now() + Duration::from_nanos(nanoseconds as u64)
+            }
+        };
+        while Instant::now() < until {
+            if let Err(why) = wait(Wait::Sleep(until)) {
+                return interrupted(err, why, location, again);
+            }
         }
+        0
     }
-    0
 }
 
 /// When the main task has finished: cancels the tasks still running, runs
@@ -1072,7 +1288,18 @@ pub(crate) fn finish_local_tasks(main_failed: bool) -> i32 {
         let Some(index) = (1..s.fibers.len()).find(|&i| !s.fibers[i].done) else {
             break;
         };
-        switch_to(index);
+        if STACKLESS {
+            // The tasks run in turn until the main task's comes again.
+            let mut next = index;
+            while next != 0 {
+                next = match run(next) {
+                    Ran::Suspended => after_wait(),
+                    Ran::Finished(_) => after_finish(),
+                };
+            }
+        } else {
+            switch_to(index);
+        }
         scheduler().current = 0;
     }
     let _ = std::io::stdout().flush();
@@ -1220,47 +1447,61 @@ pub unsafe extern "C" fn sayon_channel_send(
     unsafe {
         let channel = &**slot;
         let size = channel.element_size;
-        // What the message holds may go to another thread with it.
-        if channel.crossed() {
-            cross_channels();
-        }
-        let number = loop {
-            let mut state = channel.state();
-            if state.closed {
-                drop(state);
-                // The message is destroyed, unless the sender keeps it.
-                if !keep {
-                    if let Some(drop) = channel.drop {
-                        drop(message);
-                    }
-                    std::ptr::write_bytes(message, 0, size);
+        let again = move || sayon_channel_send(err, slot, message, keep, location);
+        let number = match resumed() {
+            Some(Err(why)) => return interrupted(err, why, location, again),
+            // Resumed after sending, a rendezvous goes on waiting for its
+            // message to be received.
+            Some(Ok(Wait::Rendezvous(_, number))) => number,
+            _ => {
+                // What the message holds may go to another thread with it.
+                if channel.crossed() {
+                    cross_channels();
                 }
-                return set_error(
-                    err,
-                    "ChannelClosedError",
-                    "cannot send on a closed channel".to_string(),
-                    location,
-                );
-            }
-            if state.queue.len() < channel.capacity.max(1) {
-                let mut buffer = vec![0u64; size.div_ceil(8).max(1)];
-                std::ptr::copy_nonoverlapping(message, buffer.as_mut_ptr() as *mut u8, size);
-                std::ptr::write_bytes(message, 0, size);
-                state.queue.push_back(buffer);
-                state.sent += 1;
-                break state.sent;
-            }
-            drop(state);
-            if let Err(why) = wait(Wait::Send(*slot)) {
-                return interrupted(err, why, location);
+                let number = loop {
+                    let mut state = channel.state();
+                    if state.closed {
+                        drop(state);
+                        // The message is destroyed, unless the sender keeps it.
+                        if !keep {
+                            if let Some(drop) = channel.drop {
+                                drop(message);
+                            }
+                            std::ptr::write_bytes(message, 0, size);
+                        }
+                        return set_error(
+                            err,
+                            "ChannelClosedError",
+                            "cannot send on a closed channel".to_string(),
+                            location,
+                        );
+                    }
+                    if state.queue.len() < channel.capacity.max(1) {
+                        let mut buffer = vec![0u64; size.div_ceil(8).max(1)];
+                        std::ptr::copy_nonoverlapping(
+                            message,
+                            buffer.as_mut_ptr() as *mut u8,
+                            size,
+                        );
+                        std::ptr::write_bytes(message, 0, size);
+                        state.queue.push_back(buffer);
+                        state.sent += 1;
+                        break state.sent;
+                    }
+                    drop(state);
+                    if let Err(why) = wait(Wait::Send(*slot)) {
+                        return interrupted(err, why, location, again);
+                    }
+                };
+                channel.changed();
+                number
             }
         };
-        channel.changed();
         // Other tasks receive while this one waits.
         if channel.capacity == 0 {
             while channel.state().received < number {
                 if let Err(why) = wait(Wait::Rendezvous(*slot, number)) {
-                    return interrupted(err, why, location);
+                    return interrupted(err, why, location, again);
                 }
             }
         }
@@ -1279,6 +1520,10 @@ pub unsafe extern "C" fn sayon_channel_receive(
     // SAFETY: the slot holds a live channel; `out` has room for a message.
     unsafe {
         let channel = &**slot;
+        let again = move || sayon_channel_receive(err, slot, out, location);
+        if let Some(Err(why)) = resumed() {
+            return interrupted(err, why, location, again);
+        }
         loop {
             match channel.take(out) {
                 Taken::Message => return 0,
@@ -1293,7 +1538,7 @@ pub unsafe extern "C" fn sayon_channel_receive(
                 Taken::Empty => {}
             }
             if let Err(why) = wait(Wait::Receive(*slot)) {
-                return interrupted(err, why, location);
+                return interrupted(err, why, location, again);
             }
         }
     }
@@ -1336,6 +1581,10 @@ pub unsafe extern "C" fn sayon_channel_select(
         let handles: Vec<*mut ChannelBlock> = (0..count)
             .map(|i| *(array.ptr as *const *mut ChannelBlock).add(i))
             .collect();
+        let again = move || sayon_channel_select(err, channels, position_out, out, location);
+        if let Some(Err(why)) = resumed() {
+            return interrupted(err, why, location, again);
+        }
         loop {
             let current = scheduler().current;
             let start = scheduler().fibers[current].cursor;
@@ -1360,7 +1609,7 @@ pub unsafe extern "C" fn sayon_channel_select(
                 return 0;
             }
             if let Err(why) = wait(Wait::Select(handles.clone())) {
-                return interrupted(err, why, location);
+                return interrupted(err, why, location, again);
             }
         }
     }

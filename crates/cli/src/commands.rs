@@ -309,7 +309,14 @@ fn build_for(
     if emit_llvm {
         let destination =
             output.unwrap_or_else(|| default_output(source, release, target).with_extension("ll"));
-        let ir = sayon_codegen::emit_llvm(&compiled.module, &compiled.sources);
+        // Coroutines take the form the clang that would compile them reads.
+        let dialect = match sayon_codegen::clang() {
+            Some(clang) if sayon_codegen::uses_coroutines(&compiled.module) => {
+                sayon_codegen::dialect(&clang)
+            }
+            _ => sayon_codegen::Dialect::default(),
+        };
+        let ir = sayon_codegen::emit_llvm(&compiled.module, &compiled.sources, dialect);
         if let Some(parent) = destination.parent().filter(|p| !p.as_os_str().is_empty()) {
             let _ = std::fs::create_dir_all(parent);
         }

@@ -296,14 +296,14 @@ const WEB: &[Capability] = &[
 
 /// What WASI preview 1 offers: the console, preopened files, the
 /// environment, and the C library compiled to WebAssembly; no sockets,
-/// threads, or other programs. Tasks come once compiled WebAssembly
-/// programs can switch between them, which needs the lowering of
-/// suspending functions (DESIGN section 9.3): WebAssembly has no fibers.
+/// threads, or other programs. Tasks take turns there through functions
+/// lowered to coroutines, since WebAssembly has no fibers.
 const WASI: &[Capability] = &[
     Console,
     Input,
     Files,
     Environment,
+    Tasks,
     Foreign,
     Clock,
     Random,

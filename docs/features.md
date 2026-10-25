@@ -74,7 +74,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `sayon build`, `sayon run --native` on Windows x64 (M1) and Linux x86-64 (M3) | experimental | M1, M3 |
 | Targets: `--target` for `check`, `lint`, and `build` (repeatable, `all`, `native`, short names, triples); `sayon target list` and `setup`; `[compiler]` `targets` and `required_capabilities` in `sayon.toml` | experimental | M4 |
 | Building for WASI (`--target wasi`) on any computer: WebAssembly modules for `wasm32-wasip1`, run under wasmtime with the same behavior as the interpreter | experimental | M4 |
-| Tasks in WebAssembly programs, through the lowering of suspending functions | planned | M4 |
+| Tasks and channels in WebAssembly programs (WASI): functions that can wait lowered to LLVM coroutines, a scheduler without fibers taking the same turns as the interpreter's | experimental | M4 |
 | Building on one system for another (browser WebAssembly, Android, and the other desktop systems) | planned | M4 to M7, with each target |
 | Diagnostics with stable codes and source excerpts | experimental | M1 |
 | VS Code syntax highlighting and file icon | experimental | M1 |

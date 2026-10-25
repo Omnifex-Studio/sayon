@@ -1150,7 +1150,7 @@ sayon build --target wasi hello.sayon      # hello-wasi.wasm
 wasmtime run --dir . hello-wasi.wasm       # the current folder, as .
 ```
 
-Building needs the same clang as native builds, with its WebAssembly linker (`wasm-ld`, part of LLVM), and Sayon's runtime for WASI with WASI's C library, which an installation keeps in `lib/wasm32-wasip1`. Programs behave as in the interpreter: Sayon's tests run each example under wasmtime 50 and compare. WASI has no sockets, threads, or other programs, and so far no tasks: WebAssembly cannot switch between stacks, and tasks there wait for the compiler to turn functions that wait into ones that can stop and continue later (planned for M4).
+Building needs the same clang as native builds, with its WebAssembly linker (`wasm-ld`, part of LLVM), and Sayon's runtime for WASI with WASI's C library, which an installation keeps in `lib/wasm32-wasip1`. Programs behave as in the interpreter: Sayon's tests run each example under wasmtime 50 and compare. Tasks and channels work as everywhere and take turns in the same order: WebAssembly has no separate stacks for them, so the compiler turns each function that can wait into one that can stop and continue later, which costs a little more on each call of such a function. WASI has no sockets, threads, or other programs.
 
 ### Platform branches
 
@@ -1183,7 +1183,7 @@ Each target provides capabilities: what its programs can ask of the system.
 | `network` | TCP and UDP sockets, resolving names | web, WASI |
 | `http` | the HTTP client | WASI |
 | `tls` | `network.connect_secure`, `connection.secure`, `https://` | web, WASI, Android, iOS |
-| `tasks` | tasks, channels, `sleep`, `select` | WASI, for now |
+| `tasks` | tasks, channels, `sleep`, `select` | none |
 | `threads` | `threads.spawn_parallel` | web, WASI |
 | `foreign` | C functions and `standard/memory` | web |
 | `time_zones` | IANA time zones | web, WASI, Android, iOS |

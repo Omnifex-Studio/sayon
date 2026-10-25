@@ -351,7 +351,12 @@ pub fn compile_native(compiled: &Compiled, output: &Path, release: bool) -> Resu
     let toolchain = sayon_codegen::Toolchain::locate(exe_dir.as_deref(), compiled.module.target)?;
     let work = WorkDir::create()?;
     let ir_path = work.0.join("program.ll");
-    let ir = sayon_codegen::emit_llvm(&compiled.module, &compiled.sources);
+    let dialect = if sayon_codegen::uses_coroutines(&compiled.module) {
+        toolchain.dialect()
+    } else {
+        sayon_codegen::Dialect::default()
+    };
+    let ir = sayon_codegen::emit_llvm(&compiled.module, &compiled.sources, dialect);
     std::fs::write(&ir_path, ir).map_err(|e| format!("cannot write {}: {e}", ir_path.display()))?;
     if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent)

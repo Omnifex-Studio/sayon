@@ -45,6 +45,10 @@ pub struct Codegen<'m> {
     function_code: String,
     /// The `KeyOps` table of each dictionary key type.
     key_ops: HashMap<Type, String>,
+    /// The functions lowered to coroutines, so that their tasks can wait on
+    /// a target without fibers (see `coroutines`).
+    coroutines: HashSet<FunctionId>,
+    dialect: crate::Dialect,
 }
 
 /// A function body under construction.
@@ -149,7 +153,7 @@ pub fn float_constant(value: f64) -> String {
 }
 
 impl<'m> Codegen<'m> {
-    pub fn new(module: &'m Module, sources: &'m SourceMap) -> Codegen<'m> {
+    pub fn new(module: &'m Module, sources: &'m SourceMap, dialect: crate::Dialect) -> Codegen<'m> {
         Codegen {
             module,
             sources,
@@ -162,6 +166,8 @@ impl<'m> Codegen<'m> {
             intrinsics: HashSet::new(),
             function_code: String::new(),
             key_ops: HashMap::new(),
+            coroutines: crate::coroutines::functions(module),
+            dialect,
         }
     }
 
@@ -300,6 +306,15 @@ impl<'m> Codegen<'m> {
         out.push_str(&self.constant_defs);
         out.push('\n');
         out.push_str(RUNTIME_DECLARATIONS);
+        if module.target.processor == "wasm32" {
+            out.push_str(crate::coroutines::GLUE);
+        }
+        if !self.coroutines.is_empty() {
+            out.push_str(&crate::coroutines::in_dialect(
+                crate::coroutines::END,
+                self.dialect,
+            ));
+        }
         // Each C function once, whichever declarations name it.
         let mut declared = HashSet::new();
         for function in &module.foreign {
@@ -422,6 +437,30 @@ impl<'m> Codegen<'m> {
         code
     }
 
+    /// In `main`, after calling `function`: when it is a coroutine that
+    /// stopped to wait, the tasks run until it finishes. Gives its status.
+    fn main_await(&self, body: &mut Body, function: FunctionId, status: String) -> String {
+        if !self.coroutines.contains(&function) {
+            return status;
+        }
+        let result = body.alloca("i32");
+        body.line(format!("store i32 {status}, ptr {result}"));
+        let stopped = body.tmp();
+        body.line(format!("{stopped} = icmp eq i32 {status}, 2"));
+        let wait = body.label("wait");
+        let go = body.label("go");
+        body.line(format!("br i1 {stopped}, label %{wait}, label %{go}"));
+        body.start(&wait);
+        let finished = body.tmp();
+        body.line(format!("{finished} = call i32 @sayon_tasks_wait_main()"));
+        body.line(format!("store i32 {finished}, ptr {result}"));
+        body.line(format!("br label %{go}"));
+        body.start(&go);
+        let final_status = body.tmp();
+        body.line(format!("{final_status} = load i32, ptr {result}"));
+        final_status
+    }
+
     fn emit_main(&mut self) -> String {
         let module = self.module;
         let mut body = Body::new();
@@ -435,6 +474,7 @@ impl<'m> Codegen<'m> {
                 "{status} = call i32 @sayon.fn.{}(ptr @g{}, ptr {error}, i64 0)",
                 initializer.0, global.0
             ));
+            let status = self.main_await(&mut body, *initializer, status);
             let ok = body.tmp();
             body.line(format!("{ok} = icmp eq i32 {status}, 0"));
             let next = body.label("init");
@@ -450,6 +490,7 @@ impl<'m> Codegen<'m> {
             "{status} = call i32 @sayon.fn.{}(ptr {result}, ptr {error}, i64 0)",
             module.entry.0
         ));
+        let status = self.main_await(&mut body, module.entry, status);
         let ok = body.tmp();
         body.line(format!("{ok} = icmp eq i32 {status}, 0"));
         body.line(format!("br i1 {ok}, label %finished, label %{failed}"));
@@ -534,6 +575,8 @@ pub(crate) struct FnEmit<'c, 'm> {
     pub body: Body,
     /// Owned temporaries to destroy once the current instruction completes.
     after: Vec<(String, Type)>,
+    /// Whether the function is lowered to a coroutine.
+    coroutine: bool,
 }
 
 impl<'c, 'm> FnEmit<'c, 'm> {
@@ -543,6 +586,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
             f,
             body: Body::new(),
             after: Vec::new(),
+            coroutine: false,
         }
     }
 
@@ -556,6 +600,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
 
     fn emit(mut self, index: usize) -> String {
         let f = self.f;
+        self.coroutine = self.cg.coroutines.contains(&FunctionId(index as u32));
         let mut params = vec![
             "ptr %ret".to_string(),
             "ptr %err".to_string(),
@@ -605,13 +650,100 @@ impl<'c, 'm> FnEmit<'c, 'm> {
             }
             self.terminator(&block.term);
         }
+        if !self.coroutine {
+            return format!(
+                "; {}\ndefine internal i32 @sayon.fn.{index}({}) {{\nentry:\n{}  br label %b0\n{}}}\n\n",
+                f.name.replace('\n', " "),
+                params.join(", "),
+                self.body.allocas,
+                self.body.code
+            );
+        }
+        // The allocas stay in the entry block, where LLVM decides which live
+        // across a suspension and so go in the frame; what initializes them
+        // comes once the frame has begun.
+        let (allocas, stores): (Vec<&str>, Vec<&str>) = self
+            .body
+            .allocas
+            .lines()
+            .partition(|line| line.contains(" = alloca "));
         format!(
-            "; {}\ndefine internal i32 @sayon.fn.{index}({}) {{\nentry:\n{}  br label %b0\n{}}}\n\n",
+            "; {}\ndefine internal i32 @sayon.fn.{index}({}) presplitcoroutine {{\nentry:\n{}\n{}{}\n  br label %b0\n{}{}}}\n\n",
             f.name.replace('\n', " "),
             params.join(", "),
-            self.body.allocas,
-            self.body.code
+            allocas.join("\n"),
+            crate::coroutines::PROLOGUE,
+            stores.join("\n"),
+            self.body.code,
+            crate::coroutines::in_dialect(crate::coroutines::EPILOGUE, self.cg.dialect),
         )
+    }
+
+    /// Ends the function with `status`: returns it, or for a coroutine,
+    /// leaves it for the frame's end.
+    fn finish(&mut self, status: &str) {
+        if self.coroutine {
+            self.body
+                .line(format!("store i32 {status}, ptr %coro.result"));
+            self.body.line("br label %coro.final");
+        } else {
+            self.body.line(format!("ret i32 {status}"));
+        }
+    }
+
+    /// Whether an operation's call can stop to wait, in a coroutine.
+    fn suspends(&self, op: &Op) -> bool {
+        self.coroutine
+            && match op {
+                Op::Call { function, .. } => self.cg.coroutines.contains(function),
+                Op::CallValue { .. } => true,
+                other => crate::coroutines::waits(other),
+            }
+    }
+
+    /// After a call that can stop to wait: while its status is 2, suspends
+    /// and, on each resume, resumes the frame it left (or calls the waiting
+    /// operation again). Gives the final status.
+    fn await_status(&mut self, status: &str) -> String {
+        let result = self.body.alloca("i32");
+        self.body.line(format!("store i32 {status}, ptr {result}"));
+        let stopped = self.body.tmp();
+        self.body
+            .line(format!("{stopped} = icmp eq i32 {status}, 2"));
+        let awaiting = self.body.label("await");
+        let suspend = self.body.label("suspend");
+        let resume = self.body.label("resume");
+        let done = self.body.label("awaited");
+        self.body
+            .line(format!("br i1 {stopped}, label %{awaiting}, label %{done}"));
+        self.body.start(&awaiting);
+        let frame = self.body.tmp();
+        self.body
+            .line(format!("{frame} = load ptr, ptr @sayon_frame"));
+        self.body.line(format!("br label %{suspend}"));
+        self.body.start(&suspend);
+        let point = self.body.tmp();
+        self.body.line(format!(
+            "{point} = call i8 @llvm.coro.suspend(token none, i1 false)"
+        ));
+        self.body.line(format!(
+            "switch i8 {point}, label %coro.suspended [ i8 0, label %{resume} i8 1, label %coro.destroyed ]"
+        ));
+        self.body.start(&resume);
+        let again = self.body.tmp();
+        self.body.line(format!(
+            "{again} = call i32 @sayon_coroutine_resume(ptr {frame})"
+        ));
+        self.body.line(format!("store i32 {again}, ptr {result}"));
+        let still = self.body.tmp();
+        self.body.line(format!("{still} = icmp eq i32 {again}, 2"));
+        self.body
+            .line(format!("br i1 {still}, label %{suspend}, label %{done}"));
+        self.body.start(&done);
+        let final_status = self.body.tmp();
+        self.body
+            .line(format!("{final_status} = load i32, ptr {result}"));
+        final_status
     }
 
     // ----- places and operands ----------------------------------------------------
@@ -1662,14 +1794,14 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 ));
                 self.body
                     .line(format!("store {ret_llvm} {value}, ptr %ret"));
-                self.body.line("ret i32 0");
+                self.finish("0");
             }
             Terminator::ReturnError => {
                 let value = self.body.tmp();
                 self.body
                     .line(format!("{value} = load ptr, ptr {}", self.error_slot()));
                 self.body.line(format!("store ptr {value}, ptr %err"));
-                self.body.line("ret i32 1");
+                self.finish("1");
             }
             Terminator::Unreachable => self.body.line("unreachable"),
             Terminator::Op {
@@ -1679,7 +1811,13 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 error,
                 span,
             } => {
-                let status = self.op(op, dest.as_ref(), *span, *error);
+                let mut status = self.op(op, dest.as_ref(), *span, *error);
+                // What the call uses stays until it no longer waits.
+                if let Some(first) = status.clone()
+                    && self.suspends(op)
+                {
+                    status = Some(self.await_status(&first));
+                }
                 self.finish_instruction();
                 match status {
                     Some(status) => {
