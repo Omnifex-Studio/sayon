@@ -1,0 +1,33 @@
+<!doctype html>
+<!-- The page Sayon's tests open in each browser, from the server the tests
+     start: it runs each program the server lists through the program's
+     generated glue, and posts what it wrote and its exit status back. -->
+<html lang="en">
+<meta charset="utf-8">
+<title>Sayon web checks</title>
+<pre id="log"></pre>
+<script type="module">
+  const log = (text) => document.getElementById("log").append(text + "\n");
+  const bytes = (text) => new TextEncoder().encode(text).length;
+  const names = (await (await fetch("programs.txt")).text()).split("\n").filter(Boolean);
+  for (const name of names) {
+    let stdout = "";
+    let stderr = "";
+    let status = -1;
+    try {
+      const { run } = await import(`./${name}.js`);
+      const write = (stream, text) => {
+        if (stream === 1) stdout += text;
+        else stderr += text;
+      };
+      status = await run({ write, options: { SAYON_DEBUG_ALLOC: 1 } });
+    } catch (problem) {
+      stderr += `runner: ${problem}\n`;
+    }
+    log(`${name}: ${status}`);
+    const query = `name=${encodeURIComponent(name)}&status=${status}&stdout=${bytes(stdout)}`;
+    await fetch(`result?${query}`, { method: "POST", body: stdout + stderr });
+  }
+  await fetch("done", { method: "POST" });
+</script>
+</html>

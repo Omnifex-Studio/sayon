@@ -11,6 +11,7 @@
 #   bin/sayon                    the command-line tool
 #   lib/libsayon_runtime.a       linked into native builds
 #   lib/wasm32-wasip1/           the runtime for WASI, with WASI's C library
+#   lib/wasm32-unknown-unknown/  the runtime for web pages
 #   stdlib/                      the standard library
 #   docs/, examples/, editors/vscode/, README.md, INSTALL.txt
 #
@@ -42,6 +43,7 @@ command -v python3 > /dev/null || { echo "python3 is needed to write the install
 
 cargo build --release -p sayon-cli -p sayon-runtime
 cargo build --release -p sayon-runtime --target wasm32-wasip1
+cargo build --release -p sayon-runtime --target wasm32-unknown-unknown
 # WASI's C library (wasi-libc), as the Rust toolchain ships it.
 wasi_libc="$(rustc --print sysroot)/lib/rustlib/wasm32-wasip1/lib/self-contained"
 
@@ -63,6 +65,8 @@ as the Rust toolchain ships it. WebAssembly programs that Sayon builds for
 WASI include parts of it. Its license, which allows this, is at
 https://github.com/WebAssembly/wasi-libc/blob/main/LICENSE
 EOF
+mkdir -p "$stage/lib/wasm32-unknown-unknown"
+cp target/wasm32-unknown-unknown/release/libsayon_runtime.a "$stage/lib/wasm32-unknown-unknown/"
 cp stdlib/*.sayon "$stage/stdlib/"
 cp docs/*.md "$stage/docs/"
 cp examples/*.sayon "$stage/examples/"
@@ -99,7 +103,9 @@ Native builds (\`sayon build\`, \`sayon run --native\`) also need clang from LLV
 from your system's packages (for example \`sudo apt install clang\`) or from
 https://releases.llvm.org; then run \`sayon doctor\` again.
 \`sayon build --target wasi\` builds WebAssembly programs that run under a WASI
-host such as wasmtime; it uses the same clang, with its WebAssembly linker.
+host such as wasmtime, and \`sayon build --target web\` ones for web pages, with
+the JavaScript that runs them and a page; they use the same clang, with its
+WebAssembly linker.
 TLS (https:// and network.connect_secure) uses the system's OpenSSL 3
 (libssl.so.3), which most systems have.
 $requirement

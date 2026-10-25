@@ -4,7 +4,7 @@ error[E_CAPABILITY]: web programs cannot use files and directories (`files`)
  12 |     io.write_file("notes.txt", text)
     |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this needs `files`
     |
-    = note: web provides console, http, tasks, clock, random, json, math, text, collections
+    = note: web provides console, tasks, clock, random, json, math, text, collections
     = help: put this in a branch that only targets with it check, such as `if supports("files")`
 
 error[E_CAPABILITY]: web programs cannot start other programs (`processes`)
@@ -13,7 +13,7 @@ error[E_CAPABILITY]: web programs cannot start other programs (`processes`)
  15 | listing = os.run("ls", [])
     |           ^^^^^^^^^^^^^^^^ this needs `processes`
     |
-    = note: web provides console, http, tasks, clock, random, json, math, text, collections
+    = note: web provides console, tasks, clock, random, json, math, text, collections
     = help: put this in a branch that only targets with it check, such as `if supports("processes")`
 
 error[E_CAPABILITY]: web programs cannot use TCP and UDP sockets (`network`)
@@ -22,7 +22,7 @@ error[E_CAPABILITY]: web programs cannot use TCP and UDP sockets (`network`)
  16 | connection = network.connect("example.com", 80)
     |              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this needs `network`
     |
-    = note: web provides console, http, tasks, clock, random, json, math, text, collections
+    = note: web provides console, tasks, clock, random, json, math, text, collections
     = help: put this in a branch that only targets with it check, such as `if supports("network")`
 
 error[E_CAPABILITY]: web programs cannot run tasks on threads of their own (`threads`)
@@ -31,7 +31,7 @@ error[E_CAPABILITY]: web programs cannot run tasks on threads of their own (`thr
  17 | worker = threads.spawn_parallel(function() -> integer
     |          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ this needs `threads`
     |
-    = note: web provides console, http, tasks, clock, random, json, math, text, collections
+    = note: web provides console, tasks, clock, random, json, math, text, collections
     = help: put this in a branch that only targets with it check, such as `if supports("threads")`
 
 error[E_CAPABILITY]: web programs cannot call C functions (`foreign`)
@@ -40,7 +40,7 @@ error[E_CAPABILITY]: web programs cannot call C functions (`foreign`)
  20 | print(unsafe abs(-1))
     |              ^^^^^^^ this needs `foreign`
     |
-    = note: web provides console, http, tasks, clock, random, json, math, text, collections
+    = note: web provides console, tasks, clock, random, json, math, text, collections
     = help: put this in a branch that only targets with it check, such as `if supports("foreign")`
 
 5 errors found; nothing was run

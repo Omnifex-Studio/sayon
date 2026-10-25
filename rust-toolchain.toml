@@ -2,5 +2,6 @@
 channel = "1.98.1"
 profile = "minimal"
 components = ["rustfmt", "clippy"]
-# The runtime of WebAssembly programs, and WASI's C library they link with.
-targets = ["wasm32-wasip1"]
+# The runtime of WebAssembly programs, for WASI (with WASI's C library they
+# link with) and for web pages.
+targets = ["wasm32-wasip1", "wasm32-unknown-unknown"]

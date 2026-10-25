@@ -336,12 +336,13 @@ pub(crate) fn finish_threads(main_failed: bool) -> Option<i32> {
                 // When the main task failed, its error is reported instead.
                 if problem.code != CANCELLED_CODE && problem.code != EXIT_CODE && !main_failed {
                     FAILED.store(true, Ordering::Relaxed);
-                    eprintln!(
+                    report!(
                         "error: a task failed: {}: {}",
-                        problem.code, problem.message
+                        problem.code,
+                        problem.message
                     );
                     if let Some(location) = &problem.location {
-                        eprintln!("  --> {location}");
+                        report!("  --> {location}");
                     }
                 }
                 crate::ffi::sayon_error_drop(&mut error.0);

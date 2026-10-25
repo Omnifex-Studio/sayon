@@ -459,7 +459,7 @@ impl Process {
         }
         prepare_waking();
         // What the program printed comes before what the started one does.
-        let _ = std::io::stdout().flush();
+        let _ = crate::console::stdout().flush();
         let mut child = command.spawn().map_err(|e| io_error("run", program, &e))?;
         let name = format!("\"{program}\"");
         let collecting = Arc::new(AtomicBool::new(false));

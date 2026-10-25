@@ -377,15 +377,10 @@ fn char_offset(text: &str, index: i64) -> Option<usize> {
 }
 
 fn random() -> f64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
     static STATE: Mutex<u64> = Mutex::new(0);
     let mut state = STATE.lock().unwrap_or_else(|e| e.into_inner());
     if *state == 0 {
-        let seed = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(1);
-        *state = seed | 1;
+        *state = crate::clock::random_seed();
     }
     // xorshift64*: not suitable for security, as documented.
     let mut x = *state;
@@ -465,7 +460,7 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
     let unary = |f: fn(f64) -> f64| Ok(V::Float(f(float(args, 0))));
     match host {
         Host::ReadLine => {
-            let _ = std::io::stdout().flush();
+            let _ = crate::console::stdout().flush();
             let mut bytes = Vec::new();
             let count = std::io::stdin()
                 .lock()
@@ -490,7 +485,7 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
                 })
         }
         Host::Write => {
-            let mut stdout = std::io::stdout().lock();
+            let mut stdout = crate::console::stdout().lock();
             stdout
                 .write_all(string(args, 0).as_bytes())
                 .and_then(|_| stdout.flush())
@@ -498,8 +493,8 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
             Ok(V::Nothing)
         }
         Host::WriteError => {
-            let _ = std::io::stdout().flush();
-            let mut stderr = std::io::stderr().lock();
+            let _ = crate::console::stdout().flush();
+            let mut stderr = crate::console::stderr().lock();
             stderr
                 .write_all(string(args, 0).as_bytes())
                 .map_err(|error| ("IOError", format!("could not write error output: {error}")))?;
@@ -968,20 +963,13 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
         Host::ParseError => Err(("ParseError", string(args, 0).to_string())),
         Host::Monotonic => {
             // Nanoseconds since the clock was first read in this process.
-            static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-            let start = START.get_or_init(std::time::Instant::now);
+            static START: std::sync::OnceLock<crate::clock::Instant> = std::sync::OnceLock::new();
+            let start = START.get_or_init(crate::clock::Instant::now);
             Ok(V::Integer(
                 start.elapsed().as_nanos().min(i64::MAX as u128) as i64
             ))
         }
-        Host::UnixTime => {
-            let now = std::time::SystemTime::now();
-            let nanoseconds = match now.duration_since(std::time::UNIX_EPOCH) {
-                Ok(after) => after.as_nanos().min(i64::MAX as u128) as i64,
-                Err(before) => -(before.duration().as_nanos().min(i64::MAX as u128) as i64),
-            };
-            Ok(V::Integer(nanoseconds))
-        }
+        Host::UnixTime => Ok(V::Integer(crate::clock::unix_nanoseconds())),
         Host::Sqrt => unary(f64::sqrt),
         Host::Sin => unary(f64::sin),
         Host::Cos => unary(f64::cos),

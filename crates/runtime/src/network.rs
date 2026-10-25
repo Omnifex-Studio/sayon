@@ -16,12 +16,13 @@
 //! connect, so it runs on a thread of its own, which wakes the scheduler
 //! when it is done.
 
+use crate::clock::Instant;
 use crate::host::HostError;
 use std::cell::RefCell;
 use std::io::{ErrorKind, Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// The code of the error an operation returns when it must wait.
 pub const BLOCKED_CODE: &str = "Blocked";
@@ -1018,8 +1019,36 @@ mod platform {
     }
 }
 
+/// A web page has no sockets: its programs lack the `network` capability,
+/// so none of this is reached there.
+#[cfg(not(any(windows, unix, target_os = "wasi")))]
+mod platform {
+    use std::time::Duration;
+
+    pub struct Entry {
+        pub revents: i16,
+    }
+
+    pub fn raw<Socket>(_socket: &Socket) -> u64 {
+        0
+    }
+
+    pub fn entry(_raw: u64, _read: bool, _write: bool) -> Entry {
+        Entry { revents: 0 }
+    }
+
+    pub fn poll(_fds: &mut [Entry], _timeout: Option<Duration>) -> i32 {
+        0
+    }
+
+    pub fn truncated(_error: &std::io::Error) -> bool {
+        false
+    }
+}
+
 /// A timeout for the system's poll: whole milliseconds, rounded up so that
 /// a wait never ends early, or -1 for none.
+#[cfg_attr(not(any(windows, unix, target_os = "wasi")), allow(dead_code))]
 fn milliseconds(timeout: Option<Duration>) -> i32 {
     match timeout {
         None => -1,

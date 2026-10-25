@@ -1133,13 +1133,13 @@ sayon target setup wasi           # what building for one needs
 | `windows-x64` | `windows` | `x64` | built and run |
 | `linux-x64` | `linux` | `x64` | built and run |
 | `wasi` | `wasi` | `wasm32` | built on any computer, run under wasmtime |
-| `web` | `web` | `wasm32` | checked; built from M4 on |
+| `web` | `web` | `wasm32` | built on any computer, run in Edge, Chrome, Firefox, and Node |
 | `android-arm64`, `android-x64` | `android` | `arm64`, `x64` | checked; built from M4 on |
 | `windows-arm64`, `linux-arm64` | `windows`, `linux` | `arm64` | checked; built from M5 on |
 | `macos-arm64`, `macos-x64` | `macos` | `arm64`, `x64` | checked; built from M7 on |
 | `ios-arm64`, `ios-simulator-arm64` | `ios` | `arm64` | checked; built from M7 on |
 
-`native` is this computer's target, and the short names `windows`, `linux`, `android`, `macos`, and `ios` are `windows-x64`, `linux-x64`, `android-arm64`, `macos-arm64`, and `ios-arm64`, for good: a later release never moves them to another processor. Each target's LLVM triple, such as `x86_64-unknown-linux-gnu`, names it too. A native program is built on the system it is for; for another native target, `sayon build` checks the program but stops before building it. A WebAssembly program is the same wherever it is built, so `wasi` builds on any computer. `sayon build` writes a program for a target other than this computer's under `build/debug/<target>/`, or next to a standalone file as `<name>-<target>`, such as `hello-wasi.wasm`.
+`native` is this computer's target, and the short names `windows`, `linux`, `android`, `macos`, and `ios` are `windows-x64`, `linux-x64`, `android-arm64`, `macos-arm64`, and `ios-arm64`, for good: a later release never moves them to another processor. Each target's LLVM triple, such as `x86_64-unknown-linux-gnu`, names it too. A native program is built on the system it is for; for another native target, `sayon build` checks the program but stops before building it. A WebAssembly program is the same wherever it is built, so `wasi` and `web` build on any computer. `sayon build` writes a program for a target other than this computer's under `build/debug/<target>/`, or next to a standalone file as `<name>-<target>`, such as `hello-wasi.wasm`.
 
 ### WASI
 
@@ -1151,6 +1151,26 @@ wasmtime run --dir . hello-wasi.wasm       # the current folder, as .
 ```
 
 Building needs the same clang as native builds, with its WebAssembly linker (`wasm-ld`, part of LLVM), and Sayon's runtime for WASI with WASI's C library, which an installation keeps in `lib/wasm32-wasip1`. Programs behave as in the interpreter: Sayon's tests run each example under wasmtime 50 and compare. Tasks and channels work as everywhere and take turns in the same order: WebAssembly has no separate stacks for them, so the compiler turns each function that can wait into one that can stop and continue later, which costs a little more on each call of such a function. WASI has no sockets, threads, or other programs.
+
+### Web pages
+
+A program built for `web` is a WebAssembly module for browsers (`wasm32-unknown-unknown`), with two files the compiler writes beside it: the glue that runs it (`.js`) and a page that shows its output (`.html`):
+
+```text
+sayon build --target web hello.sayon       # hello-web.wasm, hello-web.js, hello-web.html
+python -m http.server                      # any server: browsers load modules only over HTTP
+```
+
+Opening `hello-web.html` from the server runs the program and shows what it prints, its errors in red. A page of your own runs it through the glue, an ES module that works in browsers and in Node:
+
+```js
+import { run } from "./hello-web.js";
+const status = await run({ write: (stream, text) => show(stream, text) });
+```
+
+`run` loads the module from beside the glue, starts the program, and gives its exit status when it ends; `write` receives what the program writes to its output (1) and errors (2), by default the console a line at a time. The page is never blocked: while every task sleeps, the program returns to the browser, which wakes it with a timer. Ending the program, with `os.exit` or a fault, stops only the program, not the page.
+
+The module imports nothing but the glue's small set of host functions (output, clocks, random numbers, and ending); a page has no files, standard input, environment, sockets, threads, other programs, or C functions, and so far no HTTP client: pages will use `fetch`, which needs its own adapter. Sayon's tests run each example in Edge, Chrome, and Firefox, headless, from a server on the same computer, and in Node 24, and compare each with the interpreter.
 
 ### Platform branches
 
@@ -1181,7 +1201,7 @@ Each target provides capabilities: what its programs can ask of the system.
 | `environment` | environment variables, the current directory, program arguments | web, Android, iOS |
 | `processes` | `os.run`, `os.start` | web, WASI, Android, iOS |
 | `network` | TCP and UDP sockets, resolving names | web, WASI |
-| `http` | the HTTP client | WASI |
+| `http` | the HTTP client | web (until its `fetch` adapter), WASI |
 | `tls` | `network.connect_secure`, `connection.secure`, `https://` | web, WASI, Android, iOS |
 | `tasks` | tasks, channels, `sleep`, `select` | none |
 | `threads` | `threads.spawn_parallel` | web, WASI |

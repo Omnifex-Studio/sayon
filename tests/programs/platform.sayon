@@ -1,16 +1,14 @@
 # Compile-time platform branches: only the branch the target selects is
 # checked and compiled, so the others can name what this target lacks.
 
-function where_am_i() -> string
-    if platform == "web"
-        return page_title()
-    elseif platform == "android" or platform == "ios"
-        return phone_name()
+function on_a_phone() -> boolean
+    if platform == "android" or platform == "ios"
+        return phone_model() != ""
     else
-        return "a computer"
+        return false
 
-print(where_am_i())
-print(supports("files"), supports("json"))
+print(on_a_phone())
+print(supports("clock"), supports("json"))
 print(processor == "x64" or processor == "arm64" or processor == "wasm32")
 
 if not supports("console")

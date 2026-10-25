@@ -112,6 +112,7 @@ pub const GLUE: &str = "\
 
 declare i32 @sayon_task_retry()
 declare i32 @sayon_tasks_wait_main()
+declare i32 @sayon_tasks_go_on()
 declare token @llvm.coro.id(i32, ptr, ptr, ptr)
 declare i1 @llvm.coro.alloc(token)
 declare i64 @llvm.coro.size.i64()
@@ -141,6 +142,44 @@ waiting:
   ret i32 2
 }
 
+";
+
+/// What a web page's glue calls to run the program: `sayon_run` starts
+/// `@sayon.main`, or resumes it once the browser has waited, and gives the
+/// exit status, or -1 while every task sleeps, when the glue is to wait
+/// `sayon_wait_milliseconds` and call it again. A page is never blocked.
+pub const WEB_ENTRY: &str = "\
+@sayon.exit = internal global i32 0
+@sayon.main.frame = internal global ptr null
+
+declare void @sayon_runtime_report()
+
+define i32 @sayon_run() {
+entry:
+  %frame = load ptr, ptr @sayon.main.frame
+  %fresh = icmp eq ptr %frame, null
+  br i1 %fresh, label %start, label %resume
+start:
+  %started = call i32 @sayon.main()
+  br label %ran
+resume:
+  %resumed = call i32 @sayon_coroutine_resume(ptr %frame)
+  br label %ran
+ran:
+  %status = phi i32 [ %started, %start ], [ %resumed, %resume ]
+  %sleeping = icmp eq i32 %status, 2
+  br i1 %sleeping, label %wait, label %done
+wait:
+  %stopped = load ptr, ptr @sayon_frame
+  store ptr %stopped, ptr @sayon.main.frame
+  ret i32 -1
+done:
+  store ptr null, ptr @sayon.main.frame
+  ; Now that `main` has freed its own frame.
+  call void @sayon_runtime_report()
+  %code = load i32, ptr @sayon.exit
+  ret i32 %code
+}
 ";
 
 /// The declaration of the end of a coroutine, whose form depends on the

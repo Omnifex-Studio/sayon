@@ -10,6 +10,7 @@ mod coroutines;
 mod emit;
 mod helpers;
 mod layout;
+pub mod web;
 
 pub use emit::Codegen;
 
@@ -204,7 +205,7 @@ fn system_libraries(target: &Target) -> &'static [&'static str] {
             "kernel32", "ntdll", "userenv", "ws2_32", "dbghelp", "advapi32", "bcrypt",
         ],
         "macos" => &["System"],
-        "wasi" => &[],
+        "wasi" | "web" => &[],
         _ => &["pthread", "dl", "m"],
     }
 }
@@ -257,6 +258,16 @@ pub fn link(
             command.arg(directory.join(name));
         }
         // The stack lies in the program's memory: 8 MiB, as on Linux.
+        command.arg("-Wl,-z,stack-size=8388608");
+    }
+    if target.platform == "web" {
+        // A page's module has no C library and no start of its own: its
+        // glue calls what it exports, and gives the host functions the
+        // runtime imports (see `web`).
+        command.arg("-nostdlib").arg("-Wl,--no-entry");
+        for export in web::EXPORTS {
+            command.arg(format!("-Wl,--export={export}"));
+        }
         command.arg("-Wl,-z,stack-size=8388608");
     }
     command

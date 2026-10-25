@@ -1,9 +1,22 @@
 //! Runtime support for Sayon programs.
 //!
 //! `text` holds the display and parsing rules shared with the interpreter;
-//! `ffi` holds the functions compiled programs call.
+//! `ffi` holds the functions compiled programs call. Output, clocks, and
+//! ending the program go through `console` and `clock`, which a web page's
+//! host provides.
+
+/// Writes a line to standard errors, like `eprintln!`, but through
+/// `console`, so that a web page shows it too.
+macro_rules! report {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!($crate::console::stderr(), $($arg)*);
+    }};
+}
 
 pub mod callbacks;
+pub mod clock;
+pub mod console;
 pub mod encodings;
 pub mod ffi;
 pub mod finally;

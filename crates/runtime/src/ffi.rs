@@ -428,7 +428,7 @@ pub unsafe extern "C" fn sayon_print(
 ) -> i32 {
     // SAFETY: valid string and error slot.
     unsafe {
-        let mut stdout = std::io::stdout().lock();
+        let mut stdout = crate::console::stdout().lock();
         let result = stdout
             .write_all(as_str(s).as_bytes())
             .and_then(|_| stdout.write_all(b"\n"));
@@ -1090,11 +1090,11 @@ pub unsafe extern "C" fn sayon_error_eq(
 /// Reports an error nothing caught and releases it. Returns the exit status.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sayon_report_uncaught(e: *mut SayonError) -> i32 {
-    let _ = std::io::stdout().flush();
+    let _ = crate::console::stdout().flush();
     // SAFETY: `e` came from this module and is not used again.
     unsafe {
         if e.is_null() {
-            eprintln!("error: uncaught error");
+            report!("error: uncaught error");
             return 1;
         }
         let error = Box::from_raw(e);
@@ -1102,9 +1102,9 @@ pub unsafe extern "C" fn sayon_report_uncaught(e: *mut SayonError) -> i32 {
         if error.code == crate::host::EXIT_CODE {
             return crate::host::exit_status(&error.message);
         }
-        eprintln!("error: uncaught {}: {}", error.code, error.message);
+        report!("error: uncaught {}: {}", error.code, error.message);
         if let Some(location) = &error.location {
-            eprintln!("  --> {location}");
+            report!("  --> {location}");
         }
     }
     1
@@ -1557,9 +1557,20 @@ pub unsafe extern "C" fn sayon_builder_pointer(b: *mut Builder, address: u64) {
 #[unsafe(no_mangle)]
 pub extern "C" fn sayon_runtime_finish() {
     crate::streams::flush_all();
-    let _ = std::io::stdout().flush();
-    if std::env::var_os("SAYON_DEBUG_ALLOC").is_some() {
-        eprintln!(
+    let _ = crate::console::stdout().flush();
+    // In a web page the program's entry can be a coroutine, whose frame is
+    // freed only after this; `sayon_run` reports then.
+    if !cfg!(all(target_family = "wasm", target_os = "unknown")) {
+        sayon_runtime_report();
+    }
+}
+
+/// With `SAYON_DEBUG_ALLOC`, reports the allocations still live as the
+/// program ends, which a program that released everything has none of.
+#[unsafe(no_mangle)]
+pub extern "C" fn sayon_runtime_report() {
+    if crate::console::option("SAYON_DEBUG_ALLOC") {
+        report!(
             "sayon: allocations live at exit: {}",
             LIVE.load(Ordering::Relaxed)
         );
@@ -1573,8 +1584,8 @@ pub extern "C" fn sayon_exit_status(code: i64) -> i32 {
     if (0..=255).contains(&code) {
         code as i32
     } else {
-        let _ = std::io::stdout().flush();
-        eprintln!(
+        let _ = crate::console::stdout().flush();
+        report!(
             "warning: `main` returned {code}; portable exit statuses are 0 to 255, so 255 is used"
         );
         255
@@ -1587,6 +1598,10 @@ pub extern "C" fn sayon_exit_status(code: i64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn sayon_runtime_init() {
     crate::host::set_arguments(std::env::args().skip(1).collect());
+    // A page has no standard errors of Rust's: a fault inside the runtime is
+    // reported through the host instead.
+    #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+    std::panic::set_hook(Box::new(|info| report!("fatal error: {info}")));
 }
 
 /// Runs a primitive, letting other tasks run while it waits for a socket:
@@ -1602,7 +1617,7 @@ fn call_waiting(
         match crate::host::invoke(host, values) {
             Err((code, _)) if code == BLOCKED_CODE => {
                 let blocked = take_blocked().expect("what the primitive waits for");
-                let started = *started.get_or_insert_with(std::time::Instant::now);
+                let started = *started.get_or_insert_with(crate::clock::Instant::now);
                 let deadline = blocked.timeout.map(|timeout| started + timeout);
                 match crate::tasks::wait_io(blocked.wait, deadline) {
                     Ok(()) => {}

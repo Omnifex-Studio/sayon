@@ -34,7 +34,7 @@ Sayon is in early development and not ready for real programs. What works today:
 - Errors captured as values with `try` expressions, `Outcome<T>`, and `is error` narrowing
 - Functions as values and closures that own what they capture
 - An interpreter that runs checked programs, with checked integer arithmetic and cleanup on every exit path
-- A native backend: programs compile through LLVM to standalone Windows executables that need no runtime DLLs, and on any computer to WebAssembly programs for WASI
+- A native backend: programs compile through LLVM to standalone Windows executables that need no runtime DLLs, and on any computer to WebAssembly programs for WASI and for web pages, which come with the JavaScript that runs them and a page that shows their output
 - Checking a program for any target, with compile-time platform branches and the capabilities each target provides
 - Modules: programs can be split across files with `import`, and projects can depend on other packages from local folders or pinned Git commits, locked by `sayon install`
 - Borrowed views of arrays and strings, shared values with weak handles and cells, and finally functions that release what a structure owns when it is destroyed
@@ -44,7 +44,7 @@ Sayon is in early development and not ready for real programs. What works today:
 - `test` blocks and the `sayon test` runner, and the `sayon fmt` formatter
 - Projects with a `sayon.toml` manifest, and the `run`, `build`, `check`, `test`, `fmt`, `init`, `clean`, `doctor`, `lint`, and `explain` commands
 
-Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Linux x86-64 now passes every test in both modes, as Windows does, and each example that WASI can run behaves the same as a WebAssembly program under wasmtime; macOS and ARM64 come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
+Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Linux x86-64 now passes every test in both modes, as Windows does, and each example that WASI or a web page can run behaves the same as a WebAssembly program under wasmtime, and in Edge, Chrome, Firefox, and Node; macOS and ARM64 come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
 
 ## Installing
 

@@ -24,20 +24,21 @@ pub extern "C" fn sayon_finally_leave() {
 /// destroying is gone, and nothing is left to handle the error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sayon_finally_failed(err: *mut *mut SayonError, name: *const c_char) {
-    let _ = std::io::stdout().flush();
+    let _ = crate::console::stdout().flush();
     // SAFETY: the error the function failed with, and its name as C text.
     unsafe {
         let name = CStr::from_ptr(name).to_string_lossy();
         let error = &**err;
-        eprintln!(
+        report!(
             "fatal error: the finally function `{name}` failed: {}: {}",
-            error.code, error.message
+            error.code,
+            error.message
         );
         if let Some(location) = &error.location {
-            eprintln!("  --> {location}");
+            report!("  --> {location}");
         }
     }
-    std::process::exit(FATAL_STATUS);
+    crate::console::exit(FATAL_STATUS);
 }
 
 /// The exit status of a program that cannot go on, as the interpreter

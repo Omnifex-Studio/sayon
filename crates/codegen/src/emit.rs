@@ -454,11 +454,53 @@ impl<'m> Codegen<'m> {
         let finished = body.tmp();
         body.line(format!("{finished} = call i32 @sayon_tasks_wait_main()"));
         body.line(format!("store i32 {finished}, ptr {result}"));
-        body.line(format!("br label %{go}"));
+        if self.module.target.platform == "web" {
+            // While every task sleeps, `main` stops and the browser waits,
+            // then resumes it to run the tasks on.
+            let sleeping = body.tmp();
+            body.line(format!("{sleeping} = icmp eq i32 {finished}, 2"));
+            let host = body.label("host");
+            let awake = body.label("awake");
+            body.line(format!("br i1 {sleeping}, label %{host}, label %{go}"));
+            body.start(&host);
+            let point = body.tmp();
+            body.line(format!(
+                "{point} = call i8 @llvm.coro.suspend(token none, i1 false)"
+            ));
+            body.line(format!(
+                "switch i8 {point}, label %coro.suspended [ i8 0, label %{awake} i8 1, label %coro.destroyed ]"
+            ));
+            body.start(&awake);
+            let again = body.tmp();
+            body.line(format!("{again} = call i32 @sayon_tasks_go_on()"));
+            body.line(format!("store i32 {again}, ptr {result}"));
+            let still = body.tmp();
+            body.line(format!("{still} = icmp eq i32 {again}, 2"));
+            body.line(format!("br i1 {still}, label %{host}, label %{go}"));
+        } else {
+            body.line(format!("br label %{go}"));
+        }
         body.start(&go);
         let final_status = body.tmp();
         body.line(format!("{final_status} = load i32, ptr {result}"));
         final_status
+    }
+
+    /// Ends `main` with the exit status `code`: returns it, or in a web page
+    /// leaves it for `sayon_run` to give the browser, since there `main` may
+    /// be a coroutine, whose own status says only whether it finished.
+    fn main_exit(&self, body: &mut Body, code: &str) {
+        if self.module.target.platform != "web" {
+            body.line(format!("ret i32 {code}"));
+            return;
+        }
+        body.line(format!("store i32 {code}, ptr @sayon.exit"));
+        if self.coroutines.is_empty() {
+            body.line("ret i32 0");
+        } else {
+            body.line("store i32 0, ptr %coro.result");
+            body.line("br label %coro.final");
+        }
     }
 
     fn emit_main(&mut self) -> String {
@@ -508,7 +550,7 @@ impl<'m> Codegen<'m> {
         body.start("tasks_decided");
         body.code.push_str(&release_globals);
         body.line("call void @sayon_runtime_finish()");
-        body.line(format!("ret i32 {tasks}"));
+        self.main_exit(&mut body, &tasks);
         body.start("main_decides");
         body.code.push_str(&release_globals);
         body.line("call void @sayon_runtime_finish()");
@@ -528,9 +570,9 @@ impl<'m> Codegen<'m> {
             };
             let code = body.tmp();
             body.line(format!("{code} = call i32 @sayon_exit_status(i64 {wide})"));
-            body.line(format!("ret i32 {code}"));
+            self.main_exit(&mut body, &code);
         } else {
-            body.line("ret i32 0");
+            self.main_exit(&mut body, "0");
         }
         body.start(failed);
         // The tasks stop first, so their cleanup comes before the report;
@@ -544,7 +586,7 @@ impl<'m> Codegen<'m> {
         body.line(format!("call void @sayon_error_drop(ptr {error})"));
         body.code.push_str(&release_globals);
         body.line("call void @sayon_runtime_finish()");
-        body.line(format!("ret i32 {tasks}"));
+        self.main_exit(&mut body, &tasks);
         body.start("report");
         let problem = body.tmp();
         body.line(format!("{problem} = load ptr, ptr {error}"));
@@ -554,7 +596,10 @@ impl<'m> Codegen<'m> {
         ));
         body.code.push_str(&release_globals);
         body.line("call void @sayon_runtime_finish()");
-        body.line(format!("ret i32 {code}"));
+        self.main_exit(&mut body, &code);
+        if module.target.platform == "web" {
+            return self.web_main(&body);
+        }
         // WASI's C library starts the program by calling the name C
         // compilers give a `main` that takes its arguments.
         let name = if module.target.platform == "wasi" {
@@ -566,6 +611,27 @@ impl<'m> Codegen<'m> {
             "define i32 @{name}(i32 %argc, ptr %argv) {{\nentry:\n{}{}}}\n",
             body.allocas, body.code
         )
+    }
+
+    /// A web page's program: `@sayon.main`, a coroutine when its tasks can
+    /// wait, and `sayon_run`, which the page's glue calls (see
+    /// `coroutines::WEB_ENTRY`).
+    fn web_main(&self, body: &Body) -> String {
+        let main = if self.coroutines.is_empty() {
+            format!(
+                "define internal i32 @sayon.main() {{\nentry:\n{}{}}}\n",
+                body.allocas, body.code
+            )
+        } else {
+            format!(
+                "define internal i32 @sayon.main() presplitcoroutine {{\nentry:\n{}{}{}{}}}\n",
+                body.allocas,
+                crate::coroutines::PROLOGUE,
+                body.code,
+                crate::coroutines::in_dialect(crate::coroutines::EPILOGUE, self.dialect),
+            )
+        };
+        format!("{main}\n{}", crate::coroutines::WEB_ENTRY)
     }
 }
 

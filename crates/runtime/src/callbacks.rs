@@ -55,7 +55,7 @@ fn newest<R>(function: i32, f: impl FnOnce(&mut Frame) -> R) -> R {
             .rev()
             .find(|frame| frame.function == function as u32)
         else {
-            eprintln!(
+            report!(
                 "fatal error: C called a Sayon function after the call it was given to returned, or on another thread"
             );
             std::process::abort();

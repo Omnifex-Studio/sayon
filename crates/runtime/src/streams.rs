@@ -92,7 +92,7 @@ fn reader<T>(
         Handle::Decoded(reader) => f(reader, &entry.path),
         Handle::Input => {
             // What the program wrote shows before it waits for input.
-            let _ = std::io::stdout().flush();
+            let _ = crate::console::stdout().flush();
             f(&mut std::io::stdin().lock(), &entry.path)
         }
         Handle::Writer(_) => Err((
@@ -570,7 +570,7 @@ pub fn flush_all() {
             }
             Handle::Socket(Socket::Connection(connection)) => connection.send_rest(),
             Handle::Output => {
-                let _ = std::io::stdout().flush();
+                let _ = crate::console::stdout().flush();
             }
             _ => {}
         }
@@ -727,13 +727,13 @@ pub fn write(id: i64, bytes: &[u8]) -> Result<(), HostError> {
     }
     match standard_stream(id) {
         1 => {
-            return std::io::stdout()
+            return crate::console::stdout()
                 .write_all(bytes)
                 .map_err(|e| ("IOError", format!("could not write output: {e}")));
         }
         2 => {
-            let _ = std::io::stdout().flush();
-            return std::io::stderr()
+            let _ = crate::console::stdout().flush();
+            return crate::console::stderr()
                 .write_all(bytes)
                 .map_err(|e| ("IOError", format!("could not write error output: {e}")));
         }
@@ -757,7 +757,7 @@ pub fn flush(id: i64) -> Result<(), HostError> {
     }
     match standard_stream(id) {
         1 => {
-            return std::io::stdout()
+            return crate::console::stdout()
                 .flush()
                 .map_err(|e| ("IOError", format!("could not write output: {e}")));
         }
@@ -838,7 +838,7 @@ pub fn close(id: i64) -> Result<(), HostError> {
         pipe.close()?;
     }
     if standard_stream(id) == 1 {
-        let _ = std::io::stdout().flush();
+        let _ = crate::console::stdout().flush();
     }
     let mut table = table();
     let entry = table
@@ -883,7 +883,7 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
         Handle::Reader(reader) => reader,
         Handle::Decoded(reader) => reader,
         Handle::Input => {
-            let _ = std::io::stdout().flush();
+            let _ = crate::console::stdout().flush();
             input = std::io::stdin().lock();
             &mut input
         }

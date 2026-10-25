@@ -18,6 +18,7 @@
 // those of `ffi`, where their contracts are described.
 #![allow(clippy::missing_safety_doc)]
 
+use crate::clock::Instant;
 use crate::ffi::{DropFn, SayonArray, SayonError, allocated, released, set_error};
 use crate::host::{CANCELLED_CODE, EXIT_CODE, exit_status};
 use crate::network::{self, IoWait};
@@ -27,7 +28,7 @@ use std::ffi::{c_char, c_void};
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 // ----- fibers of the operating system ---------------------------------------------------------
 
@@ -184,7 +185,7 @@ mod os {
                 0,
             );
             if stack as isize == -1 {
-                eprintln!("fatal error: no memory for a task's stack");
+                report!("fatal error: no memory for a task's stack");
                 std::process::abort();
             }
             mprotect(stack, PAGE, PROT_NONE);
@@ -238,7 +239,7 @@ mod os {
     use std::ffi::c_void;
 
     fn unavailable() -> ! {
-        eprintln!("fatal error: compiled programs can run tasks only on Windows and Linux so far");
+        report!("fatal error: compiled programs can run tasks only on Windows and Linux so far");
         std::process::abort()
     }
 
@@ -509,7 +510,21 @@ struct Scheduler {
     current: usize,
     stopping: bool,
     exit_status: Option<i32>,
+    /// In a web page, when every task sleeps: how long the browser is to
+    /// wait before running the scheduler again.
+    host_wait: Option<Duration>,
+    /// Without fibers: how the next fiber was last chosen, to choose again
+    /// once the browser has waited.
+    choose: fn() -> usize,
 }
+
+/// Whether the tasks' scheduler must never block: in a web page, control
+/// goes back to the browser's event loop while every task sleeps.
+const EVENT_LOOP: bool = cfg!(all(target_family = "wasm", target_os = "unknown"));
+
+/// The choice of fiber that gives control back to the browser, until the
+/// earliest sleeping task may go on.
+const HOST: usize = usize::MAX;
 
 thread_local! {
     static SCHEDULER: UnsafeCell<Option<Scheduler>> = const { UnsafeCell::new(None) };
@@ -530,6 +545,8 @@ fn scheduler() -> &'static mut Scheduler {
             current: 0,
             stopping: false,
             exit_status: None,
+            host_wait: None,
+            choose: after_wait,
         })
     }
 }
@@ -691,7 +708,7 @@ fn next_fiber() -> Option<usize> {
                 wake = Some(wake.map_or(until, |w| w.min(until)));
             }
         }
-        let _ = std::io::stdout().flush();
+        let _ = crate::console::stdout().flush();
         let timeout = wake.map(|w| w.saturating_duration_since(now));
         if !sockets.is_empty() {
             network::wait_any(&sockets, timeout);
@@ -702,6 +719,11 @@ fn next_fiber() -> Option<usize> {
         } else if network::has_waker() {
             // Another thread can end the wait early, to cancel a task.
             network::wait_any(&[], Some(timeout?));
+        } else if EVENT_LOOP {
+            // A page cannot sleep: the browser runs the scheduler again
+            // once the earliest sleeping task may go on.
+            scheduler().host_wait = Some(timeout?);
+            return None;
         } else {
             std::thread::sleep(timeout?);
         }
@@ -922,10 +944,13 @@ fn finish_task(index: usize, status: i32) {
 
 /// The fiber to run after a task finished: the next that can go on; when
 /// the tasks left wait for each other, one of them, which fails; with none
-/// left, the main task's.
+/// left, the main task's. In a web page, [`HOST`] while every task sleeps.
 fn after_finish() -> usize {
     next_fiber().unwrap_or_else(|| {
         let s = scheduler();
+        if s.host_wait.is_some() {
+            return HOST;
+        }
         match (0..s.fibers.len())
             .find(|&i| !s.fibers[i].done && !matches!(s.fibers[i].wait, Wait::None))
         {
@@ -999,30 +1024,65 @@ fn run(index: usize) -> Ran {
 
 /// Without fibers: the fiber to run after the running one stopped to wait:
 /// the next that can go on, or, when none can, the one that stopped, which
-/// then finds that every task waits.
+/// then finds that every task waits. In a web page, [`HOST`] while every
+/// task sleeps.
 fn after_wait() -> usize {
     next_fiber().unwrap_or_else(|| {
         let s = scheduler();
+        if s.host_wait.is_some() {
+            return HOST;
+        }
         s.fibers[s.current].deadlock = true;
         s.current
     })
 }
 
+/// Without fibers: runs the fibers from `next` until the main task's
+/// functions finish, giving their status, or in a web page until every task
+/// sleeps, giving [`SUSPENDED`].
+fn drive(mut next: usize) -> i32 {
+    loop {
+        if next == HOST {
+            return SUSPENDED;
+        }
+        let choose: fn() -> usize = match run(next) {
+            Ran::Finished(status) if next == 0 => return status,
+            Ran::Finished(_) => after_finish,
+            Ran::Suspended => after_wait,
+        };
+        scheduler().choose = choose;
+        next = choose();
+    }
+}
+
 /// Without fibers: called when the main task's functions stopped to wait.
 /// Runs the tasks, resuming the main task's functions in their turn, until
-/// those finish, and gives their status.
+/// those finish, and gives their status; in a web page, [`SUSPENDED`] when
+/// the browser is to wait first (see `sayon_tasks_go_on`).
 #[unsafe(no_mangle)]
 pub extern "C" fn sayon_tasks_wait_main() -> i32 {
     // SAFETY: the frame the main task's first function left on stopping.
     scheduler().fibers[0].frame = unsafe { *std::ptr::addr_of!(sayon_frame) };
-    let mut next = after_wait();
-    loop {
-        match run(next) {
-            Ran::Finished(status) if next == 0 => return status,
-            Ran::Finished(_) => next = after_finish(),
-            Ran::Suspended => next = after_wait(),
-        }
-    }
+    scheduler().choose = after_wait;
+    drive(after_wait())
+}
+
+/// In a web page, once the browser has waited as long as the scheduler
+/// asked: runs the tasks on, as `sayon_tasks_wait_main` does.
+#[unsafe(no_mangle)]
+pub extern "C" fn sayon_tasks_go_on() -> i32 {
+    let s = scheduler();
+    s.host_wait = None;
+    drive((s.choose)())
+}
+
+/// In a web page: the milliseconds the browser is to wait before calling
+/// `sayon_tasks_go_on`, rounded up, so that a sleeping task can go on then.
+#[unsafe(no_mangle)]
+pub extern "C" fn sayon_wait_milliseconds() -> f64 {
+    scheduler()
+        .host_wait
+        .map_or(0.0, |wait| (wait.as_secs_f64() * 1000.0).ceil())
 }
 
 /// Without fibers: calls the running task's waiting operation again, once
@@ -1290,8 +1350,9 @@ pub(crate) fn finish_local_tasks(main_failed: bool) -> i32 {
         };
         if STACKLESS {
             // The tasks run in turn until the main task's comes again.
+            // Stopping tasks never sleep, so the browser need not wait.
             let mut next = index;
-            while next != 0 {
+            while next != 0 && next != HOST {
                 next = match run(next) {
                     Ran::Suspended => after_wait(),
                     Ran::Finished(_) => after_finish(),
@@ -1302,7 +1363,7 @@ pub(crate) fn finish_local_tasks(main_failed: bool) -> i32 {
         }
         scheduler().current = 0;
     }
-    let _ = std::io::stdout().flush();
+    let _ = crate::console::stdout().flush();
     let mut failed = false;
     // The main task's fiber stays, for the finally functions that destroy
     // the program's constants.
@@ -1323,9 +1384,9 @@ pub(crate) fn finish_local_tasks(main_failed: bool) -> i32 {
                     && !main_failed
                 {
                     failed = true;
-                    eprintln!("error: a task failed: {}: {}", error.code, error.message);
+                    report!("error: a task failed: {}: {}", error.code, error.message);
                     if let Some(location) = &error.location {
-                        eprintln!("  --> {location}");
+                        report!("  --> {location}");
                     }
                 }
             }

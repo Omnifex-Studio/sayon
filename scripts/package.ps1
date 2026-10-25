@@ -10,6 +10,7 @@
 #   bin/sayon.exe            the command-line tool
 #   lib/sayon_runtime.lib    linked into native builds
 #   lib/wasm32-wasip1/       the runtime for WASI, with WASI's C library
+#   lib/wasm32-unknown-unknown/  the runtime for web pages
 #   stdlib/                  the standard library
 #   docs/, examples/, editors/vscode/, README.md, INSTALL.txt
 #
@@ -35,6 +36,8 @@ cargo build --release -p sayon-cli -p sayon-runtime
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 cargo build --release -p sayon-runtime --target wasm32-wasip1
 if ($LASTEXITCODE -ne 0) { throw "building the runtime for WASI failed" }
+cargo build --release -p sayon-runtime --target wasm32-unknown-unknown
+if ($LASTEXITCODE -ne 0) { throw "building the runtime for web pages failed" }
 # WASI's C library (wasi-libc), as the Rust toolchain ships it.
 $sysroot = (rustc --print sysroot).Trim()
 $wasiLibc = Join-Path $sysroot "lib/rustlib/wasm32-wasip1/lib/self-contained"
@@ -61,6 +64,9 @@ WASI include parts of it. Its license, which allows this, is at
 https://github.com/WebAssembly/wasi-libc/blob/main/LICENSE
 "@
 Set-Content -Path (Join-Path $wasi "NOTICE.txt") -Value $notice -Encoding utf8
+$web = Join-Path $stage "lib/wasm32-unknown-unknown"
+New-Item -ItemType Directory -Force $web | Out-Null
+Copy-Item "target/wasm32-unknown-unknown/release/libsayon_runtime.a" $web
 Copy-Item "stdlib/*.sayon" (Join-Path $stage "stdlib")
 Copy-Item "docs/*.md" (Join-Path $stage "docs")
 Copy-Item "examples/*.sayon" (Join-Path $stage "examples")
@@ -87,7 +93,8 @@ Native builds (``sayon build``, ``sayon run --native``) also need clang from LLV
 install it from https://releases.llvm.org, then run ``sayon doctor`` again.
 Programs you build this way run on other Windows machines without Sayon or LLVM.
 ``sayon build --target wasi`` builds WebAssembly programs that run under a WASI
-host such as wasmtime; it uses the same clang.
+host such as wasmtime, and ``sayon build --target web`` ones for web pages, with
+the JavaScript that runs them and a page; they use the same clang.
 
 To start a project: sayon init hello, then cd hello and sayon run.
 Editor support for VS Code is in editors/vscode; see its README.

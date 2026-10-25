@@ -336,6 +336,12 @@ fn build_for(
     let destination = output.unwrap_or_else(|| default_output(source, release, target));
     match compile_native(&compiled, &destination, release) {
         Ok(()) => {
+            if target.platform == "web"
+                && let Err(message) = write_web_files(&destination)
+            {
+                eprintln!("error: {message}");
+                return status::BUILD_FAILED;
+            }
             if !options.quiet {
                 eprintln!("built {}", destination.display());
             }
@@ -346,6 +352,26 @@ fn build_for(
             status::BUILD_FAILED
         }
     }
+}
+
+/// Beside a module built for web pages, the glue that runs it (`.js`) and a
+/// page that shows its output (`.html`).
+fn write_web_files(module: &Path) -> Result<(), String> {
+    let name = |path: &Path| {
+        path.file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default()
+    };
+    let glue = module.with_extension("js");
+    let page = module.with_extension("html");
+    let title = module
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    std::fs::write(&glue, sayon_codegen::web::glue(&name(module)))
+        .map_err(|e| format!("cannot write {}: {e}", glue.display()))?;
+    std::fs::write(&page, sayon_codegen::web::page(&title, &name(&glue)))
+        .map_err(|e| format!("cannot write {}: {e}", page.display()))
 }
 
 /// `sayon target list`: every target, how far its support has come, and
@@ -414,6 +440,14 @@ pub fn target_setup(name: &str) -> u8 {
             "Built on any computer with clang and its WebAssembly linker (wasm-ld), and the runtime \
              for {}; the programs run under a WASI host such as wasmtime, with the folders they may \
              use given to them (`wasmtime run --dir . program.wasm`).",
+            target.triple
+        );
+    } else if target.platform == "web" && target.built_anywhere() {
+        println!(
+            "Built on any computer with clang and its WebAssembly linker (wasm-ld), and the runtime \
+             for {}: a module, the JavaScript glue that runs it (.js), and a page that shows its \
+             output (.html). Serve the folder over HTTP and open the page; browsers load modules \
+             only from a server.",
             target.triple
         );
     } else if target.state >= sayon_target::State::Buildable {
@@ -810,9 +844,12 @@ pub fn doctor() -> u8 {
             line(false, "native toolchain", first);
         }
     }
-    // Building for WASI is optional: without it, the rest works.
-    if let Some(wasi) = sayon_target::find("wasi") {
-        let (state, detail) = match sayon_codegen::Toolchain::locate(exe_dir.as_deref(), wasi) {
+    // Building WebAssembly programs is optional: without it, the rest works.
+    for (name, label) in [("wasi", "WASI runtime"), ("web", "web runtime")] {
+        let Some(target) = sayon_target::find(name) else {
+            continue;
+        };
+        let (state, detail) = match sayon_codegen::Toolchain::locate(exe_dir.as_deref(), target) {
             Ok(toolchain) => (
                 "ok",
                 toolchain
@@ -824,7 +861,7 @@ pub fn doctor() -> u8 {
             ),
             Err(message) => ("absent", message.lines().next().unwrap_or("").to_string()),
         };
-        println!("  {state:<8} {:<18} {detail}", "WASI runtime");
+        println!("  {state:<8} {label:<18} {detail}");
     }
     if healthy {
         println!("Everything is in place: sayon run, test, and native builds are available.");
