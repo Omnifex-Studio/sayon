@@ -6,11 +6,13 @@
 //! clang installation is needed at build time, and nothing is needed to run
 //! the produced program.
 
+pub mod android;
 mod coroutines;
 mod emit;
 mod helpers;
 mod layout;
 pub mod web;
+mod zip;
 
 pub use emit::Codegen;
 
@@ -41,6 +43,15 @@ pub struct Dialect {
     pub coroutine_end_void: bool,
 }
 
+/// What linking makes of a program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Product {
+    /// An executable, or for WebAssembly a module.
+    Executable,
+    /// The shared library an Android app's package holds (see `android`).
+    AppLibrary,
+}
+
 /// External tools and libraries needed to link a program for a target.
 pub struct Toolchain {
     pub clang: PathBuf,
@@ -69,14 +80,19 @@ impl Toolchain {
     /// target's in `../lib/<triple>`: an installation's `lib`, or for a
     /// development build in `target/<profile>`, `target/lib`.
     /// `SAYON_CLANG` and, for this computer's target, `SAYON_RUNTIME_LIB`
-    /// override the search.
+    /// override the search. Android's programs are compiled by the NDK's
+    /// clang, which knows Android's C library.
     pub fn locate(exe_dir: Option<&Path>, target: &'static Target) -> Result<Toolchain, String> {
-        let clang = clang().ok_or_else(|| {
-            "clang was not found. Native builds use LLVM's clang to compile and link.\n\
-             Install LLVM (https://releases.llvm.org) and make sure clang is on PATH, \
-             or set SAYON_CLANG to the clang executable."
-                .to_string()
-        })?;
+        let clang = if target.platform == "android" {
+            android::Sdk::locate(target)?.clang()?
+        } else {
+            clang().ok_or_else(|| {
+                "clang was not found. Native builds use LLVM's clang to compile and link.\n\
+                 Install LLVM (https://releases.llvm.org) and make sure clang is on PATH, \
+                 or set SAYON_CLANG to the clang executable."
+                    .to_string()
+            })?
+        };
         let file = runtime_file(target);
         let runtime = match std::env::var_os("SAYON_RUNTIME_LIB") {
             Some(path) if target.is_host() => PathBuf::from(path),
@@ -206,6 +222,9 @@ fn system_libraries(target: &Target) -> &'static [&'static str] {
         ],
         "macos" => &["System"],
         "wasi" | "web" => &[],
+        // Android's C library holds threads itself; an app's activity and
+        // the log are Android's own libraries.
+        "android" => &["log", "android", "dl", "m"],
         _ => &["pthread", "dl", "m"],
     }
 }
@@ -234,17 +253,20 @@ pub fn foreign_libraries(module: &Module) -> Vec<String> {
 }
 
 /// Compiles LLVM IR and links it with the runtime and `libraries` into
-/// `output`.
+/// `output`, as `product`.
 pub fn link(
     toolchain: &Toolchain,
     ir_path: &Path,
     output: &Path,
     optimize: bool,
     libraries: &[String],
+    product: Product,
 ) -> Result<(), String> {
     let target = toolchain.target;
     let mut command = Command::new(&toolchain.clang);
-    if !target.is_host() {
+    if target.platform == "android" {
+        command.arg(format!("--target={}", android::clang_target(target)));
+    } else if !target.is_host() {
         command.arg(format!("--target={}", target.triple));
     }
     command.arg(ir_path).arg(&toolchain.runtime);
@@ -269,6 +291,19 @@ pub fn link(
             command.arg(format!("-Wl,--export={export}"));
         }
         command.arg("-Wl,-z,stack-size=8388608");
+    }
+    if target.platform == "android" {
+        // Segments fit pages of 16 KiB, which newer devices use, as well as
+        // those of 4 KiB.
+        command.arg("-Wl,-z,max-page-size=16384");
+        if product == Product::AppLibrary {
+            // The activity starts the program through the runtime's
+            // entry, which nothing in the program calls.
+            command
+                .arg("-shared")
+                .arg("-Wl,-soname,libmain.so")
+                .arg("-Wl,-u,ANativeActivity_onCreate");
+        }
     }
     command
         .arg("-o")

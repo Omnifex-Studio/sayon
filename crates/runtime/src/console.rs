@@ -1,15 +1,46 @@
 //! The program's standard output and errors, how it ends at once, and the
 //! options its host sets: the process's own, or in a web page (a WebAssembly
 //! module with no system beneath it) what the page's generated glue gives
-//! through the host functions of the import module `sayon`.
+//! through the host functions of the import module `sayon`. In an Android
+//! app, the output and errors go to Android's log (see `android`).
 
-#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+#[cfg(not(any(
+    all(target_family = "wasm", target_os = "unknown"),
+    target_os = "android"
+)))]
 pub use std::io::{stderr, stdout};
 
 /// Ends the program at once with `status`, without cleanup.
-#[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
+#[cfg(not(any(
+    all(target_family = "wasm", target_os = "unknown"),
+    target_os = "android"
+)))]
 pub fn exit(status: i32) -> ! {
     std::process::exit(status)
+}
+
+#[cfg(target_os = "android")]
+pub fn stdout() -> crate::android::Stream {
+    crate::android::Stream(1)
+}
+
+#[cfg(target_os = "android")]
+pub fn stderr() -> crate::android::Stream {
+    crate::android::Stream(2)
+}
+
+/// Ends the program at once with `status`, without cleanup. In an app, the
+/// program's activity finishes, and its thread waits for the process to
+/// end with it.
+#[cfg(target_os = "android")]
+pub fn exit(status: i32) -> ! {
+    if !crate::android::in_app() {
+        std::process::exit(status)
+    }
+    crate::android::ended(status);
+    loop {
+        std::thread::park();
+    }
 }
 
 /// Whether the host sets the option `name`: an environment variable here.

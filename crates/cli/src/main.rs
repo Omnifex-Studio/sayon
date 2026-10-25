@@ -57,6 +57,8 @@ Options:
                                      build; repeatable for check and build)
     --release                        Optimize native code (build, run --native)
     --emit-llvm                      Write LLVM IR instead of an executable (build)
+    --executable                     For Android, a program to run from adb shell
+                                     instead of an app's package (build)
     --check                          Report unformatted files without changing them (fmt)
     --deny warnings                  Fail when there are warnings (lint)
     --locked                         Fail instead of changing sayon.lock (install)
@@ -186,7 +188,7 @@ fn dispatch(args: &[String]) -> u8 {
         "check" => (&["--quiet"], &["--color", "--target"], false),
         "lint" => (&["--quiet"], &["--color", "--deny", "--target"], false),
         "build" => (
-            &["--quiet", "--release", "--emit-llvm"],
+            &["--quiet", "--release", "--emit-llvm", "--executable"],
             &["--color", "--output", "--target"],
             false,
         ),
@@ -260,6 +262,7 @@ fn dispatch(args: &[String]) -> u8 {
                     parsed.values.get("--output").map(Into::into),
                     parsed.flag("--release"),
                     parsed.flag("--emit-llvm"),
+                    parsed.flag("--executable"),
                     &targets,
                 ),
             }

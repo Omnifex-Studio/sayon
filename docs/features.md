@@ -59,7 +59,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | C callbacks: Sayon function values, with what they captured, as parameters of C functions that call them during the call; failures raised once C returns; compiled programs on every target, the interpreter on Windows x64 and Linux x86-64 | experimental | M3 |
 | C callbacks that C keeps and calls after the call, or on other threads | planned | M4 |
 | Finally functions: a structure's own destruction, wherever its values are destroyed; never copied, cannot wait, failures fatal | experimental | M3 |
-| Tasks (fibers) and channels: `standard/threads` `spawn`, `join`, `detach`, `pause`, bounded, unbounded, and rendezvous channels, `receive_result`, `recoverable_send`, `select`; cancellation with cleanup, shutdown of tasks at the end of `main`, deadlock detection; native on Windows and Linux x86-64 | experimental | M3 |
+| Tasks (fibers) and channels: `standard/threads` `spawn`, `join`, `detach`, `pause`, bounded, unbounded, and rendezvous channels, `receive_result`, `recoverable_send`, `select`; cancellation with cleanup, shutdown of tasks at the end of `main`, deadlock detection; native on Windows and Linux x86-64, and on Android (x86-64 and ARM64) | experimental | M3 |
 | Native tasks on macOS and on ARM64 | planned | with each platform's validation |
 | Compile-time platform branches: `platform`, `processor`, `supports("capability")`; only the selected branch is checked and compiled | experimental | M4 |
 | Capabilities: each target's are recorded, and a program's needs are found by following its calls through the standard library; a lacking target is an error at the program's own code | experimental | M4 |
@@ -77,7 +77,9 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Tasks and channels in WebAssembly programs (WASI): functions that can wait lowered to LLVM coroutines, a scheduler without fibers taking the same turns as the interpreter's | experimental | M4 |
 | Building for web pages (`--target web`) on any computer: a `wasm32-unknown-unknown` module with generated JavaScript glue and a page; the program never blocks the page, its tasks waking through the event loop; checked in Edge, Chrome, and Firefox and in Node against the interpreter | experimental | M4 |
 | HTTP in web pages: `standard/network`'s `get`, `post`, and `request` through the browser's `fetch`, the task waiting while the others run; checked in Edge, Chrome, Firefox, and Node against the interpreter | experimental | M4 |
-| Building on one system for another (Android and the other desktop systems) | planned | M4 to M7, with each target |
+| Android apps (`--target android-x64`, `android-arm64`) on any computer with the Android SDK: the program as the native library of a `NativeActivity` package, aligned for 16 KiB pages and signed with the debug key; output to Android's log; `--executable` for `adb shell`; checked on the emulator against the interpreter, ARM64 through translation | experimental | M4 |
+| TLS, time zones, and C structures on ARM64 in Android programs; release signing | planned | M5 |
+| Building on one system for another desktop system | planned | M5 to M7, with each target |
 | Diagnostics with stable codes and source excerpts | experimental | M1 |
 | VS Code syntax highlighting and file icon | experimental | M1 |
 | `sayon test` with `test` blocks (interpreter) | experimental | M1 |
@@ -136,5 +138,6 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Windows and Linux ARM64 | yes | no | no | no |
 | WASI (`wasm32-wasip1`) | yes | yes, from any computer | yes, under wasmtime 50 | no |
 | Web pages (`wasm32-unknown-unknown`) | yes | yes, from any computer | yes, in Edge 156, Chrome 156, Firefox 158, and Node 24 | no |
-| Android (`android-arm64`, `android-x64`) | yes, checked with `--target` | no | no | no |
+| Android x64 (`x86_64-linux-android`) | yes | yes, from any computer with the Android SDK | yes, on the Android 16 emulator (API 36) | no |
+| Android ARM64 (`aarch64-linux-android`) | yes | yes, from any computer with the Android SDK | through the emulator's translation of ARM code, not yet on a phone | no |
 | macOS, iOS | yes | no | no | no |

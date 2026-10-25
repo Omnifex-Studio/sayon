@@ -177,6 +177,8 @@ pub fn print_diagnostics(
 pub struct Compiled {
     pub sources: SourceMap,
     pub module: sayon_ir::Module,
+    /// The capabilities the program needs.
+    pub needs: Vec<sayon_target::Capability>,
 }
 
 /// The standard library directory: `SAYON_STDLIB`, then `stdlib` next to
@@ -288,6 +290,7 @@ pub fn compile(
         Some(module) if !output.diagnostics.has_errors() => Ok(Compiled {
             sources: output.sources,
             module,
+            needs: output.needs,
         }),
         _ => Err(status::COMPILE_FAILED),
     }
@@ -343,8 +346,14 @@ impl Drop for WorkDir {
     }
 }
 
-/// Compiles a checked program to a native executable at `output`.
-pub fn compile_native(compiled: &Compiled, output: &Path, release: bool) -> Result<(), String> {
+/// Compiles a checked program to a native executable at `output`, or the
+/// library of an Android app.
+pub fn compile_native(
+    compiled: &Compiled,
+    output: &Path,
+    release: bool,
+    product: sayon_codegen::Product,
+) -> Result<(), String> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(Path::to_path_buf));
@@ -363,5 +372,37 @@ pub fn compile_native(compiled: &Compiled, output: &Path, release: bool) -> Resu
             .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
     }
     let libraries = sayon_codegen::foreign_libraries(&compiled.module);
-    sayon_codegen::link(&toolchain, &ir_path, output, release, &libraries)
+    sayon_codegen::link(&toolchain, &ir_path, output, release, &libraries, product)
+}
+
+/// Builds an Android app's package at `output`, named `name`: the program
+/// as the library it holds, then the package around it. Without
+/// `release`, the package is debuggable.
+pub fn compile_android_app(
+    compiled: &Compiled,
+    output: &Path,
+    release: bool,
+    name: &str,
+) -> Result<(), String> {
+    use sayon_target::Capability;
+    let target = compiled.module.target;
+    // Every tool is found before anything is compiled.
+    let tools = sayon_codegen::android::Sdk::locate(target)?.packaging(target)?;
+    let work = WorkDir::create()?;
+    let library = work.0.join("libmain.so");
+    compile_native(
+        compiled,
+        &library,
+        release,
+        sayon_codegen::Product::AppLibrary,
+    )?;
+    if let Some(parent) = output.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    let internet = compiled
+        .needs
+        .iter()
+        .any(|need| matches!(need, Capability::Network | Capability::Http));
+    sayon_codegen::android::package(&tools, &library, target, name, output, !release, internet)
 }

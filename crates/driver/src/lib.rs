@@ -39,6 +39,9 @@ pub struct Output {
     pub diagnostics: Diagnostics,
     /// The lowered program, when there were no errors.
     pub module: Option<sayon_ir::Module>,
+    /// The capabilities the program needs, as [`sayon_check::usage::needs`]
+    /// finds them.
+    pub needs: Vec<sayon_target::Capability>,
 }
 
 /// The entry file could not be read at all.
@@ -89,6 +92,7 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
                 sources,
                 diagnostics,
                 module: None,
+                needs: Vec::new(),
             });
         }
     };
@@ -113,6 +117,7 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
             sources,
             diagnostics,
             module: None,
+            needs: Vec::new(),
         });
     }
     let inputs: Vec<ModuleSource> = modules
@@ -138,9 +143,11 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
         .filter(|m| !m.standard && !m.dependency)
         .map(|m| m.file)
         .collect();
+    let mut needs = Vec::new();
     if let Some(program) = &checked.program {
         let own = |span: Span| user_files.contains(&span.file);
         for need in sayon_check::usage::needs(program, &own) {
+            needs.push(need.capability);
             if !options.target.provides(need.capability) {
                 diagnostics.push(missing_capability(options.target, need));
             }
@@ -180,6 +187,7 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
         sources,
         diagnostics,
         module,
+        needs,
     })
 }
 

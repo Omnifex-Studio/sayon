@@ -209,6 +209,7 @@ impl Target {
         match self.platform {
             "windows" => ".exe",
             "web" | "wasi" => ".wasm",
+            "android" => ".apk",
             _ => "",
         }
     }
@@ -220,9 +221,10 @@ impl Target {
 
     /// Whether the compiler builds programs for it on any computer, not
     /// only on a computer of the target itself: a buildable WebAssembly
-    /// target, whose programs are the same wherever they are built.
+    /// target, whose programs are the same wherever they are built, or
+    /// Android, whose SDK builds on each desktop system.
     pub fn built_anywhere(&self) -> bool {
-        self.state >= State::Buildable && self.processor == "wasm32"
+        self.state >= State::Buildable && (self.processor == "wasm32" || self.platform == "android")
     }
 
     /// Whether the running compiler builds programs for it.
@@ -362,7 +364,7 @@ pub static TARGETS: &[Target] = &[
         platform: "android",
         processor: "arm64",
         pointer_size: 8,
-        state: State::Specified,
+        state: State::Buildable,
         planned: "M4",
         capabilities: MOBILE,
     },
@@ -372,7 +374,7 @@ pub static TARGETS: &[Target] = &[
         platform: "android",
         processor: "x64",
         pointer_size: 8,
-        state: State::Specified,
+        state: State::Executed,
         planned: "M4",
         capabilities: MOBILE,
     },
@@ -528,9 +530,11 @@ mod tests {
     }
 
     #[test]
-    fn webassembly_is_built_anywhere() {
+    fn webassembly_and_android_are_built_anywhere() {
         assert!(find("wasi").unwrap().builds_here());
-        assert!(!find("android").unwrap().built_anywhere());
+        assert!(find("android").unwrap().built_anywhere());
+        assert!(find("android-x64").unwrap().built_anywhere());
+        assert!(!find("macos").unwrap().built_anywhere());
         assert!(find("native").unwrap().builds_here());
     }
 

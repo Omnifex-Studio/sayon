@@ -14,6 +14,8 @@ macro_rules! report {
     }};
 }
 
+#[cfg(target_os = "android")]
+pub mod android;
 pub mod callbacks;
 pub mod clock;
 pub mod console;

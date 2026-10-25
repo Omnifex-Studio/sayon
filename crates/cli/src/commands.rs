@@ -1,7 +1,8 @@
 //! The commands.
 
 use crate::compile::{
-    Options, Source, WorkDir, compile, compile_native, current_project, stdlib_dir,
+    Options, Source, WorkDir, compile, compile_android_app, compile_native, current_project,
+    stdlib_dir,
 };
 use crate::{status, usage_error};
 use sayon_syntax::SourceMap;
@@ -204,7 +205,12 @@ pub fn run_native(
     } else {
         "program"
     });
-    if let Err(message) = compile_native(&compiled, &executable, release) {
+    if let Err(message) = compile_native(
+        &compiled,
+        &executable,
+        release,
+        sayon_codegen::Product::Executable,
+    ) {
         eprintln!("error: {message}");
         return status::BUILD_FAILED;
     }
@@ -227,6 +233,18 @@ pub fn run_native(
 /// under the project's `build/debug` or `build/release` directory. A target
 /// other than this computer's has a name of its own there: `hello-web.wasm`,
 /// or `build/debug/web/hello.wasm`.
+/// The name of the program: its project's, or its file's.
+fn program_name(source: &Source) -> String {
+    match &source.project {
+        Some(project) => project.manifest.name.clone(),
+        None => source
+            .entry
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "program".into()),
+    }
+}
+
 fn default_output(source: &Source, release: bool, target: &Target) -> PathBuf {
     let suffix = target.executable_suffix();
     match &source.project {
@@ -254,13 +272,16 @@ fn default_output(source: &Source, release: bool, target: &Target) -> PathBuf {
     }
 }
 
-/// `sayon build`: an executable for each target.
+/// `sayon build`: an executable for each target, or for Android an app's
+/// package, unless `executable` asks for a program to run from a shell.
+#[allow(clippy::too_many_arguments)]
 pub fn build(
     source: &Source,
     options: &Options,
     output: Option<PathBuf>,
     release: bool,
     emit_llvm: bool,
+    executable: bool,
     targets: &[&'static Target],
 ) -> u8 {
     if output.is_some() && targets.len() > 1 {
@@ -268,7 +289,15 @@ pub fn build(
     }
     let mut result = status::SUCCESS;
     for target in targets {
-        let built = build_for(source, options, output.clone(), release, emit_llvm, target);
+        let built = build_for(
+            source,
+            options,
+            output.clone(),
+            release,
+            emit_llvm,
+            executable,
+            target,
+        );
         result = result.max(built);
     }
     result
@@ -280,6 +309,7 @@ fn build_for(
     output: Option<PathBuf>,
     release: bool,
     emit_llvm: bool,
+    executable: bool,
     target: &'static Target,
 ) -> u8 {
     let compiled = match compile(
@@ -333,8 +363,27 @@ fn build_for(
             }
         };
     }
-    let destination = output.unwrap_or_else(|| default_output(source, release, target));
-    match compile_native(&compiled, &destination, release) {
+    let android_app = target.platform == "android" && !executable;
+    let destination = output.unwrap_or_else(|| {
+        let path = default_output(source, release, target);
+        // A program for `adb shell` has no suffix.
+        if target.platform == "android" && executable {
+            path.with_extension("")
+        } else {
+            path
+        }
+    });
+    let built = if android_app {
+        compile_android_app(&compiled, &destination, release, &program_name(source))
+    } else {
+        compile_native(
+            &compiled,
+            &destination,
+            release,
+            sayon_codegen::Product::Executable,
+        )
+    };
+    match built {
         Ok(()) => {
             if target.platform == "web"
                 && let Err(message) = write_web_files(&destination)
@@ -450,6 +499,8 @@ pub fn target_setup(name: &str) -> u8 {
              only from a server.",
             target.triple
         );
+    } else if target.platform == "android" && target.built_anywhere() {
+        android_setup(target);
     } else if target.state >= sayon_target::State::Buildable {
         println!("So far, programs for {target} are built on {target} itself.");
     } else {
@@ -465,6 +516,61 @@ pub fn target_setup(name: &str) -> u8 {
         println!("Lacks: {}", lacks.join(", "));
     }
     status::SUCCESS
+}
+
+/// What building for Android needs, and which of it this computer has.
+fn android_setup(target: &'static Target) {
+    use sayon_codegen::android;
+    println!(
+        "Built on any computer with the Android SDK (ANDROID_HOME, or where Android Studio puts \
+         it) and its NDK, build tools, and platform android-{}; a JDK, 17 or newer (JAVA_HOME), \
+         for signing; and the runtime for {}.",
+        android::TARGET_API,
+        target.triple,
+    );
+    println!(
+        "`sayon build` writes an app's package (.apk), signed with Android's debug key, for \
+         `adb install`; with `--executable`, a program to run from `adb shell` instead. Apps run \
+         on Android 8.0 (API {}) and newer.",
+        android::MIN_API,
+    );
+    println!("The SDK's own manager installs what is missing, as Sayon's tests use it:");
+    println!(
+        "  sdkmanager \"ndk;{}\" \"build-tools;{}\" \"platforms;android-{}\"",
+        android::NDK_VERSION,
+        android::BUILD_TOOLS_VERSION,
+        android::TARGET_API,
+    );
+    let show = |ok: bool, what: &str, detail: String| {
+        println!(
+            "  {:<8} {what:<12} {detail}",
+            if ok { "ok" } else { "missing" }
+        );
+    };
+    match android::Sdk::locate(target) {
+        Ok(sdk) => {
+            show(true, "SDK", sdk.root.display().to_string());
+            show(true, "NDK", sdk.ndk.display().to_string());
+            match sdk.packaging(target) {
+                Ok(tools) => {
+                    show(
+                        true,
+                        "build tools",
+                        tools
+                            .aapt2
+                            .parent()
+                            .unwrap_or(&tools.aapt2)
+                            .display()
+                            .to_string(),
+                    );
+                    show(true, "platform", tools.platform.display().to_string());
+                    show(true, "Java", tools.java.display().to_string());
+                }
+                Err(message) => show(false, "packaging", message),
+            }
+        }
+        Err(message) => show(false, "SDK", message),
+    }
 }
 
 /// Collects `.sayon` files under a directory in a stable order, skipping
@@ -844,8 +950,14 @@ pub fn doctor() -> u8 {
             line(false, "native toolchain", first);
         }
     }
-    // Building WebAssembly programs is optional: without it, the rest works.
-    for (name, label) in [("wasi", "WASI runtime"), ("web", "web runtime")] {
+    // Building for WebAssembly and Android is optional: without it, the
+    // rest works.
+    for (name, label) in [
+        ("wasi", "WASI runtime"),
+        ("web", "web runtime"),
+        ("android-x64", "Android x64"),
+        ("android-arm64", "Android ARM64"),
+    ] {
         let Some(target) = sayon_target::find(name) else {
             continue;
         };

@@ -1,13 +1,13 @@
 # Compile-time platform branches: only the branch the target selects is
 # checked and compiled, so the others can name what this target lacks.
 
-function on_a_phone() -> boolean
-    if platform == "android" or platform == "ios"
-        return phone_model() != ""
+function on_an_iphone() -> boolean
+    if platform == "ios"
+        return iphone_model() != ""
     else
         return false
 
-print(on_a_phone())
+print(on_an_iphone())
 print(supports("clock"), supports("json"))
 print(processor == "x64" or processor == "arm64" or processor == "wasm32")
 

@@ -12,6 +12,8 @@
 #   lib/libsayon_runtime.a       linked into native builds
 #   lib/wasm32-wasip1/           the runtime for WASI, with WASI's C library
 #   lib/wasm32-unknown-unknown/  the runtime for web pages
+#   lib/x86_64-linux-android/, lib/aarch64-linux-android/  the runtimes for
+#                                Android apps (x86-64 for emulators, ARM64 for phones)
 #   stdlib/                      the standard library
 #   docs/, examples/, editors/vscode/, README.md, INSTALL.txt
 #
@@ -44,6 +46,10 @@ command -v python3 > /dev/null || { echo "python3 is needed to write the install
 cargo build --release -p sayon-cli -p sayon-runtime
 cargo build --release -p sayon-runtime --target wasm32-wasip1
 cargo build --release -p sayon-runtime --target wasm32-unknown-unknown
+android_triples="x86_64-linux-android aarch64-linux-android"
+for triple in $android_triples; do
+    cargo build --release -p sayon-runtime --target "$triple"
+done
 # WASI's C library (wasi-libc), as the Rust toolchain ships it.
 wasi_libc="$(rustc --print sysroot)/lib/rustlib/wasm32-wasip1/lib/self-contained"
 
@@ -67,6 +73,10 @@ https://github.com/WebAssembly/wasi-libc/blob/main/LICENSE
 EOF
 mkdir -p "$stage/lib/wasm32-unknown-unknown"
 cp target/wasm32-unknown-unknown/release/libsayon_runtime.a "$stage/lib/wasm32-unknown-unknown/"
+for triple in $android_triples; do
+    mkdir -p "$stage/lib/$triple"
+    cp "target/$triple/release/libsayon_runtime.a" "$stage/lib/$triple/"
+done
 cp stdlib/*.sayon "$stage/stdlib/"
 cp docs/*.md "$stage/docs/"
 cp examples/*.sayon "$stage/examples/"

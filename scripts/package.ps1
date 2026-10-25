@@ -11,6 +11,8 @@
 #   lib/sayon_runtime.lib    linked into native builds
 #   lib/wasm32-wasip1/       the runtime for WASI, with WASI's C library
 #   lib/wasm32-unknown-unknown/  the runtime for web pages
+#   lib/x86_64-linux-android/, lib/aarch64-linux-android/  the runtimes for
+#                            Android apps (x86-64 for emulators, ARM64 for phones)
 #   stdlib/                  the standard library
 #   docs/, examples/, editors/vscode/, README.md, INSTALL.txt
 #
@@ -38,6 +40,11 @@ cargo build --release -p sayon-runtime --target wasm32-wasip1
 if ($LASTEXITCODE -ne 0) { throw "building the runtime for WASI failed" }
 cargo build --release -p sayon-runtime --target wasm32-unknown-unknown
 if ($LASTEXITCODE -ne 0) { throw "building the runtime for web pages failed" }
+$androidTriples = "x86_64-linux-android", "aarch64-linux-android"
+foreach ($triple in $androidTriples) {
+    cargo build --release -p sayon-runtime --target $triple
+    if ($LASTEXITCODE -ne 0) { throw "building the runtime for $triple failed" }
+}
 # WASI's C library (wasi-libc), as the Rust toolchain ships it.
 $sysroot = (rustc --print sysroot).Trim()
 $wasiLibc = Join-Path $sysroot "lib/rustlib/wasm32-wasip1/lib/self-contained"
@@ -67,6 +74,11 @@ Set-Content -Path (Join-Path $wasi "NOTICE.txt") -Value $notice -Encoding utf8
 $web = Join-Path $stage "lib/wasm32-unknown-unknown"
 New-Item -ItemType Directory -Force $web | Out-Null
 Copy-Item "target/wasm32-unknown-unknown/release/libsayon_runtime.a" $web
+foreach ($triple in $androidTriples) {
+    $android = Join-Path $stage "lib/$triple"
+    New-Item -ItemType Directory -Force $android | Out-Null
+    Copy-Item "target/$triple/release/libsayon_runtime.a" $android
+}
 Copy-Item "stdlib/*.sayon" (Join-Path $stage "stdlib")
 Copy-Item "docs/*.md" (Join-Path $stage "docs")
 Copy-Item "examples/*.sayon" (Join-Path $stage "examples")

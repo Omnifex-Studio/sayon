@@ -243,7 +243,7 @@ fn wasi_programs_match_the_interpreter() {
         "the WASI checks are pinned to {WASMTIME_VERSION}, but found {version}"
     );
     let dir = tests_dir().join("programs");
-    let mut built = build_programs(&dir, "wasi", "wasmtime");
+    let mut built = build_programs(&dir, "wasi", "wasmtime", "wasm", &[]);
     let mut failures = std::mem::take(&mut built.failures);
     for (source, wasm) in &built.programs {
         let input = read_expectation(&source.with_extension("stdin"));
@@ -282,7 +282,7 @@ fn web_programs_match_the_interpreter_in_node() {
     serve_http();
     let runner = tests_dir().join("web").join("node.mjs");
     let dir = tests_dir().join("programs");
-    let mut built = build_programs(&dir, "web", "node");
+    let mut built = build_programs(&dir, "web", "node", "wasm", &[]);
     let mut failures = std::mem::take(&mut built.failures);
     for (source, wasm) in &built.programs {
         let output = Command::new(&node)
@@ -325,7 +325,7 @@ fn web_programs_match_the_interpreter_in_browsers() {
     prepare_runtime("wasm32-unknown-unknown", &[]);
     serve_http();
     let dir = tests_dir().join("programs");
-    let mut built = build_programs(&dir, "web", "browsers");
+    let mut built = build_programs(&dir, "web", "browsers", "wasm", &[]);
     let mut failures = std::mem::take(&mut built.failures);
     std::fs::copy(
         tests_dir().join("web").join("runner.html"),
@@ -355,6 +355,332 @@ fn web_programs_match_the_interpreter_in_browsers() {
     }
     let used: Vec<&str> = browsers.iter().map(|b| b.name.as_str()).collect();
     built.finish(&format!("Web in {}", used.join(", ")), failures);
+}
+
+/// The programs the Android check also runs as apps, through their
+/// packages: what they write goes to Android's log, and the files they
+/// write to the app's own directory.
+const ANDROID_APPS: &[&str] = &[
+    "threads.sayon",
+    "uncaught.sayon",
+    "main_status.sayon",
+    "files.sayon",
+];
+
+/// Builds every example for Android (x86-64) and runs it on an emulator or
+/// a device through `adb shell`, as an executable: it must behave exactly
+/// like the interpreter and release every allocation it made. Then a few
+/// ([`ANDROID_APPS`]) are built as apps, installed, and started, and what
+/// they write to Android's log, and their status, must match too. The
+/// device is the first x86-64 one `adb` lists, or else the emulator of the
+/// AVD `SAYON_AVD` (by default `sayon`), which the check starts and stops.
+/// Needs the Android SDK (`ANDROID_HOME`, or where Android Studio puts it)
+/// with its NDK, build tools, platform, emulator, and a JDK for signing; set
+/// `SAYON_SKIP_ANDROID=1` to skip. Without an SDK or a device, the check
+/// says it skipped.
+#[test]
+fn android_programs_match_the_interpreter() {
+    if std::env::var_os("SAYON_SKIP_ANDROID").is_some() {
+        eprintln!("SKIPPED: Android parity checks (SAYON_SKIP_ANDROID is set)");
+        return;
+    }
+    let Some(sdk) = android_sdk() else {
+        eprintln!("SKIPPED: Android parity checks (no Android SDK found)");
+        return;
+    };
+    let Some(device) = Device::find(&sdk) else {
+        eprintln!("SKIPPED: Android parity checks (no x86-64 device, and no AVD to start)");
+        return;
+    };
+    prepare_runtime("x86_64-linux-android", &[]);
+    serve_http();
+    // The device's own loopback reaches the test server through adb.
+    let port = HTTP_SERVER.rsplit(':').next().unwrap();
+    device.adb(&["reverse", &format!("tcp:{port}"), &format!("tcp:{port}")]);
+    let dir = tests_dir().join("programs");
+    let (built, mut failures) = run_android_programs(&device, &dir, "android-x64", &[]);
+    for name in ANDROID_APPS {
+        let source = dir.join(name);
+        match run_android_app(&device, &dir, &source, &built.work) {
+            Ok(outcome) => compare_recorded(&mut failures, &source, outcome, "Android app"),
+            Err(problem) => failures.push(format!("{name}: {problem}")),
+        }
+    }
+    built.finish("Android x64", failures);
+    // ARM64 programs run on an x86-64 device through Android's translation
+    // of ARM code, where it has it: evidence for the ARM64 build, not for
+    // ARM hardware.
+    let abis = device.shell("getprop ro.product.cpu.abilist").stdout;
+    if abis.split(',').any(|abi| abi.trim() == "arm64-v8a") {
+        prepare_runtime("aarch64-linux-android", &[]);
+        let (built, failures) =
+            run_android_programs(&device, &dir, "android-arm64", ANDROID_ARM64_LEFT_OUT);
+        built.finish("Android ARM64, translated", failures);
+    } else {
+        eprintln!("SKIPPED: Android ARM64 checks (the device cannot run ARM64 code)");
+    }
+}
+
+/// The programs the ARM64 check leaves out, and why.
+const ANDROID_ARM64_LEFT_OUT: &[&str] = &[
+    // Passing C structures by the ARM64 convention is still to come, so
+    // compiled programs raise ForeignError there instead.
+    "foreign_structures.sayon",
+];
+
+/// Builds every example for an Android target as a program for
+/// `adb shell`, and runs each on the device in a directory of its own,
+/// comparing it with the interpreter. `left_out` names programs not run.
+fn run_android_programs(
+    device: &Device,
+    dir: &Path,
+    target: &str,
+    left_out: &[&str],
+) -> (Built, Vec<String>) {
+    let mut built = build_programs(dir, target, "adb", "", &["--executable"]);
+    let mut failures = std::mem::take(&mut built.failures);
+    built.programs.retain(|(source, _)| {
+        let file = source.file_name().unwrap().to_string_lossy().to_string();
+        !left_out.contains(&file.as_str())
+    });
+    built
+        .lacking
+        .extend(left_out.iter().map(|name| format!("{name} (left out)")));
+    let remote = format!("/data/local/tmp/sayon-{target}");
+    device.shell(&format!("rm -rf {remote} && mkdir -p {remote}"));
+    for (source, program) in &built.programs {
+        let name = source.file_stem().unwrap().to_string_lossy().to_string();
+        device.adb(&[
+            "push",
+            &program.to_string_lossy(),
+            &format!("{remote}/{name}"),
+        ]);
+        let outcome = device.shell(&format!(
+            "cd {remote} && chmod 755 ./{name} && SAYON_DEBUG_ALLOC=1 ./{name}"
+        ));
+        compare_with_interpreter(&mut failures, source, outcome, target);
+    }
+    device.shell(&format!("rm -rf {remote}"));
+    (built, failures)
+}
+
+/// The Android SDK: `ANDROID_HOME`, `ANDROID_SDK_ROOT`, or where Android
+/// Studio puts it.
+fn android_sdk() -> Option<PathBuf> {
+    let from = |name: &str| std::env::var_os(name).map(PathBuf::from);
+    let default = if cfg!(windows) {
+        from("LOCALAPPDATA").map(|dir| dir.join("Android").join("Sdk"))
+    } else if cfg!(target_os = "macos") {
+        from("HOME").map(|dir| dir.join("Library").join("Android").join("sdk"))
+    } else {
+        from("HOME").map(|dir| dir.join("Android").join("Sdk"))
+    };
+    from("ANDROID_HOME")
+        .or_else(|| from("ANDROID_SDK_ROOT"))
+        .or(default)
+        .filter(|sdk| sdk.join("platform-tools").is_dir())
+}
+
+/// The suffix of this computer's programs.
+fn exe(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// An Android device or emulator the checks run programs on, through `adb`.
+struct Device {
+    adb: PathBuf,
+    serial: String,
+    /// The emulator the check started, which it stops.
+    emulator: Option<std::process::Child>,
+}
+
+/// The port of the emulator a check starts, so that its name is known and
+/// it stays apart from the user's own.
+const EMULATOR_PORT: u16 = 5584;
+
+impl Device {
+    /// The first x86-64 device `adb` lists, or the emulator of the AVD,
+    /// started and booted.
+    fn find(sdk: &Path) -> Option<Device> {
+        let adb = sdk.join("platform-tools").join(exe("adb"));
+        let listed = Command::new(&adb).arg("devices").output().ok()?;
+        let listing = String::from_utf8_lossy(&listed.stdout).to_string();
+        for line in listing.lines().skip(1) {
+            let Some(serial) = line.strip_suffix("\tdevice") else {
+                continue;
+            };
+            let device = Device {
+                adb: adb.clone(),
+                serial: serial.to_string(),
+                emulator: None,
+            };
+            if device.shell("getprop ro.product.cpu.abi").stdout.trim() == "x86_64" {
+                return Some(device);
+            }
+        }
+        let avd = std::env::var("SAYON_AVD").unwrap_or_else(|_| "sayon".to_string());
+        let emulator = sdk.join("emulator").join(exe("emulator"));
+        let avds = Command::new(&emulator).arg("-list-avds").output().ok()?;
+        if !String::from_utf8_lossy(&avds.stdout)
+            .lines()
+            .any(|line| line.trim() == avd)
+        {
+            return None;
+        }
+        let child = Command::new(&emulator)
+            .args(["-avd", &avd, "-port", &EMULATOR_PORT.to_string()])
+            .args(["-no-window", "-no-audio", "-no-boot-anim", "-no-snapshot"])
+            .args(["-gpu", "swiftshader_indirect"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let device = Device {
+            adb,
+            serial: format!("emulator-{EMULATOR_PORT}"),
+            emulator: Some(child),
+        };
+        // A cold boot on a small computer takes minutes.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(900);
+        while std::time::Instant::now() < deadline {
+            if device.shell("getprop sys.boot_completed").stdout.trim() == "1" {
+                return Some(device);
+            }
+            std::thread::sleep(std::time::Duration::from_secs(5));
+        }
+        eprintln!("the emulator of {avd} did not finish booting");
+        None
+    }
+
+    /// Runs `adb` for this device.
+    fn adb(&self, args: &[&str]) -> Outcome {
+        let output = Command::new(&self.adb)
+            .args(["-s", &self.serial])
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .expect("run adb");
+        // Windows' adb writes each line break it passes on as CR LF; then,
+        // as in the other checks, a program's own CR LF counts as LF.
+        let text = |bytes: &[u8]| {
+            let text = String::from_utf8_lossy(bytes);
+            let passed = if cfg!(windows) {
+                text.replace("\r\n", "\n")
+            } else {
+                text.to_string()
+            };
+            passed.replace("\r\n", "\n")
+        };
+        Outcome {
+            stdout: text(&output.stdout),
+            stderr: text(&output.stderr),
+            status: output.status.code().unwrap_or(-1),
+        }
+    }
+
+    /// Runs a command in the device's shell, which keeps its output and
+    /// errors apart and gives its status.
+    fn shell(&self, command: &str) -> Outcome {
+        self.adb(&["shell", command])
+    }
+}
+
+impl Drop for Device {
+    fn drop(&mut self) {
+        if let Some(mut emulator) = self.emulator.take() {
+            self.adb(&["emu", "kill"]);
+            let _ = emulator.wait();
+        }
+    }
+}
+
+/// Builds `source` as an app, installs it on the device, starts it, and
+/// gives what it wrote to Android's log, under the tag `sayon`, and the
+/// status it ended with, which the runtime logs under `sayon-app`.
+fn run_android_app(
+    device: &Device,
+    dir: &Path,
+    source: &Path,
+    work: &Path,
+) -> Result<Outcome, String> {
+    let name = source.file_stem().unwrap().to_string_lossy().to_string();
+    let package = work.join(format!("{name}.apk"));
+    let build = sayon(
+        dir,
+        &[
+            "build",
+            "--color",
+            "never",
+            "--quiet",
+            "--target",
+            "android-x64",
+            "--output",
+            &package.to_string_lossy(),
+            &source.file_name().unwrap().to_string_lossy(),
+        ],
+    );
+    if build.status != 0 {
+        return Err(format!("the app's build failed:\n{}", build.stderr));
+    }
+    let installed = device.adb(&["install", "-r", &package.to_string_lossy()]);
+    if installed.status != 0 {
+        return Err(format!(
+            "installing the app failed:\n{}{}",
+            installed.stdout, installed.stderr
+        ));
+    }
+    let id = format!("sayon.app.{name}");
+    device.adb(&["logcat", "-c"]);
+    let started = device.shell(&format!("am start -W -n {id}/android.app.NativeActivity"));
+    if started.status != 0 {
+        return Err(format!(
+            "starting the app failed:\n{}{}",
+            started.stdout, started.stderr
+        ));
+    }
+    const ENDED: &str = "I/sayon-app: the program ended with status ";
+    // Starting an app on a busy emulator can take most of a minute.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(300);
+    let log = loop {
+        let log = device
+            .adb(&["logcat", "-d", "-v", "tag", "-s", "sayon:V", "sayon-app:V"])
+            .stdout;
+        if log.contains(ENDED) || std::time::Instant::now() > deadline {
+            break log;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    };
+    device.adb(&["uninstall", &id]);
+    let mut outcome = Outcome {
+        stdout: String::new(),
+        stderr: String::new(),
+        status: -1,
+    };
+    for line in log.lines() {
+        // The log pads short tags, as in `I/sayon   : text`.
+        let text = |prefix: &str| {
+            line.strip_prefix(prefix)
+                .map(|rest| rest.trim_start_matches(' '))
+                .and_then(|rest| rest.strip_prefix(':'))
+                .map(|rest| rest.strip_prefix(' ').unwrap_or(rest))
+        };
+        if let Some(status) = line.strip_prefix(ENDED) {
+            outcome.status = status.trim().parse().unwrap_or(-1);
+        } else if let Some(text) = text("I/sayon") {
+            outcome.stdout.push_str(text);
+            outcome.stdout.push('\n');
+        } else if let Some(text) = text("E/sayon") {
+            outcome.stderr.push_str(text);
+            outcome.stderr.push('\n');
+        }
+    }
+    if outcome.status == -1 {
+        return Err(format!(
+            "the app did not end, or its end was not logged:\n{log}"
+        ));
+    }
+    Ok(outcome)
 }
 
 /// A browser to run web programs in.
@@ -726,10 +1052,11 @@ impl Built {
 }
 
 /// Builds each program under `dir` for `target`, to run on `host`, in a
-/// work directory of the host's own, since the checks run at once. A
+/// work directory of the host's own, since the checks run at once; each is
+/// named for its source, with `extension`, and built with `extra` too. A
 /// program that needs a capability the target lacks is diagnosed
 /// (`E_CAPABILITY`) and left out.
-fn build_programs(dir: &Path, target: &str, host: &str) -> Built {
+fn build_programs(dir: &Path, target: &str, host: &str, extension: &str, extra: &[&str]) -> Built {
     let work = std::env::temp_dir().join(format!("sayon-{target}-{host}-{}", std::process::id()));
     std::fs::create_dir_all(&work).expect("create work directory");
     let mut built = Built {
@@ -740,25 +1067,16 @@ fn build_programs(dir: &Path, target: &str, host: &str) -> Built {
     };
     for source in sources(dir) {
         let name = source.file_name().unwrap().to_string_lossy().to_string();
-        let wasm = built
+        let program = built
             .work
-            .join(source.with_extension("wasm").file_name().unwrap());
-        let outcome = sayon(
-            dir,
-            &[
-                "build",
-                "--color",
-                "never",
-                "--quiet",
-                "--target",
-                target,
-                "--output",
-                &wasm.to_string_lossy(),
-                &name,
-            ],
-        );
+            .join(source.with_extension(extension).file_name().unwrap());
+        let output = program.to_string_lossy().to_string();
+        let mut args = vec!["build", "--color", "never", "--quiet", "--target", target];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&["--output", &output, &name]);
+        let outcome = sayon(dir, &args);
         if outcome.status == 0 {
-            built.programs.push((source, wasm));
+            built.programs.push((source, program));
         } else if outcome.stderr.contains("E_CAPABILITY") {
             built.lacking.push(name);
         } else {
@@ -818,7 +1136,7 @@ fn prepare_runtime(triple: &str, c_library: &[&str]) {
         .parent()
         .and_then(Path::parent)
         .expect("the target directory");
-    let build_dir = target_dir.join("wasm-runtime");
+    let build_dir = target_dir.join("runtimes");
     let cargo = option_env!("CARGO").unwrap_or("cargo");
     let built = Command::new(cargo)
         .args([
@@ -909,6 +1227,12 @@ fn compare_with_interpreter(
         .iter()
         .map(|line| format!("{line}\n"))
         .collect();
+    compare_recorded(failures, source, outcome, mode);
+}
+
+/// Compares how a program behaved with the interpreter's recorded behavior.
+fn compare_recorded(failures: &mut Vec<String>, source: &Path, outcome: Outcome, mode: &str) {
+    let name = source.file_name().unwrap().to_string_lossy().to_string();
     let expected_stdout = read_expectation(&source.with_extension("stdout")).unwrap_or_default();
     let expected_stderr = read_expectation(&source.with_extension("stderr")).unwrap_or_default();
     let expected_status = expected_status(source);

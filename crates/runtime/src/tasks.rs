@@ -70,12 +70,15 @@ mod os {
     }
 }
 
-/// Fibers on Linux for x86-64: each has a stack of its own, mapped with a
-/// page below it that stops a stack that grows too far, and switching saves
-/// the registers a function must keep (and the floating-point control
-/// words) on the running fiber's stack, takes the other's stack, and
-/// restores them from it.
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+/// Fibers on Linux and Android, for x86-64 and ARM64: each has a stack of
+/// its own, mapped with a page below it that stops a stack that grows too
+/// far, and switching saves the registers a function must keep (and the
+/// floating-point control words) on the running fiber's stack, takes the
+/// other's stack, and restores them from it.
+#[cfg(all(
+    any(target_os = "linux", target_os = "android"),
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 mod os {
     use std::cell::Cell;
     use std::ffi::c_void;
@@ -121,6 +124,7 @@ mod os {
     // is laid out so that the first switch to it returns into
     // `sayon_fiber_entry`, which calls its start function (in r12) with its
     // parameter (in r13).
+    #[cfg(target_arch = "x86_64")]
     std::arch::global_asm!(
         ".text",
         ".p2align 4",
@@ -154,6 +158,90 @@ mod os {
         "call r12",
         "ud2",
     );
+
+    // Saves x19 to x30 (x29 the frame pointer, x30 the return address),
+    // d8 to d15, and the floating-point control register, stores the stack
+    // pointer at `save` (x0), and restores the same from the stack at `to`
+    // (x1). A new fiber's stack is laid out so that the first switch to it
+    // returns into `sayon_fiber_entry`, which calls its start function (in
+    // x19) with its parameter (in x20). x18 is the platform's on Android,
+    // and is left alone.
+    #[cfg(target_arch = "aarch64")]
+    std::arch::global_asm!(
+        ".text",
+        ".p2align 4",
+        ".globl sayon_fiber_switch",
+        "sayon_fiber_switch:",
+        "sub sp, sp, #176",
+        "stp x19, x20, [sp, #0]",
+        "stp x21, x22, [sp, #16]",
+        "stp x23, x24, [sp, #32]",
+        "stp x25, x26, [sp, #48]",
+        "stp x27, x28, [sp, #64]",
+        "stp x29, x30, [sp, #80]",
+        "stp d8, d9, [sp, #96]",
+        "stp d10, d11, [sp, #112]",
+        "stp d12, d13, [sp, #128]",
+        "stp d14, d15, [sp, #144]",
+        "mrs x9, fpcr",
+        "str x9, [sp, #160]",
+        "mov x9, sp",
+        "str x9, [x0]",
+        "mov sp, x1",
+        "ldr x9, [sp, #160]",
+        "msr fpcr, x9",
+        "ldp x19, x20, [sp, #0]",
+        "ldp x21, x22, [sp, #16]",
+        "ldp x23, x24, [sp, #32]",
+        "ldp x25, x26, [sp, #48]",
+        "ldp x27, x28, [sp, #64]",
+        "ldp x29, x30, [sp, #80]",
+        "ldp d8, d9, [sp, #96]",
+        "ldp d10, d11, [sp, #112]",
+        "ldp d12, d13, [sp, #128]",
+        "ldp d14, d15, [sp, #144]",
+        "add sp, sp, #176",
+        "ret",
+        ".p2align 4",
+        ".globl sayon_fiber_entry",
+        "sayon_fiber_entry:",
+        "mov x0, x20",
+        "blr x19",
+        "brk #0",
+    );
+
+    /// The frame the first switch to a fiber restores, from its lowest
+    /// word: the control words, r15, r14, r13 (the parameter), r12 (the
+    /// start function), rbx, rbp, and the return address. The stack is
+    /// 16-byte aligned once it has returned.
+    #[cfg(target_arch = "x86_64")]
+    fn first_frame(start: usize, parameter: usize) -> Vec<u64> {
+        let control_words: u64 = 0x1F80 | (0x037F << 32);
+        vec![
+            control_words,
+            0,
+            0,
+            parameter as u64,
+            start as u64,
+            0,
+            0,
+            sayon_fiber_entry as *const () as usize as u64,
+        ]
+    }
+
+    /// The frame the first switch to a fiber restores, from its lowest
+    /// word: x19 (the start function), x20 (the parameter), x21 to x28,
+    /// x29 (no frame), x30 (`sayon_fiber_entry`), d8 to d15, and the
+    /// floating-point control register, with a word to keep the stack
+    /// 16-byte aligned.
+    #[cfg(target_arch = "aarch64")]
+    fn first_frame(start: usize, parameter: usize) -> Vec<u64> {
+        let mut words = vec![0u64; 22];
+        words[0] = start as u64;
+        words[1] = parameter as u64;
+        words[11] = sayon_fiber_entry as *const () as usize as u64;
+        words
+    }
 
     thread_local! {
         /// The fiber running on this thread.
@@ -190,23 +278,10 @@ mod os {
             }
             mprotect(stack, PAGE, PROT_NONE);
             let stack = stack as *mut u8;
-            // The frame the first switch restores, from its lowest word: the
-            // control words, r15, r14, r13, r12, rbx, rbp, and the return
-            // address. The stack is 16-byte aligned once it has returned.
+            let words = first_frame(start as *const () as usize, parameter);
             let top = stack.add(size) as usize;
-            let saved = top - 64;
+            let saved = top - 8 * words.len();
             let frame = saved as *mut u64;
-            let control_words: u64 = 0x1F80 | (0x037F << 32);
-            let words: [u64; 8] = [
-                control_words,
-                0,
-                0,
-                parameter as u64,
-                start as *const () as usize as u64,
-                0,
-                0,
-                sayon_fiber_entry as *const () as usize as u64,
-            ];
             for (index, word) in words.iter().enumerate() {
                 frame.add(index).write(*word);
             }
@@ -234,12 +309,20 @@ mod os {
     }
 }
 
-#[cfg(not(any(windows, all(target_os = "linux", target_arch = "x86_64"))))]
+#[cfg(not(any(
+    windows,
+    all(
+        any(target_os = "linux", target_os = "android"),
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
+)))]
 mod os {
     use std::ffi::c_void;
 
     fn unavailable() -> ! {
-        report!("fatal error: compiled programs can run tasks only on Windows and Linux so far");
+        report!(
+            "fatal error: compiled programs can run tasks only on Windows, Linux, and Android so far"
+        );
         std::process::abort()
     }
 
