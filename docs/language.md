@@ -951,7 +951,7 @@ moment = time.parse("2026-10-18T09:30:00+02:00")
 print(time.format(moment), time.weekday(moment))   # 2026-10-18T07:30:00Z 7
 ```
 
-`time.zone(name)` is a `Zone` of the IANA time zone database, such as `"Europe/Paris"`, and fails with `TimeZoneError` for a name the system does not know; `time.local_zone()` is the system's own. `zone.at(moment)` gives a `ZonedTime`: the `local` date and time the zone's clocks show, their `offset` from UTC, and the zone, whose `format()` writes ISO 8601 with the offset and whose `moment()` is the moment in UTC again. `zone.moment(local)` goes the other way, from a local date and time to its moment: a local time the clocks skip when they go forward falls after the gap, and one they show twice is the earlier. The rules come from the system: on Windows from the ICU library it ships, and elsewhere from `/usr/share/zoneinfo`, or the directory `TZDIR` names; `time.zones_version()` tells their version.
+`time.zone(name)` is a `Zone` of the IANA time zone database, such as `"Europe/Paris"`, and fails with `TimeZoneError` for a name the system does not know; `time.local_zone()` is the system's own. `zone.at(moment)` gives a `ZonedTime`: the `local` date and time the zone's clocks show, their `offset` from UTC, and the zone, whose `format()` writes ISO 8601 with the offset and whose `moment()` is the moment in UTC again. `zone.moment(local)` goes the other way, from a local date and time to its moment: a local time the clocks skip when they go forward falls after the gap, and one they show twice is the earlier. The rules come from the system: on Windows from the ICU library it ships, on Android from the database the phone keeps up to date, with the phone's own zone as the local one, and elsewhere from `/usr/share/zoneinfo`, or the directory `TZDIR` names; `time.zones_version()` tells their version.
 
 ```sayon
 paris = time.zone("Europe/Paris")
@@ -1227,7 +1227,7 @@ adb logcat -s sayon sayon-app                  # what it prints
 
 Building needs the Android SDK (`ANDROID_HOME`, or where Android Studio puts it) with its NDK, build tools, and platform `android-36`, and a JDK, 17 or newer, for signing (`JAVA_HOME`); `sayon target setup android-x64` says what is missing. `--executable` builds a program to run from `adb shell` instead, with the shell's own output and errors and an exit status, as Sayon's tests run each example; that shows the runtime works, not that an app does, which is why the tests run some examples as apps too.
 
-An app has the network, threads, C functions, and files of its own: a program starts in the app's private directory, so the files it names by relative paths are the app's. It has no standard input, environment, or other programs. TLS, and so `https://`, is Android's own, which comes from its Java libraries: an app has it, and a program run from `adb shell` does not. Time zones come with an adapter of their own later, and C structures pass by value only on `android-x64` so far.
+An app has the network, threads, C functions, and files of its own: a program starts in the app's private directory, so the files it names by relative paths are the app's. It has no standard input, environment, or other programs. TLS, and so `https://`, is Android's own, which comes from its Java libraries: an app has it, and a program run from `adb shell` does not. Time zones are the phone's, its own zone the local one. C structures pass by value only on `android-x64` so far.
 
 ### Platform branches
 
@@ -1264,7 +1264,7 @@ Each target provides capabilities: what its programs can ask of the system.
 | `tasks` | tasks, channels, `sleep`, `select` | none |
 | `threads` | `threads.spawn_parallel` | web, WASI |
 | `foreign` | C functions and `standard/memory` | web |
-| `time_zones` | IANA time zones | web, WASI, Android, iOS |
+| `time_zones` | IANA time zones | web, WASI |
 | `clock`, `random`, `json`, `math`, `text`, `collections` | the rest of the standard library | none |
 
 A program needs a capability when it can reach an operation that uses it: the compiler follows every function the program calls or uses as a value, from its entry through the standard library and its dependencies. Checking or building for a target that lacks one is an error (`E_CAPABILITY`) at the program's own code that leads to the operation. Code in a branch the target does not select needs nothing, so `if supports("files")` keeps file access to the targets with files. A program never meets a capability's absence while it runs.

@@ -271,9 +271,8 @@ const DESKTOP: &[Capability] = &[
 ];
 
 /// What a phone's application can use: its own files, the network and the
-/// platform's TLS, threads, and its screen, but no console input,
-/// environment, or other programs. Time zones there come with an adapter
-/// of their own later.
+/// platform's TLS, threads, its screen, and the system's time zones, but no
+/// console input, environment, or other programs.
 const MOBILE: &[Capability] = &[
     Console,
     Files,
@@ -284,6 +283,7 @@ const MOBILE: &[Capability] = &[
     Tasks,
     Threads,
     Foreign,
+    TimeZones,
     Clock,
     Random,
     Json,

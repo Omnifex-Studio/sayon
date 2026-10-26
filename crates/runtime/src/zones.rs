@@ -2,9 +2,10 @@
 //! IANA time zone database has at each moment.
 //!
 //! The database comes from the system: on Windows, through the ICU library
-//! Windows ships (`icu.dll`); elsewhere, from the TZif files under
-//! `/usr/share/zoneinfo`. On any system, `TZDIR` names another directory
-//! of TZif files to use instead.
+//! Windows ships (`icu.dll`); on Android, from the one file that holds every
+//! zone's TZif data (Bionic's `tzdata`); elsewhere, from the TZif files
+//! under `/usr/share/zoneinfo`. On any system, `TZDIR` names another
+//! directory of TZif files to use instead.
 
 use crate::host::HostError;
 use std::collections::HashMap;
@@ -33,7 +34,7 @@ pub fn check(zone: &str) -> Result<(), HostError> {
 
 /// The name of the system's own time zone, or "UTC" when it has none.
 pub fn local_zone() -> String {
-    if zone_directory().is_some() || !cfg!(windows) {
+    if zone_directory().is_some() || !cfg!(any(windows, target_os = "android")) {
         return unix_local_zone();
     }
     platform::local_zone().unwrap_or_else(|| "UTC".to_string())
@@ -52,7 +53,7 @@ fn zone_directory() -> Option<String> {
     if let Some(directory) = std::env::var_os("TZDIR") {
         return Some(directory.to_string_lossy().into_owned());
     }
-    (!cfg!(windows)).then(|| "/usr/share/zoneinfo".to_string())
+    (!cfg!(any(windows, target_os = "android"))).then(|| "/usr/share/zoneinfo".to_string())
 }
 
 fn unix_local_zone() -> String {
@@ -637,7 +638,145 @@ mod platform {
     }
 }
 
-#[cfg(not(windows))]
+/// Android: the database is one file, an index of the zones' names before
+/// their TZif data, as Bionic reads it. The newest is the time zone
+/// module's (an APEX, since Android 10), then one an update left, then the
+/// system's own. The phone's own zone is a system property.
+#[cfg(target_os = "android")]
+mod platform {
+    use super::{Rules, ZONES, unknown, valid_name};
+    use crate::host::HostError;
+    use std::collections::HashMap;
+    use std::sync::{Arc, OnceLock};
+
+    /// The database: its version, its bytes, and each zone's data in them.
+    struct Database {
+        version: String,
+        bytes: Vec<u8>,
+        zones: HashMap<String, (usize, usize)>,
+    }
+
+    /// Each entry of the index: the zone's name in 40 bytes, then where its
+    /// data starts, after the data's own start, and how long it is.
+    const ENTRY: usize = 52;
+    const NAME: usize = 40;
+
+    fn files() -> Vec<String> {
+        let place =
+            |name: &str, default: &str| std::env::var(name).unwrap_or_else(|_| default.to_string());
+        vec![
+            format!(
+                "{}/etc/tz/tzdata",
+                place("ANDROID_TZDATA_ROOT", "/apex/com.android.tzdata")
+            ),
+            format!(
+                "{}/misc/zoneinfo/current/tzdata",
+                place("ANDROID_DATA", "/data")
+            ),
+            format!(
+                "{}/usr/share/zoneinfo/tzdata",
+                place("ANDROID_ROOT", "/system")
+            ),
+        ]
+    }
+
+    fn be32(bytes: &[u8], at: usize) -> Option<usize> {
+        let word = bytes.get(at..at + 4)?;
+        usize::try_from(i32::from_be_bytes([word[0], word[1], word[2], word[3]])).ok()
+    }
+
+    /// Reads a database: "tzdata" and its version, such as "2025b", then
+    /// where the index and the data start.
+    fn read(bytes: Vec<u8>) -> Option<Database> {
+        if bytes.get(..6)? != b"tzdata" {
+            return None;
+        }
+        let version = String::from_utf8_lossy(bytes.get(6..11)?).into_owned();
+        let index = be32(&bytes, 12)?;
+        let data = be32(&bytes, 16)?;
+        let mut zones = HashMap::new();
+        let mut at = index;
+        while at + ENTRY <= data && at + ENTRY <= bytes.len() {
+            let field = &bytes[at..at + NAME];
+            let end = field.iter().position(|&b| b == 0).unwrap_or(NAME);
+            let name = String::from_utf8_lossy(&field[..end]).into_owned();
+            let start = data + be32(&bytes, at + NAME)?;
+            let length = be32(&bytes, at + NAME + 4)?;
+            if start + length <= bytes.len() {
+                zones.insert(name, (start, length));
+            }
+            at += ENTRY;
+        }
+        Some(Database {
+            version,
+            bytes,
+            zones,
+        })
+    }
+
+    fn database() -> Option<&'static Database> {
+        static DATABASE: OnceLock<Option<Database>> = OnceLock::new();
+        DATABASE
+            .get_or_init(|| {
+                files()
+                    .into_iter()
+                    .find_map(|path| read(std::fs::read(path).ok()?))
+            })
+            .as_ref()
+    }
+
+    pub fn offset(zone: &str, seconds: i64) -> Result<i64, HostError> {
+        if !valid_name(zone) {
+            return Err(unknown(zone));
+        }
+        let key = format!("tzdata\u{0}{zone}");
+        let mut zones = ZONES.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(rules) = zones.get(&key) {
+            return Ok(rules.offset(seconds));
+        }
+        let database = database().ok_or_else(|| unknown(zone))?;
+        let &(start, length) = database.zones.get(zone).ok_or_else(|| unknown(zone))?;
+        let bytes = &database.bytes[start..start + length];
+        let rules = Arc::new(Rules::parse(bytes).ok_or_else(|| unknown(zone))?);
+        zones.insert(key, rules.clone());
+        Ok(rules.offset(seconds))
+    }
+
+    unsafe extern "C" {
+        fn __system_property_get(
+            name: *const std::ffi::c_char,
+            value: *mut std::ffi::c_char,
+        ) -> i32;
+    }
+
+    /// `TZ` when it names a zone, or the phone's own.
+    pub fn local_zone() -> Option<String> {
+        if let Ok(zone) = std::env::var("TZ") {
+            let zone = zone.trim_start_matches(':');
+            if valid_name(zone) {
+                return Some(zone.to_string());
+            }
+        }
+        // A property's value is at most 91 bytes and a NUL.
+        let mut value = [0 as std::ffi::c_char; 92];
+        let name = c"persist.sys.timezone";
+        // SAFETY: a NUL-terminated name, and room for the longest value.
+        let length = unsafe { __system_property_get(name.as_ptr(), value.as_mut_ptr()) };
+        if length <= 0 {
+            return None;
+        }
+        // SAFETY: the property's value, NUL-terminated.
+        let zone = unsafe { std::ffi::CStr::from_ptr(value.as_ptr()) };
+        let zone = zone.to_string_lossy().into_owned();
+        valid_name(&zone).then_some(zone)
+    }
+
+    pub fn version() -> Option<String> {
+        database().map(|database| database.version.clone())
+    }
+}
+
+#[cfg(not(any(windows, target_os = "android")))]
 mod platform {
     use crate::host::HostError;
 

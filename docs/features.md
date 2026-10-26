@@ -78,7 +78,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Building for web pages (`--target web`) on any computer: a `wasm32-unknown-unknown` module with generated JavaScript glue and a page; the program never blocks the page, its tasks waking through the event loop; checked in Edge, Chrome, and Firefox and in Node against the interpreter | experimental | M4 |
 | HTTP in web pages: `standard/network`'s `get`, `post`, and `request` through the browser's `fetch`, the task waiting while the others run; checked in Edge, Chrome, Firefox, and Node against the interpreter | experimental | M4 |
 | Android apps (`--target android-x64`, `android-arm64`) on any computer with the Android SDK: the program as the native library of a `NativeActivity` package, aligned for 16 KiB pages and signed with the debug key; output to Android's log; `--executable` for `adb shell`; checked on the emulator against the interpreter, ARM64 through translation | experimental | M4 |
-| Time zones, and C structures on ARM64, in Android programs; release signing | planned | M5 |
+| C structures on ARM64 in Android programs; release signing | planned | M5 |
 | Building on one system for another desktop system | planned | M5 to M7, with each target |
 | `standard/graphics` baseline: canvases drawn by the runtime (rectangles, circles, polygons, lines, images, text in a built-in font), the same pixels everywhere; windows with events and frames on Windows (Win32 and GDI), Linux (X11), web pages (a canvas), and Android apps (the app's surface) | experimental | M4 |
 | Graphics after the baseline: anti-aliasing, fonts of the system, images from files, text input, a GPU backend; 2D and 3D rendering | planned | M6, M8 |
@@ -121,6 +121,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `standard/time`: durations, monotonic clock, sleep, UTC dates, ISO 8601 | experimental | M2 |
 | `standard/time` deadlines and tickers; timers as channels (`threads.after`) | experimental | M3 |
 | `standard/time` time zones of the IANA database, from the system (ICU on Windows, TZif files elsewhere, or `TZDIR`) | experimental | M3 |
+| Time zones on Android, from the system's packed database (`tzdata`, updated with the time zone module), the phone's own zone the local one | experimental | M4 |
 | `standard/network`: TCP connections and listeners, UDP datagrams, address resolution, timeouts; waiting for sockets lets other tasks run | experimental | M3 |
 | `standard/network` HTTP/1.1 client: `get`, `post`, `request`, chunked and sized bodies, redirects, body size limits | experimental | M3 |
 | TLS from the system, with its certificate checks: `network.connect_secure`, `connection.secure`, `https://` in the HTTP client; Windows (SChannel) | experimental | M3 |

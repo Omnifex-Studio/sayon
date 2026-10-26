@@ -406,6 +406,7 @@ const ANDROID_APPS: &[&str] = &[
     "main_status.sayon",
     "files.sayon",
     "tls.sayon",
+    "zones.sayon",
 ];
 
 /// The programs the Android check runs only as apps, and why.
