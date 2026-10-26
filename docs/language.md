@@ -744,7 +744,7 @@ unsafe
 - Its fields are numbers, `pointer`, and other `foreign type` structures, in C's order: each at the next multiple of its alignment, and the whole a multiple of the largest (`E_FOREIGN_TYPE` for anything else, and for type parameters). Text is a `pointer` to its bytes, a boolean a `c_int`, and a structure that points to another of its type does so with a `pointer`.
 - Otherwise it is an ordinary structure: built, read, changed, compared, and shown as any other, and copied, since every field is.
 - A variadic C function takes a structure by its address, as a `pointer`.
-- Structures go to C and come back as the target's C convention passes them; compiled programs and the interpreter pass them as Windows x64 and Linux x86-64 do, compiled programs for WASI as WebAssembly's C convention does, and compiled programs report `ForeignError` on other targets.
+- Structures go to C and come back as the target's C convention passes them; compiled programs and the interpreter pass them as Windows x64 and Linux x86-64 do, compiled programs for WASI as WebAssembly's C convention does and for Android on ARM64 as AAPCS64 does, and compiled programs report `ForeignError` on other targets.
 
 ### Functions that C calls back
 
@@ -1227,7 +1227,7 @@ adb logcat -s sayon sayon-app                  # what it prints
 
 Building needs the Android SDK (`ANDROID_HOME`, or where Android Studio puts it) with its NDK, build tools, and platform `android-36`, and a JDK, 17 or newer, for signing (`JAVA_HOME`); `sayon target setup android-x64` says what is missing. `--executable` builds a program to run from `adb shell` instead, with the shell's own output and errors and an exit status, as Sayon's tests run each example; that shows the runtime works, not that an app does, which is why the tests run some examples as apps too.
 
-An app has the network, threads, C functions, and files of its own: a program starts in the app's private directory, so the files it names by relative paths are the app's. It has no standard input, environment, or other programs. TLS, and so `https://`, is Android's own, which comes from its Java libraries: an app has it, and a program run from `adb shell` does not. Time zones are the phone's, its own zone the local one. C structures pass by value only on `android-x64` so far.
+An app has the network, threads, C functions, and files of its own: a program starts in the app's private directory, so the files it names by relative paths are the app's. It has no standard input, environment, or other programs. TLS, and so `https://`, is Android's own, which comes from its Java libraries: an app has it, and a program run from `adb shell` does not. Time zones are the phone's, its own zone the local one.
 
 ### Platform branches
 

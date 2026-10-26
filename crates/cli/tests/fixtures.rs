@@ -481,9 +481,6 @@ fn android_programs_match_the_interpreter() {
 
 /// The programs the ARM64 check leaves out, and why.
 const ANDROID_ARM64_LEFT_OUT: &[&str] = &[
-    // Passing C structures by the ARM64 convention is still to come, so
-    // compiled programs raise ForeignError there instead.
-    "foreign_structures.sayon",
     // As on x86-64, a program run from a shell has no TLS.
     "tls.sayon",
 ];
@@ -844,8 +841,11 @@ fn run_in_browser(browser: &Browser, work: &Path, count: usize) -> Vec<(String, 
         }
     });
     let mut results = Vec::new();
+    // A browser's first start with a new profile can take minutes on a
+    // small computer busy with the other checks; the wait ends as soon as
+    // the page says it is done.
     let deadline =
-        std::time::Instant::now() + std::time::Duration::from_secs(60 + 10 * count as u64);
+        std::time::Instant::now() + std::time::Duration::from_secs(180 + 10 * count as u64);
     loop {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
         match receiver.recv_timeout(left) {

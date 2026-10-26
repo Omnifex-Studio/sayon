@@ -55,7 +55,8 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | C functions in the interpreter on macOS and on ARM64 | planned | with each platform's validation |
 | C structures (`foreign type`): C layout, by value in C calls, in C memory with `memory.read`, `write`, and `size`; Windows x64 and System V x86-64 (Linux) | experimental | M3 |
 | C structures by value in WebAssembly programs (WASI), by its basic C convention | experimental | M4 |
-| C structures by value on ARM64 | planned | with each platform's validation |
+| C structures by value on ARM64, by AAPCS64 as Linux and Android use it (Android ARM64 programs) | experimental | M4 |
+| C structures by value on Apple's and Windows' ARM64 | planned | with each platform's validation |
 | C callbacks: Sayon function values, with what they captured, as parameters of C functions that call them during the call; failures raised once C returns; compiled programs on every target, the interpreter on Windows x64 and Linux x86-64 | experimental | M3 |
 | C callbacks that C keeps and calls after the call, or on other threads | planned | M4 |
 | Finally functions: a structure's own destruction, wherever its values are destroyed; never copied, cannot wait, failures fatal | experimental | M3 |
@@ -78,7 +79,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Building for web pages (`--target web`) on any computer: a `wasm32-unknown-unknown` module with generated JavaScript glue and a page; the program never blocks the page, its tasks waking through the event loop; checked in Edge, Chrome, and Firefox and in Node against the interpreter | experimental | M4 |
 | HTTP in web pages: `standard/network`'s `get`, `post`, and `request` through the browser's `fetch`, the task waiting while the others run; checked in Edge, Chrome, Firefox, and Node against the interpreter | experimental | M4 |
 | Android apps (`--target android-x64`, `android-arm64`) on any computer with the Android SDK: the program as the native library of a `NativeActivity` package, aligned for 16 KiB pages and signed with the debug key; output to Android's log; `--executable` for `adb shell`; checked on the emulator against the interpreter, ARM64 through translation | experimental | M4 |
-| C structures on ARM64 in Android programs; release signing | planned | M5 |
+| Release signing of Android packages | planned | M5 |
 | Building on one system for another desktop system | planned | M5 to M7, with each target |
 | `standard/graphics` baseline: canvases drawn by the runtime (rectangles, circles, polygons, lines, images, text in a built-in font), the same pixels everywhere; windows with events and frames on Windows (Win32 and GDI), Linux (X11), web pages (a canvas), and Android apps (the app's surface) | experimental | M4 |
 | Graphics after the baseline: anti-aliasing, fonts of the system, images from files, text input, a GPU backend; 2D and 3D rendering | planned | M6, M8 |

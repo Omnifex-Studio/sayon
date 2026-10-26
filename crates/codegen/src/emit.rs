@@ -9,8 +9,8 @@
 
 use crate::layout::SHARED_HEADER;
 use crate::layout::{
-    CPass, Layouts, c_llvm, c_param, c_plan, int_code, int_llvm, needs_drop, passes_structures,
-    structures_supported,
+    COERCED_BYTES, CPass, Layouts, c_llvm, c_param, c_plan, int_code, int_llvm, needs_drop,
+    passes_structures, structures_supported,
 };
 use sayon_check::types::{FloatType, IntType, Type, Wrapper};
 use sayon_ir::*;
@@ -2636,7 +2636,7 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                 if passes_structures(declaration) && !structures_supported(target) {
                     let code = self.cg.c_string("ForeignError");
                     let message = self.cg.c_string(
-                        "compiled programs pass C structures only on x86-64 and WebAssembly so far",
+                        "compiled programs pass C structures only on x86-64, WebAssembly, and ARM64 with Linux or Android so far",
                     );
                     let location = self.cg.location(span);
                     let status = self.body.tmp();
@@ -2724,6 +2724,27 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                                 _ => format!("ptr {copy}"),
                             }
                         }
+                        CPass::Coerced(llvm, attributes) => {
+                            let (structure, _) = self.pointer(operand);
+                            let (size, _) =
+                                sayon_check::types::c_size_align(&self.cg.module.types, ty, target);
+                            let padded = self.body.alloca(&format!("[{COERCED_BYTES} x i8]"));
+                            self.body.line(format!(
+                                "store [{COERCED_BYTES} x i8] zeroinitializer, ptr {padded}"
+                            ));
+                            self.cg.intrinsic(MEMCPY.to_string());
+                            self.body.line(format!(
+                                "call void @llvm.memcpy.p0.p0.i64(ptr {padded}, ptr {structure}, i64 {size}, i1 false)"
+                            ));
+                            let coerced = self.body.tmp();
+                            self.body
+                                .line(format!("{coerced} = load {llvm}, ptr {padded}, align 1"));
+                            if attributes.is_empty() {
+                                format!("{llvm} {coerced}")
+                            } else {
+                                format!("{llvm} {attributes} {coerced}")
+                            }
+                        }
                         CPass::Pieces(pieces) => {
                             let (structure, _) = self.pointer(operand);
                             let mut loaded = Vec::new();
@@ -2757,6 +2778,23 @@ impl<'c, 'm> FnEmit<'c, 'm> {
                     if let Some(place) = dest {
                         let (target, _) = self.place_ptr(place);
                         match &plan.ret {
+                            // Through a copy as large as the value, of which
+                            // the structure takes its size.
+                            CPass::Coerced(..) => {
+                                let (size, _) = sayon_check::types::c_size_align(
+                                    &self.cg.module.types,
+                                    &ret,
+                                    self.cg.module.target,
+                                );
+                                let padded = self.body.alloca(&format!("[{COERCED_BYTES} x i8]"));
+                                self.body.line(format!(
+                                    "store {ret_llvm} {result}, ptr {padded}, align 1"
+                                ));
+                                self.cg.intrinsic(MEMCPY.to_string());
+                                self.body.line(format!(
+                                    "call void @llvm.memcpy.p0.p0.i64(ptr {target}, ptr {padded}, i64 {size}, i1 false)"
+                                ));
+                            }
                             // Each eightbyte where it lies in the structure.
                             CPass::Pieces(pieces) if pieces.len() > 1 => {
                                 for (index, (offset, llvm)) in pieces.iter().enumerate() {

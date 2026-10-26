@@ -273,6 +273,13 @@ pub enum CPass {
     Pieces(Vec<(u64, String)>),
     /// System V: a structure copied onto the stack.
     Stack,
+    /// ARM64: a structure as one LLVM value of this type, as clang gives
+    /// it: an integer or two words for one of up to 16 bytes, or the array
+    /// of its floats for one of up to four floats (or doubles) alone, with
+    /// the attributes the parameter takes. It goes through a copy padded to
+    /// the value's size, so that nothing past the structure is read or
+    /// written.
+    Coerced(String, &'static str),
 }
 
 /// How a C function is called: its result, each parameter, and the LLVM
@@ -321,10 +328,70 @@ fn system_v(target: &Target) -> bool {
     target.processor == "x64" && target.platform != "windows"
 }
 
+/// Whether the target passes C structures by the procedure call standard
+/// for ARM64 (AAPCS64), as Linux and Android do. Apple's and Windows' ARM64
+/// conventions differ in what they do with the stack and with variadic
+/// functions.
+fn aapcs64(target: &Target) -> bool {
+    target.processor == "arm64" && matches!(target.platform, "linux" | "android")
+}
+
 /// Whether compiled programs know how the target passes C structures: the
-/// Windows x64, System V x86-64, and basic WebAssembly conventions so far.
+/// Windows x64, System V x86-64, AAPCS64, and basic WebAssembly conventions
+/// so far.
 pub fn structures_supported(target: &Target) -> bool {
-    target.processor == "x64" || target.processor == "wasm32"
+    target.processor == "x64" || target.processor == "wasm32" || aapcs64(target)
+}
+
+/// The largest value a structure is coerced to: four doubles.
+pub const COERCED_BYTES: u64 = 32;
+
+/// The numbers a structure holds, in any nesting, with their offsets.
+fn leaves(types: &[TypeDef], ty: &Type, offset: u64, out: &mut Vec<(u64, Type)>, target: &Target) {
+    match ty {
+        Type::Named(named) => {
+            for (field_offset, field) in c_layout(types, named, target).fields {
+                leaves(types, &field, offset + field_offset, out, target);
+            }
+        }
+        other => out.push((offset, other.clone())),
+    }
+}
+
+/// AAPCS64: the LLVM type of a homogeneous floating-point aggregate, a
+/// structure of one to four floats, or one to four doubles, with nothing
+/// else, which goes in that many vector registers.
+fn homogeneous_floats(types: &[TypeDef], ty: &Type, target: &Target) -> Option<String> {
+    let mut found = Vec::new();
+    leaves(types, ty, 0, &mut found, target);
+    let (size, _) = c_size_align(types, ty, target);
+    let element = match found.first()?.1 {
+        Type::Float(FloatType::F32) => "float",
+        Type::Float(FloatType::F64) => "double",
+        _ => return None,
+    };
+    let each = if element == "float" { 4 } else { 8 };
+    let same = found.iter().all(|(_, leaf)| *leaf == found[0].1);
+    (same && found.len() <= 4 && size == each * found.len() as u64)
+        .then(|| format!("[{} x {element}]", found.len()))
+}
+
+/// AAPCS64, as clang lowers it: a homogeneous floating-point aggregate as
+/// its floats, aligned to 8 bytes should it go on the stack; another
+/// structure of up to 16 bytes as one word, or two, as a parameter, and as a
+/// result an integer of its size, or two words; any larger one by the
+/// address of a copy, or for a result through the address C writes it to.
+fn aapcs64_pass(types: &[TypeDef], ty: &Type, target: &Target, result: bool) -> CPass {
+    if let Some(floats) = homogeneous_floats(types, ty, target) {
+        return CPass::Coerced(floats, if result { "" } else { "alignstack(8)" });
+    }
+    let (size, _) = c_size_align(types, ty, target);
+    match size {
+        0..=8 if result => CPass::Coerced(format!("i{}", size.max(1) * 8), ""),
+        0..=8 => CPass::Coerced("i64".to_string(), ""),
+        9..=16 => CPass::Coerced("[2 x i64]".to_string(), ""),
+        _ => CPass::Address,
+    }
 }
 
 /// The one number or address a structure holds, with nothing else and no
@@ -349,6 +416,7 @@ fn single_scalar(types: &[TypeDef], ty: &Type, target: &Target) -> Option<Type> 
 pub fn c_plan(types: &[TypeDef], function: &ForeignFunction, target: &Target) -> CPlan {
     let system_v = system_v(target);
     let wasm = target.processor == "wasm32";
+    let arm = aapcs64(target);
     let mut declared = Vec::new();
     let mut integers = 0;
     let mut vectors = 0;
@@ -359,6 +427,8 @@ pub fn c_plan(types: &[TypeDef], function: &ForeignFunction, target: &Target) ->
                     Some(scalar) => CPass::Pieces(vec![(0, c_llvm(&scalar).to_string())]),
                     None => CPass::Address,
                 }
+            } else if arm {
+                aapcs64_pass(types, &function.ret, target, true)
             } else if system_v {
                 match sysv_eightbytes(types, &function.ret, target) {
                     Some(classes) => {
@@ -376,6 +446,7 @@ pub fn c_plan(types: &[TypeDef], function: &ForeignFunction, target: &Target) ->
             };
             let llvm = match &pass {
                 CPass::Register(bits) => format!("i{bits}"),
+                CPass::Coerced(llvm, _) => llvm.clone(),
                 CPass::Pieces(pieces) if pieces.len() == 1 => pieces[0].1.clone(),
                 CPass::Pieces(pieces) => {
                     let types: Vec<&str> = pieces.iter().map(|(_, ty)| ty.as_str()).collect();
@@ -410,6 +481,14 @@ pub fn c_plan(types: &[TypeDef], function: &ForeignFunction, target: &Target) ->
                     CPass::Address
                 }
             },
+            Type::Named(_) if arm => {
+                let pass = aapcs64_pass(types, param, target, false);
+                declared.push(match &pass {
+                    CPass::Coerced(llvm, attributes) => (llvm.clone(), attributes.to_string()),
+                    _ => ("ptr".to_string(), String::new()),
+                });
+                pass
+            }
             Type::Named(_) if system_v => {
                 let (size, align) = c_size_align(types, param, target);
                 let fits = |classes: &[Eightbyte]| {
@@ -596,7 +675,7 @@ pub fn needs_drop(ty: &Type) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sayon_check::types::{FieldDef, TypeDefKind, TypeId, VariantDef};
+    use sayon_check::types::{FieldDef, FloatType, IntType, TypeDefKind, TypeId, VariantDef};
 
     fn field(name: &str, ty: Type) -> FieldDef {
         FieldDef {
@@ -709,6 +788,84 @@ mod tests {
         let host = host_layouts(Vec::new());
         assert_eq!(host.size_of(&function), 16);
         assert_eq!(host.environment_offset(), 8);
+    }
+
+    /// A foreign structure of these fields, numbered as they are given.
+    fn foreign(fields: Vec<Type>) -> TypeDef {
+        TypeDef {
+            name: "S".into(),
+            generics: 0,
+            kind: TypeDefKind::Structure(
+                fields
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, ty)| field(&format!("f{index}"), ty))
+                    .collect(),
+            ),
+            copy: true,
+            foreign: true,
+            finally: false,
+        }
+    }
+
+    /// How AAPCS64 passes and gives each structure: the declared parameter
+    /// and the result's type, as clang declares them.
+    #[test]
+    fn arm64_passes_structures_as_clang_does() {
+        let float = Type::Float(FloatType::F32);
+        let double = Type::Float(FloatType::F64);
+        let int = Type::Int(IntType::I32);
+        let types = vec![
+            foreign(vec![int.clone(), int.clone()]),
+            foreign(vec![float.clone(), float.clone()]),
+            foreign(vec![double.clone(); 4]),
+            foreign(vec![double.clone(), int.clone()]),
+            foreign(vec![named(1, true), float.clone()]),
+            foreign(vec![Type::INTEGER; 3]),
+            foreign(vec![float.clone(); 5]),
+            foreign(vec![Type::Int(IntType::U8); 3]),
+        ];
+        let target = sayon_target::find("android-arm64").unwrap();
+        let expected = [
+            ("i64", "i64"),
+            ("[2 x float]", "[2 x float]"),
+            ("[4 x double]", "[4 x double]"),
+            ("[2 x i64]", "[2 x i64]"),
+            ("[3 x float]", "[3 x float]"),
+            ("ptr", "void"),
+            ("ptr", "void"),
+            ("i64", "i24"),
+        ];
+        for (index, (param, result)) in expected.iter().enumerate() {
+            let ty = named(index as u32, true);
+            let function = ForeignFunction {
+                name: "f".into(),
+                library: "c".into(),
+                params: vec![ty.clone()],
+                variadic: false,
+                ret: ty,
+                span: sayon_syntax::Span {
+                    file: sayon_syntax::FileId(0),
+                    start: 0,
+                    end: 0,
+                },
+            };
+            let plan = c_plan(&types, &function, target);
+            assert_eq!(plan.ret_llvm, *result, "the result of structure {index}");
+            // A result through an address comes first, as `sret`.
+            let declared = plan.declared.last().unwrap();
+            assert_eq!(declared.0, *param, "the parameter of structure {index}");
+            let floats = param.contains("float") || param.contains("double");
+            let attributes = if floats { "alignstack(8)" } else { "" };
+            assert_eq!(
+                declared.1, attributes,
+                "a copy's address has no `byval` there"
+            );
+        }
+        assert!(structures_supported(target));
+        assert!(!structures_supported(
+            sayon_target::find("macos-arm64").unwrap()
+        ));
     }
 
     #[test]

@@ -14,6 +14,7 @@ foreign "c"
     function lldiv(numerator: integer64, denominator: integer64) -> LongQuotient
     function cabs(value: Complex) -> float
     function cabsf(value: SmallComplex) -> float32
+    function conj(value: Complex) -> Complex
     function malloc(size: c_size) -> pointer
     function free(address: pointer)
 
@@ -25,6 +26,8 @@ unsafe
 # Taken by value: one of 16 bytes, and one of 8.
 print(unsafe cabs(Complex(real = 3.0, imaginary = 4.0)))
 print(unsafe cabsf(SmallComplex(real = 6.0, imaginary = 8.0)))
+# Taken and given back whole, in registers of their own on ARM64.
+print(unsafe conj(Complex(real = 3.0, imaginary = 4.0)))
 unsafe
     area = malloc(c_size(memory.size<Rectangle>()))
     memory.write(area, Rectangle(left = 0, top = 0, right = 10, bottom = 5))
