@@ -1,0 +1,10 @@
+Sayon Test Regular
+32 26 6 35
+13 10 3 14
+0 0 0 0
+59 20 102 0
+Color(red = 0, green = 0, blue = 0, alpha = 255) Color(red = 0, green = 0, blue = 0, alpha = 255) Color(red = 255, green = 255, blue = 255, alpha = 255) 283396696
+Sayon Test Regular 87 16 10
+true
+FontError these bytes are not a TrueType font
+FontError the font's glyphs are PostScript outlines (CFF), which Sayon does not read yet

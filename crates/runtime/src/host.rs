@@ -186,13 +186,23 @@ hosts! {
     CanvasPixel = "canvas_pixel"(Stream, Integer, Integer) -> Integer;
     CanvasClear = "canvas_clear"(Stream, Integer) -> Nothing;
     CanvasRectangle = "canvas_rectangle"(Stream, Integer, Integer, Integer, Integer, Integer) -> Nothing;
-    CanvasCircle = "canvas_circle"(Stream, Integer, Integer, Integer, Integer) -> Nothing;
-    CanvasPolygon = "canvas_polygon"(Stream, Integers, Integer) -> Nothing;
-    CanvasLine = "canvas_line"(Stream, Integer, Integer, Integer, Integer, Integer, Integer) -> Nothing;
+    CanvasCircle = "canvas_circle"(Stream, Integer, Integer, Integer, Integer, Boolean) -> Nothing;
+    CanvasPolygon = "canvas_polygon"(Stream, Integers, Integer, Boolean) -> Nothing;
+    CanvasLine = "canvas_line"(Stream, Integer, Integer, Integer, Integer, Integer, Integer, Boolean) -> Nothing;
     CanvasDraw = "canvas_draw"(Stream, Stream, Integer, Integer) -> Nothing;
     CanvasText = "canvas_text"(Stream, String, Integer, Integer, Integer, Integer) -> Nothing;
     TextWidth = "text_width"(String, Integer) -> Integer;
     TextHeight = "text_height"(String, Integer) -> Integer;
+    CanvasSize = "canvas_size"(Stream, Integer) -> Integer;
+    CanvasPng = "canvas_png"(Stream) -> Bytes;
+    ImageDecode = "image_decode"(Bytes) -> Stream;
+    FontBytes = "font_bytes"(Bytes) -> Stream;
+    FontSystem = "font_system"(String) -> Stream;
+    FontName = "font_name"(Stream) -> String;
+    FontMetric = "font_metric"(Stream, Integer, Integer) -> Integer;
+    FontWidth = "font_width"(Stream, String, Integer) -> Integer;
+    FontHeight = "font_height"(Stream, String, Integer) -> Integer;
+    CanvasWrite = "canvas_write"(Stream, Stream, String, Integer, Integer, Integer, Integer) -> Nothing;
     WindowOpen = "window_open"(String, Integer, Integer) -> Stream;
     WindowEvents = "window_events"(Stream) -> StringArray;
     WindowPresent = "window_present"(Stream, Stream) -> Nothing;
@@ -366,6 +376,13 @@ fn bytes<'b>(args: &'b [HostArg], index: usize) -> &'b [u8] {
     match args.get(index) {
         Some(HostArg::Bytes(bytes)) => bytes,
         other => panic!("host argument {index} should be bytes, found {other:?}"),
+    }
+}
+
+fn boolean(args: &[HostArg], index: usize) -> bool {
+    match args.get(index) {
+        Some(HostArg::Boolean(value)) => *value,
+        other => panic!("host argument {index} should be a boolean, found {other:?}"),
     }
 }
 
@@ -656,7 +673,11 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
         }),
         Host::CanvasCircle => crate::streams::with_canvas(stream(args, 0), |canvas| {
             let [x, y, radius, color] = [1, 2, 3, 4].map(|i| integer(args, i));
-            canvas.fill_circle(x, y, radius, color);
+            if boolean(args, 5) {
+                canvas.fill_circle_smooth(x, y, radius, color);
+            } else {
+                canvas.fill_circle(x, y, radius, color);
+            }
             V::Nothing
         }),
         Host::CanvasPolygon => {
@@ -670,13 +691,17 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
                 .map(|point| (point[0] as f64, point[1] as f64))
                 .collect();
             crate::streams::with_canvas(stream(args, 0), |canvas| {
-                canvas.fill_polygon(&points, integer(args, 2));
+                if boolean(args, 3) {
+                    canvas.fill_polygon_smooth(&points, integer(args, 2));
+                } else {
+                    canvas.fill_polygon(&points, integer(args, 2));
+                }
                 V::Nothing
             })
         }
         Host::CanvasLine => crate::streams::with_canvas(stream(args, 0), |canvas| {
             let [x1, y1, x2, y2, thickness, color] = [1, 2, 3, 4, 5, 6].map(|i| integer(args, i));
-            canvas.line((x1, y1), (x2, y2), thickness, color);
+            canvas.line((x1, y1), (x2, y2), thickness, color, boolean(args, 7));
             V::Nothing
         }),
         Host::CanvasDraw => {
@@ -696,6 +721,52 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
         Host::TextHeight => Ok(V::Integer(
             crate::graphics::text_size(string(args, 0), integer(args, 1)).1,
         )),
+        Host::CanvasSize => crate::streams::with_canvas(stream(args, 0), |canvas| {
+            V::Integer(if integer(args, 1) == 0 {
+                canvas.width
+            } else {
+                canvas.height
+            } as i64)
+        }),
+        Host::CanvasPng => crate::streams::with_canvas(stream(args, 0), |canvas| {
+            V::Bytes(crate::png::encode(
+                canvas.width,
+                canvas.height,
+                &canvas.pixels,
+            ))
+        }),
+        Host::ImageDecode => {
+            crate::png::decode(bytes(args, 0), crate::graphics::MOST_PIXELS as usize)
+                .and_then(|image| {
+                    crate::graphics::Canvas::from_bytes(
+                        image.width as i64,
+                        image.height as i64,
+                        &image.pixels,
+                    )
+                })
+                .map(|canvas| V::Stream(crate::streams::canvas(canvas)))
+        }
+        Host::FontBytes => crate::font::Font::from_bytes(bytes(args, 0).to_vec())
+            .map(|font| V::Stream(crate::streams::font(font))),
+        Host::FontSystem => crate::font::Font::system(string(args, 0))
+            .map(|font| V::Stream(crate::streams::font(font))),
+        Host::FontName => {
+            crate::streams::font_of(stream(args, 0)).map(|font| V::String(font.name.clone()))
+        }
+        Host::FontMetric => crate::streams::font_of(stream(args, 0))
+            .map(|font| V::Integer(font.metric(integer(args, 1), integer(args, 2)))),
+        Host::FontWidth => crate::streams::font_of(stream(args, 0))
+            .map(|font| V::Integer(font.width(string(args, 1), integer(args, 2)))),
+        Host::FontHeight => crate::streams::font_of(stream(args, 0))
+            .map(|font| V::Integer(font.height(string(args, 1), integer(args, 2)))),
+        Host::CanvasWrite => {
+            let font = crate::streams::font_of(stream(args, 1))?;
+            crate::streams::with_canvas(stream(args, 0), |canvas| {
+                let [x, y, size, color] = [3, 4, 5, 6].map(|i| integer(args, i));
+                font.draw(canvas, string(args, 2), (x, y), size, color);
+                V::Nothing
+            })
+        }
         Host::WindowOpen => {
             crate::window::open(string(args, 0), integer(args, 1), integer(args, 2))
                 .map(|window| V::Stream(crate::streams::window(window)))

@@ -82,7 +82,12 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Release signing of Android packages | planned | M5 |
 | Building on one system for another desktop system | planned | M5 to M7, with each target |
 | `standard/graphics` baseline: canvases drawn by the runtime (rectangles, circles, polygons, lines, images, text in a built-in font), the same pixels everywhere; windows with events and frames on Windows (Win32 and GDI), Linux (X11), web pages (a canvas), and Android apps (the app's surface) | experimental | M4 |
-| Graphics after the baseline: anti-aliasing, fonts of the system, images from files, text input, a GPU backend; 2D and 3D rendering | planned | M6, M8 |
+| Smooth (anti-aliased) circles, polygons, and lines: each pixel covered as much as its area, sampled on 16 rows and exact across them | experimental | M4 |
+| TrueType fonts read by the runtime (`glyf` outlines, simple and composite; `cmap` formats 4 and 12; the first font of a collection), drawn smooth by the nonzero rule, the same everywhere | experimental | M4 |
+| The system's fonts, found by their names in its font directories (Windows, Linux, Android, macOS), with the usual sans-serif, serif, and monospace ones; in web pages the browser's, drawn by its canvas | experimental | M4 |
+| PNG images: every kind of color and depth, palettes, transparency, interlacing, read into canvases; canvases written as PNG; inflate and deflate of the runtime's own | experimental | M4 |
+| Fonts of PostScript outlines (CFF), kerning, hinting, fallback fonts for missing characters, other image formats | planned | M6 |
+| Graphics after these: text input, a GPU backend; 2D and 3D rendering | planned | M6, M8 |
 | Diagnostics with stable codes and source excerpts | experimental | M1 |
 | VS Code syntax highlighting and file icon | experimental | M1 |
 | `sayon test` with `test` blocks (interpreter) | experimental | M1 |
@@ -132,7 +137,6 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Connecting on the first of a host's addresses that answers, IPv6 and IPv4 by turns (RFC 8305) | experimental | M3 |
 | Streaming HTTP bodies; TLS servers and client certificates | planned | M4 |
 | Tasks on threads of their own (`threads.spawn_parallel`), with their own tasks, cancellation, and `os.exit` across threads; channels and `select` between threads; native on Windows and Linux x86-64 | experimental | M3 |
-| `standard.graphics` | planned | M4 baseline |
 
 ## Platforms
 

@@ -1,0 +1,38 @@
+# The system's fonts, on a desktop, in an Android app, and in a web page,
+# where they are the browser's: one of each kind, text in each, and one the
+# system lacks.
+graphics = import("standard/graphics.sayon")
+
+# How many pixels are not white.
+function inked(canvas: graphics.Canvas) -> integer
+    count = 0
+    for y in range(canvas.height)
+        for x in range(canvas.width)
+            if canvas.pixel(x, y) != graphics.WHITE
+                count += 1
+    return count
+
+window = graphics.open("Sayon's fonts", 240, 120)
+canvas = graphics.canvas(window.width(), window.height())
+canvas.clear(graphics.WHITE)
+line = 0
+for kind in ["sans-serif", "serif", "monospace"]
+    font = graphics.system_font(clone(kind))
+    print(kind, length(font.name) > 0, font.ascent(20) > 0, font.descent(20) >= 0, font.line_height(20) >= font.ascent(20) + font.descent(20) - 1)
+    width = font.width("Hello, Sayon", 20)
+    print(width > 40, width < 400, font.height("Hello\nSayon", 20) > font.line_height(20))
+    sample = graphics.canvas(width + 4, font.height("Hello, Sayon", 20) + 4)
+    sample.clear(graphics.WHITE)
+    sample.write(font, "Hello, Sayon", 2, 2, 20, graphics.BLACK)
+    print(inked(sample) > 50)
+    canvas.write(font, "Hello, Sayon", 4, 4 + line, 20, graphics.BLACK)
+    line += font.line_height(20)
+try
+    graphics.system_font("No Such Font Sayon Knows")
+catch problem
+    print(problem.code)
+for frame in range(5)
+    window.events()
+    window.present(canvas)
+window.close()
+print("closed")

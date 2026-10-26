@@ -1,0 +1,47 @@
+# Text in a TrueType font, which the runtime draws the same everywhere:
+# glyphs of lines and of curves, glyphs made of others, a character beyond
+# the basic plane, and one the font lacks.
+graphics = import("standard/graphics.sayon")
+data = import("modules/graphics_data.sayon")
+
+# A sum of the pixels that tells two pictures apart.
+function digest(canvas: graphics.Canvas) -> integer
+    total = 0
+    position = 1
+    for byte in canvas.bytes()
+        total = (total + integer(byte) * position) % 1_000_000_007
+        position = position % 9973 + 1
+    return total
+
+font = graphics.decode_font(data.font())
+print(font.name)
+for size in [32, 13, 0]
+    print(size, font.ascent(size), font.descent(size), font.line_height(size))
+print(font.width("Allo!", 32), font.width("Å\n😀😀", 32), font.height("A\nl\no", 32), font.width("", 32))
+
+canvas = graphics.canvas(220, 120)
+canvas.clear(graphics.WHITE)
+canvas.write(font, "Allo! Å😀", 4, 4, 32, graphics.BLACK)
+canvas.write(font, "lo lo\nAl?", 10, 60, 13, graphics.rgba(200, 0, 0, 160))
+canvas.write(font, "off the canvas", -500, -500, 40, graphics.BLACK)
+print(canvas.pixel(26, 20), canvas.pixel(14, 20), canvas.pixel(100, 100), digest(canvas))
+
+# The same glyphs in a collection, which maps characters by format 4
+# alone: it has no glyph for the character beyond the basic plane.
+same = graphics.decode_font(data.collection())
+print(same.name, same.width("Allo! Å", 32), same.width("😀", 32), font.width("😀", 32))
+first = graphics.canvas(120, 50)
+second = graphics.canvas(120, 50)
+first.write(font, "Allo! Å", 0, 0, 32, graphics.BLUE)
+second.write(same, "Allo! Å", 0, 0, 32, graphics.BLUE)
+print(digest(first) == digest(second))
+
+# What is not a TrueType font.
+try
+    graphics.decode_font(canvas.png())
+catch problem
+    print(problem.code, problem.message)
+try
+    graphics.decode_font(data.unhex("4f54544f000100000000000000000000"))
+catch problem
+    print(problem.code, problem.message)

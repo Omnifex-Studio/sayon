@@ -1,0 +1,16 @@
+# A canvas saved as a PNG file, and the file loaded again.
+graphics = import("standard/graphics.sayon")
+filesystem = import("standard/filesystem.sayon")
+
+canvas = graphics.canvas(20, 10)
+canvas.clear(graphics.rgb(1, 2, 3))
+canvas.fill_rectangle(5, 2, 10, 6, graphics.rgba(255, 0, 0, 128))
+canvas.save_png("image_files.tmp.png")
+again = graphics.load_image("image_files.tmp.png")
+print(again.width, again.height, again.pixel(0, 0) == canvas.pixel(0, 0), again.pixel(6, 3) == canvas.pixel(6, 3))
+print(again.bytes() == canvas.bytes())
+filesystem.remove("image_files.tmp.png")
+try
+    graphics.load_image("image_files.missing.png")
+catch problem
+    print(problem.code)

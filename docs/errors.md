@@ -609,6 +609,14 @@ An HTTP request went wrong in a way HTTP itself defines: the URL is neither an `
 
 A window could not open, or one was used where it cannot be: there is no screen for it, as under WASI, in Node, from `adb shell`, or on Linux without an X display (`DISPLAY`), or the system refused the window; or a window was used on a thread other than the one that opened it, or after it was closed. Drawing on a canvas needs no screen, so a program can draw where it cannot show.
 
+### ImageError
+
+`graphics.decode_image` or `graphics.load_image` was given what is not a PNG image, or one that is damaged: it ends early, a chunk's checksum is wrong, its compressed data is not valid, a pixel names a color its palette lacks, or it has a chunk PNG requires a decoder to understand that Sayon does not read. Images larger than a canvas can be, 16384 pixels a side and 67108864 in all, fail the same way.
+
+### FontError
+
+A font could not be read or found: `graphics.decode_font` or `graphics.load_font` was given what is not a TrueType font, or one that is damaged, or one of PostScript outlines (CFF, as most `.otf` files are), which Sayon does not read yet; or `graphics.system_font` named a font the system, or in a web page the browser, does not have, or was called where there are no fonts to find, as in Node.
+
 ### ChannelClosedError
 
 A `threads.send` on a closed channel, whose message is then destroyed, or a `threads.receive` (or `select`) on a closed channel that has no messages left. `threads.receive_result` tells the end of a channel apart without an error.

@@ -1,0 +1,25 @@
+gray 1-bit 13 5 as made
+gray 2-bit 7 6 as made
+gray 4-bit 9 4 as made
+gray 8-bit, a transparent gray 8 8 as made
+gray 16-bit 5 5 as made
+color 8-bit, stored 11 7 as made
+color 16-bit, a transparent color 6 4 as made
+color 8-bit, interlaced, 3 by 2 3 2 as made
+palette 1-bit 10 3 as made
+palette 2-bit, interlaced, transparent 9 9 as made
+palette 4-bit 17 5 as made
+palette 8-bit, fixed codes 16 16 as made
+gray and alpha 8-bit 6 6 as made
+gray and alpha 16-bit 4 3 as made
+color and alpha 8-bit, interlaced, in pieces 33 17 as made
+color and alpha 16-bit 3 2 as made
+color and alpha 8-bit, 1 by 1, interlaced 1 1 as made
+color and alpha 8-bit, repeating 40 30 as made
+not an image ImageError the data is not a PNG image
+cut short ImageError the PNG image ends early
+damaged ImageError a chunk of the PNG image is damaged (its checksum is wrong)
+a color its palette lacks ImageError a pixel of the PNG image has a color its palette lacks
+an unknown chunk it needs ImageError the PNG image has a ZZZZ chunk, which Sayon does not read
+1296 137 80 78 71
+37 23 true false

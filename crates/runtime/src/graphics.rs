@@ -11,16 +11,114 @@
 //! polygon's points are pixel corners, so a square of 10 covers 10 by 10
 //! pixels as a rectangle of 10 does, and a line runs between the centers
 //! of the pixels it names.
+//!
+//! Smooth shapes, and text in a font (see `font`), cover each pixel as
+//! much as they cover its area instead, which blends the color that much:
+//! a pixel's area is sampled on 16 rows, and across each row the coverage
+//! is exact.
 
 use crate::font_table::GLYPHS;
 use crate::host::HostError;
 
 /// The longest side of a canvas, and the most pixels one holds.
 const LONGEST_SIDE: i64 = 16384;
-const MOST_PIXELS: i64 = 1 << 26;
+pub const MOST_PIXELS: i64 = 1 << 26;
 
 /// What a character the font lacks looks like: a box.
 const MISSING: [u8; 8] = [0x00, 0x7E, 0x42, 0x42, 0x42, 0x42, 0x7E, 0x00];
+
+/// The rows each row of pixels is sampled on for smooth shapes.
+const SAMPLES: usize = 16;
+
+/// An edge of an outline, from its top to its bottom, and whether it runs
+/// down (1) or up (-1) the way the outline goes.
+#[derive(Clone, Copy, Debug)]
+struct Edge {
+    top: f64,
+    bottom: f64,
+    /// Where it is at its top, and how far it goes across for each pixel
+    /// down.
+    x: f64,
+    slope: f64,
+    winding: i32,
+}
+
+/// The edges of closed outlines, such as a polygon's or a line of text's,
+/// to fill smooth.
+#[derive(Default)]
+pub struct Outline {
+    edges: Vec<Edge>,
+}
+
+impl Outline {
+    /// Adds the edge from one point to another; a level one adds nothing.
+    pub fn edge(&mut self, from: (f64, f64), to: (f64, f64)) {
+        if from.1 == to.1 {
+            return;
+        }
+        let (upper, lower, winding) = if from.1 < to.1 {
+            (from, to, 1)
+        } else {
+            (to, from, -1)
+        };
+        self.edges.push(Edge {
+            top: upper.1,
+            bottom: lower.1,
+            x: upper.0,
+            slope: (lower.0 - upper.0) / (lower.1 - upper.1),
+            winding,
+        });
+    }
+
+    /// Adds a polygon's edges, from each point to the next and from the
+    /// last to the first.
+    pub fn polygon(&mut self, points: &[(f64, f64)]) {
+        for (index, &point) in points.iter().enumerate() {
+            self.edge(point, points[(index + 1) % points.len()]);
+        }
+    }
+}
+
+/// How much a smooth shape covers of each pixel of a row, from the spans
+/// it covers on each of the row's samples.
+struct Coverage {
+    /// The first column.
+    start: usize,
+    /// The parts of pixels the spans cover, and where whole pixels start
+    /// (1) and stop (-1) being covered, for each column, with room for one
+    /// past the last.
+    parts: Vec<f64>,
+    whole: Vec<i32>,
+}
+
+impl Coverage {
+    fn new(columns: std::ops::Range<usize>) -> Coverage {
+        Coverage {
+            start: columns.start,
+            parts: vec![0.0; columns.len() + 1],
+            whole: vec![0; columns.len() + 2],
+        }
+    }
+
+    /// Adds the span from `from` to `to` across a sample.
+    fn span(&mut self, from: f64, to: f64) {
+        let end = (self.parts.len() - 1) as f64;
+        let from = (from - self.start as f64).clamp(0.0, end);
+        let to = (to - self.start as f64).clamp(0.0, end);
+        if to <= from {
+            return;
+        }
+        let (first, last) = (from as usize, to as usize);
+        if first == last {
+            self.parts[first] += to - from;
+            return;
+        }
+        self.parts[first] += (first + 1) as f64 - from;
+        self.whole[first + 1] += 1;
+        self.whole[last] -= 1;
+        self.parts[last] += to - last as f64;
+    }
+}
 
 pub struct Canvas {
     pub width: usize,
@@ -125,6 +223,107 @@ impl Canvas {
         }
     }
 
+    /// Blends `color` over the pixels of `row` as much as `coverage` says
+    /// they are covered, and empties it for the next row.
+    fn blend_coverage(&mut self, row: usize, coverage: &mut Coverage, color: [u8; 4]) {
+        let mut whole = 0;
+        for index in 0..coverage.parts.len() - 1 {
+            whole += coverage.whole[index];
+            let covered = ((coverage.parts[index] + whole as f64) / SAMPLES as f64).min(1.0);
+            if covered > 0.0 {
+                let alpha = (color[3] as f64 * covered).round() as u8;
+                self.blend(
+                    coverage.start + index,
+                    row,
+                    [color[0], color[1], color[2], alpha],
+                );
+            }
+        }
+        coverage.parts.fill(0.0);
+        coverage.whole.fill(0);
+    }
+
+    /// Fills a smooth shape within `top` to `bottom` and `left` to `right`,
+    /// whose spans `spans` adds for the sample at each height.
+    fn fill_smooth(
+        &mut self,
+        (top, bottom): (f64, f64),
+        (left, right): (f64, f64),
+        color: i64,
+        mut spans: impl FnMut(f64, &mut Coverage),
+    ) {
+        let rows = clip(top.floor() as i64, bottom.ceil() as i64, self.height);
+        let columns = clip(left.floor() as i64, right.ceil() as i64, self.width);
+        if rows.is_empty() || columns.is_empty() {
+            return;
+        }
+        let color = unpack(color);
+        let mut coverage = Coverage::new(columns);
+        for row in rows {
+            for sample in 0..SAMPLES {
+                let height = row as f64 + (sample as f64 + 0.5) / SAMPLES as f64;
+                spans(height, &mut coverage);
+            }
+            self.blend_coverage(row, &mut coverage, color);
+        }
+    }
+
+    /// Fills outlines smooth, by the nonzero rule, where they go around a
+    /// pixel more times one way than the other, or else by the even-odd
+    /// rule.
+    pub fn fill_outline(&mut self, outline: &mut Outline, nonzero: bool, color: i64) {
+        let edges = &mut outline.edges;
+        if edges.is_empty() {
+            return;
+        }
+        edges.sort_by(|a, b| a.top.total_cmp(&b.top));
+        let top = edges[0].top;
+        let bottom = edges
+            .iter()
+            .map(|e| e.bottom)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let ends = |e: &Edge| [e.x, e.x + (e.bottom - e.top) * e.slope];
+        let left = edges.iter().flat_map(ends).fold(f64::INFINITY, f64::min);
+        let right = edges
+            .iter()
+            .flat_map(ends)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let edges = &*edges;
+        // The edges that may cross the samples still to come, and where
+        // those that cross one do, in order across.
+        let (mut next, mut active, mut crossings) = (0, Vec::new(), Vec::new());
+        self.fill_smooth((top, bottom), (left, right), color, |height, coverage| {
+            while next < edges.len() && edges[next].top <= height {
+                active.push(next);
+                next += 1;
+            }
+            active.retain(|&index| edges[index].bottom > height);
+            crossings.clear();
+            for &index in &active {
+                let edge = edges[index];
+                crossings.push((edge.x + (height - edge.top) * edge.slope, edge.winding));
+            }
+            crossings.sort_by(|a: &(f64, i32), b| a.0.total_cmp(&b.0));
+            let inside = |winding: i32| {
+                if nonzero {
+                    winding != 0
+                } else {
+                    winding % 2 != 0
+                }
+            };
+            let (mut winding, mut from) = (0, 0.0);
+            for &(x, turn) in &crossings {
+                let was = inside(winding);
+                winding += turn;
+                match (was, inside(winding)) {
+                    (false, true) => from = x,
+                    (true, false) => coverage.span(from, x),
+                    _ => {}
+                }
+            }
+        });
+    }
+
     pub fn fill_rectangle(&mut self, x: i64, y: i64, width: i64, height: i64, color: i64) {
         let color = unpack(color);
         for row in clip(y, y.saturating_add(height), self.height) {
@@ -163,6 +362,26 @@ impl Canvas {
         }
     }
 
+    /// A disc of `radius` around the center of the pixel `x`, `y`, smooth.
+    pub fn fill_circle_smooth(&mut self, x: i64, y: i64, radius: i64, color: i64) {
+        if radius <= 0 {
+            return;
+        }
+        let (center_x, center_y, radius) = (x as f64 + 0.5, y as f64 + 0.5, radius as f64);
+        self.fill_smooth(
+            (center_y - radius, center_y + radius),
+            (center_x - radius, center_x + radius),
+            color,
+            |height, coverage| {
+                let across = radius * radius - (height - center_y) * (height - center_y);
+                if across > 0.0 {
+                    let half = across.sqrt();
+                    coverage.span(center_x - half, center_x + half);
+                }
+            },
+        );
+    }
+
     /// Covers the pixels whose centers lie inside the polygon of `points`,
     /// by the even-odd rule.
     pub fn fill_polygon(&mut self, points: &[(f64, f64)], color: i64) {
@@ -196,10 +415,30 @@ impl Canvas {
         }
     }
 
+    /// The polygon of `points`, smooth, by the even-odd rule.
+    pub fn fill_polygon_smooth(&mut self, points: &[(f64, f64)], color: i64) {
+        let mut outline = Outline::default();
+        outline.polygon(points);
+        self.fill_outline(&mut outline, false, color);
+    }
+
     /// A line from the center of one pixel to the center of another,
     /// `thickness` pixels wide: one pixel of each row or column it crosses
-    /// when it is 1, else the band around it.
-    pub fn line(&mut self, from: (i64, i64), to: (i64, i64), thickness: i64, color: i64) {
+    /// when it is 1, else the band around it. A smooth line is the band,
+    /// at least a pixel wide.
+    pub fn line(
+        &mut self,
+        from: (i64, i64),
+        to: (i64, i64),
+        thickness: i64,
+        color: i64,
+        smooth: bool,
+    ) {
+        if smooth {
+            let band = band(from, to, thickness.max(1));
+            self.fill_polygon_smooth(&band, color);
+            return;
+        }
         if thickness <= 1 {
             let packed = unpack(color);
             let (mut x, mut y) = from;
@@ -224,24 +463,23 @@ impl Canvas {
                 }
             }
         }
-        let start = (from.0 as f64 + 0.5, from.1 as f64 + 0.5);
-        let end = (to.0 as f64 + 0.5, to.1 as f64 + 0.5);
-        let (dx, dy) = (end.0 - start.0, end.1 - start.1);
-        let length = (dx * dx + dy * dy).sqrt();
-        let half = thickness as f64 / 2.0;
-        // A point is a square as wide as the line.
-        let (nx, ny, ax, ay) = if length == 0.0 {
-            (half, 0.0, 0.0, half)
-        } else {
-            (-dy / length * half, dx / length * half, 0.0, 0.0)
-        };
-        let band = [
-            (start.0 + nx - ax, start.1 + ny - ay),
-            (end.0 + nx + ax, end.1 + ny + ay),
-            (end.0 - nx + ax, end.1 - ny + ay),
-            (start.0 - nx - ax, start.1 - ny - ay),
-        ];
-        self.fill_polygon(&band, color);
+        self.fill_polygon(&band(from, to, thickness), color);
+    }
+
+    /// Blends `color` over the pixels of a mask `width` pixels wide, its top
+    /// left corner at `x`, `y`, as much as the mask's byte for each says.
+    #[cfg(all(target_family = "wasm", target_os = "unknown"))]
+    pub fn blend_mask(&mut self, mask: &[u8], width: usize, (x, y): (i64, i64), color: i64) {
+        let color = unpack(color);
+        let height = (mask.len() / width) as i64;
+        for row in clip(y, y.saturating_add(height), self.height) {
+            let from_row = (row as i64 - y) as usize;
+            for column in clip(x, x.saturating_add(width as i64), self.width) {
+                let covered = mask[from_row * width + (column as i64 - x) as usize] as u32;
+                let alpha = (color[3] as u32 * covered + 127) / 255;
+                self.blend(column, row, [color[0], color[1], color[2], alpha as u8]);
+            }
+        }
     }
 
     /// Draws `source` with its top left corner at `x`, `y`, blending it
@@ -293,6 +531,28 @@ impl Canvas {
             left = left.saturating_add(size);
         }
     }
+}
+
+/// The band `thickness` wide around the line from the center of one pixel
+/// to the center of another, cut square at the centers; for a point, a
+/// square as wide.
+fn band(from: (i64, i64), to: (i64, i64), thickness: i64) -> [(f64, f64); 4] {
+    let start = (from.0 as f64 + 0.5, from.1 as f64 + 0.5);
+    let end = (to.0 as f64 + 0.5, to.1 as f64 + 0.5);
+    let (dx, dy) = (end.0 - start.0, end.1 - start.1);
+    let length = (dx * dx + dy * dy).sqrt();
+    let half = thickness as f64 / 2.0;
+    let (nx, ny, ax, ay) = if length == 0.0 {
+        (half, 0.0, 0.0, half)
+    } else {
+        (-dy / length * half, dx / length * half, 0.0, 0.0)
+    };
+    [
+        (start.0 + nx - ax, start.1 + ny - ay),
+        (end.0 + nx + ax, end.1 + ny + ay),
+        (end.0 - nx + ax, end.1 - ny + ay),
+        (start.0 - nx - ax, start.1 - ny - ay),
+    ]
 }
 
 /// The rows of a character of the built-in font: nothing for a space, and
@@ -353,8 +613,62 @@ mod tests {
         let mut canvas = Canvas::new(8, 8).unwrap();
         canvas.fill_rectangle(-5, -5, 100, 100, RED);
         canvas.fill_circle(i64::MAX, i64::MIN, 10, RED);
-        canvas.line((-100, 3), (100, 3), 1, RED);
+        canvas.line((-100, 3), (100, 3), 1, RED, false);
+        canvas.fill_circle_smooth(i64::MAX, i64::MIN, 10, RED);
+        canvas.fill_polygon_smooth(&[(-1e300, 0.0), (1e300, 0.0), (0.0, 1e300)], RED);
         assert_eq!(covered(&canvas), 64);
+    }
+
+    #[test]
+    fn smooth_shapes_cover_pixels_by_their_area() {
+        let mut canvas = Canvas::new(8, 8).unwrap();
+        // A square half a pixel off the grid: whole pixels inside, halves
+        // along its sides, and quarters at its corners.
+        canvas.fill_polygon_smooth(&[(1.5, 1.5), (5.5, 1.5), (5.5, 5.5), (1.5, 5.5)], RED);
+        assert_eq!(canvas.pixel(3, 3), RED);
+        assert_eq!(canvas.pixel(1, 3), 0xFF00_0080);
+        assert_eq!(canvas.pixel(5, 1), 0xFF00_0040);
+        assert_eq!(canvas.pixel(0, 0), 0);
+        // On the grid, a smooth polygon covers what the other does.
+        let mut a = Canvas::new(20, 20).unwrap();
+        let mut b = Canvas::new(20, 20).unwrap();
+        a.fill_rectangle(3, 4, 10, 10, RED);
+        b.fill_polygon_smooth(&[(3.0, 4.0), (13.0, 4.0), (13.0, 14.0), (3.0, 14.0)], RED);
+        assert_eq!(a.pixels, b.pixels);
+    }
+
+    #[test]
+    fn a_smooth_disc_covers_its_area() {
+        let mut canvas = Canvas::new(40, 40).unwrap();
+        canvas.fill_circle_smooth(20, 20, 10, RED);
+        let area: f64 = canvas
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|p| p[3] as f64 / 255.0)
+            .sum();
+        assert!((area - std::f64::consts::PI * 100.0).abs() < 1.0, "{area}");
+        assert_eq!(canvas.pixel(20, 20), RED);
+        assert_eq!(canvas.pixel(20, 9), 0);
+    }
+
+    #[test]
+    fn the_nonzero_rule_fills_what_goes_around_twice() {
+        // Two squares the same way, one inside the other.
+        let squares = || {
+            let mut outline = Outline::default();
+            outline.polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0)]);
+            outline.polygon(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0)]);
+            outline
+        };
+        let mut nonzero = Canvas::new(6, 6).unwrap();
+        nonzero.fill_outline(&mut squares(), true, RED);
+        assert_eq!(nonzero.pixel(3, 3), RED);
+        let mut even_odd = Canvas::new(6, 6).unwrap();
+        even_odd.fill_outline(&mut squares(), false, RED);
+        assert_eq!(even_odd.pixel(3, 3), 0);
+        assert_eq!(even_odd.pixel(1, 1), RED);
     }
 
     #[test]
@@ -368,7 +682,7 @@ mod tests {
     #[test]
     fn a_line_has_a_pixel_for_each_step() {
         let mut canvas = Canvas::new(10, 10).unwrap();
-        canvas.line((0, 0), (9, 3), 1, RED);
+        canvas.line((0, 0), (9, 3), 1, RED, false);
         assert_eq!(covered(&canvas), 10);
         assert_eq!(canvas.pixel(9, 3), RED);
     }

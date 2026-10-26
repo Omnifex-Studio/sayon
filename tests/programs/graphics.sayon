@@ -44,6 +44,20 @@ copy = graphics.image(canvas.width, canvas.height, canvas.bytes())
 canvas.draw(copy, 32, 24)
 print(canvas.pixel(61, 45), digest(canvas))
 
+# Smooth shapes: each pixel takes as much of the color as they cover of
+# it. A star crosses itself, and its middle is outside by the even-odd rule.
+smooth = graphics.canvas(48, 32)
+smooth.clear(graphics.BLACK)
+smooth.smooth = true
+smooth.fill_circle(12, 12, 9, graphics.WHITE)
+star = [graphics.Point(x = 34, y = 2), graphics.Point(x = 40, y = 28), graphics.Point(x = 24, y = 10), graphics.Point(x = 46, y = 10), graphics.Point(x = 28, y = 28)]
+smooth.fill_polygon(star, graphics.rgba(0, 200, 255, 200))
+smooth.line(0, 31, 47, 0, graphics.rgb(255, 128, 0))
+smooth.line(2, 2, 30, 28, graphics.GREEN, 4)
+smooth.line(5, 28, 5, 28, graphics.RED, 3)
+print(smooth.pixel(12, 12), smooth.pixel(12, 3).red, smooth.pixel(34, 15).blue, smooth.pixel(34, 5).blue, smooth.pixel(5, 28))
+print(digest(smooth))
+
 # Sizes and colors out of range.
 try
     graphics.canvas(0, 10)

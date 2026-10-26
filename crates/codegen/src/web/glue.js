@@ -24,6 +24,13 @@ const FATAL = 3;
 /// The most milliseconds a timer waits: a longer one would fire at once.
 const LONGEST = 2147483647;
 
+/// The most pixels of a canvas text is drawn on before the program takes it.
+const MOST_PIXELS = 1 << 26;
+
+/// The font families CSS names for the browser to choose.
+const GENERIC_FAMILIES = ["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui",
+  "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded", "math", "emoji", "fangsong"];
+
 /// How a request the program has the browser fetch stands: waiting, with
 /// its response, or failed (see the runtime's `fetch.rs`).
 const WAITING = 0;
@@ -64,6 +71,11 @@ export async function run({ write = consoleWriter(), options = {}, windows: plac
   // The program's windows, canvases of the page, by number.
   const windows = new Map();
   let opened = 0;
+  // The browser's fonts the program draws in, a CSS family each, by
+  // number, and the text last drawn for it to take.
+  const fonts = new Map();
+  let fontsOpened = 0;
+  let drawn = null;
   const encoder = new TextEncoder();
   const host = {
     host_write(stream, pointer, length) {
@@ -150,6 +162,35 @@ export async function run({ write = consoleWriter(), options = {}, windows: plac
     host_window_close(number) {
       windows.get(number).close();
       windows.delete(number);
+    },
+    host_font_open(name, length) {
+      const context = textContext();
+      if (!context) return -1;
+      const family = fontFamily(text(name, length));
+      if (!hasFont(context, family)) return 0;
+      fonts.set(++fontsOpened, family);
+      return fontsOpened;
+    },
+    host_font_measure(number, pointer, length, size, which) {
+      const context = textContext();
+      context.font = `${size}px ${fonts.get(number)}`;
+      const metrics = context.measureText(text(pointer, length));
+      // Browsers before 2023 lack the font's own bounds.
+      const ascent = metrics.fontBoundingBoxAscent ?? size * 0.8;
+      const descent = metrics.fontBoundingBoxDescent ?? size * 0.2;
+      return [metrics.width, ascent, descent][which];
+    },
+    host_font_draw(number, pointer, length, size) {
+      drawn = drawText(fonts.get(number), text(pointer, length), size);
+      return drawn.width;
+    },
+    host_font_drawn: (which) => [drawn.height, drawn.left, drawn.top][which],
+    host_font_take(pointer) {
+      view(pointer, drawn.alpha.length).set(drawn.alpha);
+      drawn = null;
+    },
+    host_font_close(number) {
+      fonts.delete(number);
     },
   };
   const bytes = wasm ?? (await load(new URL(MODULE, import.meta.url)));
@@ -248,6 +289,64 @@ function openWindow(title, width, height, place) {
   };
   canvas.focus();
   return window;
+}
+
+/// A canvas to measure and draw text with: an offscreen one, or one of the
+/// page's, or nothing where there is neither, as in Node.
+function newCanvas(width, height) {
+  if (typeof OffscreenCanvas !== "undefined") return new OffscreenCanvas(width, height);
+  if (typeof document === "undefined") return null;
+  return Object.assign(document.createElement("canvas"), { width, height });
+}
+
+let measuring;
+function textContext() {
+  measuring ??= newCanvas(1, 1)?.getContext("2d") ?? null;
+  return measuring;
+}
+
+/// The CSS family of a font's name: a generic family as it is, any other
+/// quoted.
+function fontFamily(name) {
+  const lower = name.toLowerCase();
+  return GENERIC_FAMILIES.includes(lower) ? lower : JSON.stringify(name);
+}
+
+/// Whether the browser has a font: whether text in it, before a fallback,
+/// is not as wide as in the fallback alone, for some fallback.
+function hasFont(context, family) {
+  if (!family.startsWith('"')) return true;
+  const sample = "mmmmmmmmmmlli1WQ@#.";
+  return ["monospace", "serif", "sans-serif"].some((fallback) => {
+    context.font = `72px ${fallback}`;
+    const alone = context.measureText(sample).width;
+    context.font = `72px ${family}, ${fallback}`;
+    return context.measureText(sample).width !== alone;
+  });
+}
+
+/// Draws a line of text in white on a canvas of its own, with room around
+/// it, and gives how opaque each pixel is, and where on it the text starts
+/// and its baseline is.
+function drawText(family, line, size) {
+  const font = `${size}px ${family}`;
+  const context = textContext();
+  context.font = font;
+  const metrics = context.measureText(line);
+  const margin = Math.ceil(size);
+  const ascent = Math.ceil(metrics.fontBoundingBoxAscent ?? size * 0.8);
+  const descent = Math.ceil(metrics.fontBoundingBoxDescent ?? size * 0.2);
+  const width = Math.ceil(metrics.width) + 2 * margin;
+  const height = ascent + descent + 2 * margin;
+  if (width * height > MOST_PIXELS) return { width: 0, height: 0, left: 0, top: 0, alpha: [] };
+  const drawing = newCanvas(width, height).getContext("2d", { willReadFrequently: true });
+  drawing.font = font;
+  drawing.fillStyle = "white";
+  drawing.fillText(line, margin, margin + ascent);
+  const pixels = drawing.getImageData(0, 0, width, height).data;
+  const alpha = new Uint8Array(width * height);
+  for (let at = 0; at < alpha.length; at++) alpha[at] = pixels[at * 4 + 3];
+  return { width, height, left: margin, top: margin + ascent, alpha };
 }
 
 /// A key's name, as `standard/graphics` names keys: by where the key is,

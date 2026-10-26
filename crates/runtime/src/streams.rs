@@ -11,6 +11,7 @@
 //! different file.
 
 use crate::encodings::{DecodeReader, Encoding};
+use crate::font::Font;
 use crate::graphics::Canvas;
 use crate::host::{HostError, io_error};
 use crate::network::{BLOCKED_CODE, Connecting, Connection, Datagrams, Listener};
@@ -47,6 +48,8 @@ enum Handle {
     Canvas(Box<Canvas>),
     /// A window, or the surface an app or a page shows.
     Window(Box<Window>),
+    /// A font of `standard/graphics`, which drawing takes a reference to.
+    Font(Arc<Font>),
     Closed,
 }
 
@@ -122,6 +125,7 @@ fn reader<T>(
         | Handle::Fetched(_)
         | Handle::Canvas(_)
         | Handle::Window(_)
+        | Handle::Font(_)
         | Handle::PipeIn(_) => Err(not_connection(&entry.path)),
         Handle::Closed => Err(closed(&entry.path)),
     }
@@ -235,6 +239,7 @@ fn writer<T>(
         | Handle::Fetched(_)
         | Handle::Canvas(_)
         | Handle::Window(_)
+        | Handle::Font(_)
         | Handle::Output
         | Handle::Errors
         | Handle::PipeOut(_) => Err(not_connection(&entry.path)),
@@ -290,6 +295,24 @@ pub fn fetched_body(id: i64) -> Result<Vec<u8>, HostError> {
 /// A stream holding a canvas.
 pub fn canvas(canvas: Canvas) -> i64 {
     insert(Handle::Canvas(Box::new(canvas)), "a canvas")
+}
+
+/// A stream holding a font.
+pub fn font(font: Font) -> i64 {
+    insert(Handle::Font(Arc::new(font)), "a font")
+}
+
+/// The font a stream holds.
+pub fn font_of(id: i64) -> Result<Arc<Font>, HostError> {
+    let table = table();
+    let entry = table
+        .entries
+        .get(&id)
+        .ok_or(("IOError", "the font is gone".to_string()))?;
+    match &entry.handle {
+        Handle::Font(font) => Ok(font.clone()),
+        _ => Err(("IOError", format!("{} is not a font", entry.path))),
+    }
 }
 
 /// A stream holding a window.
@@ -919,6 +942,7 @@ pub fn position(id: i64) -> Result<i64, HostError> {
         | Handle::Fetched(_)
         | Handle::Canvas(_)
         | Handle::Window(_)
+        | Handle::Font(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_) => return Err(unpositioned(&path)),
         Handle::Closed => return Err(closed(&path)),
@@ -955,6 +979,7 @@ pub fn seek(id: i64, position: i64) -> Result<(), HostError> {
         | Handle::Fetched(_)
         | Handle::Canvas(_)
         | Handle::Window(_)
+        | Handle::Font(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_) => return Err(unpositioned(&path)),
         Handle::Closed => return Err(closed(&path)),
@@ -999,6 +1024,7 @@ pub fn close(id: i64) -> Result<(), HostError> {
         | Handle::Fetched(_)
         | Handle::Canvas(_)
         | Handle::Window(_)
+        | Handle::Font(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_) => Ok(()),
         Handle::Closed => Err(("IOError", format!("\"{path}\" is already closed"))),
@@ -1037,6 +1063,7 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
         | Handle::Fetched(_)
         | Handle::Canvas(_)
         | Handle::Window(_)
+        | Handle::Font(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_)
         | Handle::Output
@@ -1058,6 +1085,7 @@ pub fn copy(from: i64, to: i64) -> Result<i64, HostError> {
         | Handle::Fetched(_)
         | Handle::Canvas(_)
         | Handle::Window(_)
+        | Handle::Font(_)
         | Handle::PipeIn(_)
         | Handle::PipeOut(_)
         | Handle::Output

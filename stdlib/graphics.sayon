@@ -27,12 +27,26 @@
 #
 # Shapes cover the pixels whose centers they hold. Coordinates count
 # pixels from the top left corner, rightward and downward; a polygon's
-# points are pixel corners, and a line runs between pixel centers. Text is
-# drawn in a built-in font of 8 by 8 pixels, scaled: each character takes
-# a square cell of `size` pixels. It covers ASCII, the Latin-1 supplement,
-# Greek, box drawing, and block elements, and shows a box for any other
-# character. Opening a window where there is no screen fails with
-# GraphicsError.
+# points are pixel corners, and a line runs between pixel centers. On a
+# canvas whose `smooth` is true, circles, polygons, and lines are drawn
+# smooth instead: each pixel takes as much of the color as the shape
+# covers of its area, so that edges are anti-aliased.
+#
+#     canvas.smooth = true
+#     canvas.fill_circle(100, 100, 40, graphics.WHITE)
+#
+# `text` draws in a built-in font of 8 by 8 pixels, scaled: each character
+# takes a square cell of `size` pixels. It covers ASCII, the Latin-1
+# supplement, Greek, box drawing, and block elements, and shows a box for
+# any other character. `write` draws in a font: a TrueType font from a
+# file or bytes, which the runtime draws the same everywhere, or one of
+# the system's (in a web page, the browser's).
+#
+#     font = graphics.system_font()
+#     canvas.write(font, "Hello", 20, 20, 24, graphics.WHITE)
+#
+# PNG images load into canvases, and canvases save as PNG images. Opening
+# a window where there is no screen fails with GraphicsError.
 
 time = import("standard/time.sayon")
 
@@ -68,8 +82,9 @@ private function unpacked(value: integer) -> Color
 
 # ----- canvases ----------------------------------------------------------------
 
-# Pixels to draw on, `width` by `height`.
-type Canvas = [pixels: HostStream, width: integer, height: integer]
+# Pixels to draw on, `width` by `height`; circles, polygons, and lines on
+# it are smooth where `smooth` is true.
+type Canvas = [pixels: HostStream, width: integer, height: integer, smooth: boolean]
 
 # A point, in pixels from the top left corner.
 type Point = [x: integer, y: integer]
@@ -77,12 +92,25 @@ type Point = [x: integer, y: integer]
 # A canvas of transparent pixels. Each side is 1 to 16384 pixels, and
 # 67108864 pixels at most in all; other sizes fail with ValueError.
 function canvas(width: integer, height: integer) -> Canvas
-    return Canvas(pixels = host_canvas_new(width, height), width = width, height = height)
+    return Canvas(pixels = host_canvas_new(width, height), width = width, height = height, smooth = false)
 
 # A canvas of given pixels: red, green, blue, and alpha bytes for each,
 # row by row from the top, as from `canvas.bytes()`.
 function image(width: integer, height: integer, bytes: Array<byte>) -> Canvas
-    return Canvas(pixels = host_canvas_from_bytes(width, height, bytes), width = width, height = height)
+    return Canvas(pixels = host_canvas_from_bytes(width, height, bytes), width = width, height = height, smooth = false)
+
+# A canvas of the pixels of a PNG image, of any of PNG's kinds of color,
+# interlaced or not; colors of 16 bits are cut to 8. What is not a PNG
+# image, or is damaged, fails with ImageError.
+function decode_image(bytes: Array<byte>) -> Canvas
+    pixels = host_image_decode(bytes)
+    width = host_canvas_size(pixels, 0)
+    height = host_canvas_size(pixels, 1)
+    return Canvas(pixels = pixels, width = width, height = height, smooth = false)
+
+# A canvas of the pixels of a PNG image in a file.
+function load_image(path: string) -> Canvas
+    return decode_image(host_read_file_bytes(path))
 
 # Makes every pixel `color`, replacing what was there.
 function canvas_clear(update canvas: Canvas, color: Color)
@@ -105,7 +133,7 @@ function canvas_stroke_rectangle(update canvas: Canvas, x: integer, y: integer, 
 
 # A disc around the center of the pixel `x`, `y`.
 function canvas_fill_circle(update canvas: Canvas, x: integer, y: integer, radius: integer, color: Color)
-    host_canvas_circle(canvas.pixels, x, y, radius, packed(color))
+    host_canvas_circle(canvas.pixels, x, y, radius, packed(color), canvas.smooth)
 
 # The inside of a polygon, by the even-odd rule.
 function canvas_fill_polygon(update canvas: Canvas, points: Array<Point>, color: Color)
@@ -113,12 +141,12 @@ function canvas_fill_polygon(update canvas: Canvas, points: Array<Point>, color:
     for point in points
         push(coordinates, point.x)
         push(coordinates, point.y)
-    host_canvas_polygon(canvas.pixels, coordinates, packed(color))
+    host_canvas_polygon(canvas.pixels, coordinates, packed(color), canvas.smooth)
 
 # A line from the center of one pixel to the center of another,
-# `thickness` pixels wide.
+# `thickness` pixels wide, its ends cut square at the centers when smooth.
 function canvas_line(update canvas: Canvas, x1: integer, y1: integer, x2: integer, y2: integer, color: Color, thickness = 1)
-    host_canvas_line(canvas.pixels, x1, y1, x2, y2, thickness, packed(color))
+    host_canvas_line(canvas.pixels, x1, y1, x2, y2, thickness, packed(color), canvas.smooth)
 
 # Draws another canvas, such as an image, with its top left corner at `x`,
 # `y`, over what is there.
@@ -146,6 +174,71 @@ function canvas_pixel(canvas: Canvas, x: integer, y: integer) -> Color
 # The pixels, as `image` takes them.
 function canvas_bytes(canvas: Canvas) -> Array<byte>
     return host_canvas_bytes(canvas.pixels)
+
+# The canvas as a PNG image, of 8-bit red, green, blue, and alpha.
+function canvas_png(canvas: Canvas) -> Array<byte>
+    return host_canvas_png(canvas.pixels)
+
+# Writes the canvas to a file as a PNG image.
+function canvas_save_png(canvas: Canvas, path: string)
+    host_write_file_bytes(path, host_canvas_png(canvas.pixels))
+
+# ----- fonts -------------------------------------------------------------------
+
+# A font to write text in, and its name, such as "Arial Bold". Sizes are in
+# pixels per em, as a web page's are: a font of size 16 is drawn as text of
+# 16 pixels is in a browser. The runtime draws a TrueType font itself, its
+# outlines smooth, without hinting or kerning, so that text in it is the
+# same everywhere.
+type Font = [handle: HostStream, name: string]
+
+# The TrueType font in bytes, such as a `.ttf` file's, or the first of a
+# collection (`.ttc`). Fonts of PostScript outlines (most `.otf` files),
+# and what is not a font, fail with FontError.
+function decode_font(bytes: Array<byte>) -> Font
+    handle = host_font_bytes(bytes)
+    name = host_font_name(handle)
+    return Font(handle = handle, name = name)
+
+# The TrueType font in a file.
+function load_font(path: string) -> Font
+    return decode_font(host_read_file_bytes(path))
+
+# One of the system's fonts, by its family's name, such as "Arial", or its
+# full name, such as "Arial Bold"; "sans-serif", "serif", and "monospace"
+# name the system's usual font of each kind. In a web page it is the
+# browser's, which the browser draws. A font the system lacks fails with
+# FontError.
+function system_font(name = "sans-serif") -> Font
+    handle = host_font_system(name)
+    name = host_font_name(handle)
+    return Font(handle = handle, name = name)
+
+# How far the font reaches above its baseline at `size`, in pixels.
+function font_ascent(font: Font, size: integer) -> integer
+    return host_font_metric(font.handle, 0, size)
+
+# How far it reaches below its baseline.
+function font_descent(font: Font, size: integer) -> integer
+    return host_font_metric(font.handle, 1, size)
+
+# How far one line's top is below the last's.
+function font_line_height(font: Font, size: integer) -> integer
+    return host_font_metric(font.handle, 2, size)
+
+# How wide text is in the font at `size`: its longest line, in whole pixels.
+function font_width(font: Font, text: string, size: integer) -> integer
+    return host_font_width(font.handle, text, size)
+
+# How high text is: from its first line's top to its last line's bottom.
+function font_height(font: Font, text: string, size: integer) -> integer
+    return host_font_height(font.handle, text, size)
+
+# Draws text in a font at `size`, the top left corner of its first line at
+# `x`, `y`; a line break starts a line below. A character the font lacks
+# shows as the font's glyph for those.
+function canvas_write(update canvas: Canvas, font: Font, text: string, x: integer, y: integer, size: integer, color: Color)
+    host_canvas_write(canvas.pixels, font.handle, text, x, y, size, packed(color))
 
 # ----- windows -----------------------------------------------------------------
 

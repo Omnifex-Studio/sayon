@@ -1,0 +1,37 @@
+# PNG images: one of each kind PNG has, read as the digests they were made
+# with say, images that are damaged, and a canvas written as a PNG image
+# and read again.
+graphics = import("standard/graphics.sayon")
+data = import("modules/graphics_data.sayon")
+
+# A sum of the pixels that tells two pictures apart.
+function digest(canvas: graphics.Canvas) -> integer
+    total = 0
+    position = 1
+    for byte in canvas.bytes()
+        total = (total + integer(byte) * position) % 1_000_000_007
+        position = position % 9973 + 1
+    return total
+
+for sample in data.images()
+    bytes = data.unhex(clone(sample.hex))
+    try
+        image = graphics.decode_image(bytes)
+        found = digest(image)
+        if found == sample.digest
+            print(sample.name, image.width, image.height, "as made")
+        else
+            print(sample.name, image.width, image.height, "differs:", found, "not", sample.digest)
+    catch problem
+        print(sample.name, problem.code, problem.message)
+
+canvas = graphics.canvas(37, 23)
+canvas.clear(graphics.rgba(10, 20, 30, 200))
+canvas.smooth = true
+canvas.fill_circle(18, 11, 9, graphics.rgba(250, 120, 0, 180))
+canvas.line(0, 0, 36, 22, graphics.WHITE, 2)
+canvas.text("png", 2, 14, 8, graphics.GREEN)
+png = canvas.png()
+print(length(png), integer(png[0]), integer(png[1]), integer(png[2]), integer(png[3]))
+again = graphics.decode_image(png)
+print(again.width, again.height, digest(again) == digest(canvas), again.smooth)

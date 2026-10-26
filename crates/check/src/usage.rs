@@ -76,7 +76,8 @@ pub fn host_capability(host: Host) -> Option<Capability> {
         | Host::WindowPresent
         | Host::WindowWidth
         | Host::WindowHeight
-        | Host::WindowScale => Graphics,
+        | Host::WindowScale
+        | Host::FontSystem => Graphics,
         Host::ZoneOffset | Host::ZoneCheck | Host::LocalZone | Host::ZonesVersion => TimeZones,
         _ => return None,
     })
