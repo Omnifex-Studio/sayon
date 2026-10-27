@@ -4,7 +4,7 @@
 
 <h1 align="center">Sayon</h1>
 
-<p align="center">A readable programming language for scripts, applications, and systems programs.</p>
+<p align="center">Programming made easy. Safety made automatic.</p>
 
 Sayon means "easy". Ordinary programs should need fewer decisions, less boilerplate, and less setup, while advanced users can still see and control the work their programs do.
 
