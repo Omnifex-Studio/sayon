@@ -93,6 +93,9 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Graphics after these: text input, a GPU backend; 2D and 3D rendering | planned | M6, M8 |
 | Diagnostics with stable codes and source excerpts | experimental | M1 |
 | VS Code syntax highlighting and file icon | experimental | M1 |
+| Language server baseline (`sayon lsp`): diagnostics of each open document as it changes, with lint warnings; hover with signatures, types, and doc comments; going to definitions, across files and to an import's module; references; renaming, but for the standard library's names; completion of names in scope and of members after a dot; formatting | experimental | M5 |
+| The VS Code extension's client for `sayon lsp`, without dependencies, and its `sayon.path` setting | experimental | M5 |
+| Language server after the baseline: signature help, document and workspace symbols, semantic highlighting, code actions from diagnostics' help, inlay types, other editors' configurations | planned | M5, M6 |
 | `sayon test` with `test` blocks (interpreter) | experimental | M1 |
 | `sayon fmt` (keeps comments and literal spelling; verifies the result means the same) | experimental | M1 |
 | Project manifests (`sayon.toml` [package]), `sayon init`, `sayon clean`, `sayon doctor` | experimental | M1 |

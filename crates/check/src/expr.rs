@@ -332,6 +332,7 @@ impl<'a> Checker<'a> {
             return self.local_use(cx, local, span);
         }
         if let Some(item) = self.item(cx.module, &name.name) {
+            self.note(span, crate::index::Noted::Item(item));
             return self.item_value(item, span);
         }
         if let Some(value) = self.compile_time_name(cx, &name.name) {
@@ -641,6 +642,9 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> hir::Expr {
         if let Some(module) = self.module_alias(cx, target) {
+            if let ast::ExprKind::Name(alias) = &target.kind {
+                self.note_alias(cx.module, alias);
+            }
             return match self.module_member(cx.module, module, name) {
                 Some(item) => self.item_value(item, span),
                 None => expr(ExprKind::Nothing, Type::Unknown, span),
@@ -978,6 +982,9 @@ impl<'a> Checker<'a> {
             ast::ExprKind::Name(name) => name,
             ast::ExprKind::Member { target, name } if self.module_alias(cx, target).is_some() => {
                 let module = self.module_alias(cx, target).expect("module");
+                if let ast::ExprKind::Name(alias) = &target.kind {
+                    self.note_alias(cx.module, alias);
+                }
                 return match self.module_member(cx.module, module, name) {
                     Some(Item::Function(id)) => {
                         self.call_function(cx, id, name, generic_args, args, span)
@@ -1016,6 +1023,7 @@ impl<'a> Checker<'a> {
                         return self.call_value(cx, field, args, span);
                     }
                     if let Some(id) = self.method(named.id, &name.name) {
+                        self.note(name.span, crate::index::Noted::Item(Item::Function(id)));
                         return self.call_method(cx, id, name, value, generic_args, args, span);
                     }
                 }
@@ -1047,7 +1055,11 @@ impl<'a> Checker<'a> {
             let value = self.local_use(cx, local, name.span);
             return self.call_value(cx, value, args, span);
         }
-        match self.item(cx.module, &name.name) {
+        let found = self.item(cx.module, &name.name);
+        if let Some(item) = found {
+            self.note(name.span, crate::index::Noted::Item(item));
+        }
+        match found {
             Some(Item::Function(id)) => {
                 return self.call_function(cx, id, name, generic_args, args, span);
             }

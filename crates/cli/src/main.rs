@@ -42,6 +42,7 @@ Usage:
     sayon target list                List the targets and what each provides
     sayon target setup <target>      Show what building for a target needs
     sayon target manifest            Print the capability manifest as JSON
+    sayon lsp                        Serve an editor in the language server protocol
     sayon explain <code>             Explain an error code, such as E_MOVED_VALUE
     sayon version                    Print the version
     sayon help                       Print this help
@@ -196,7 +197,7 @@ fn dispatch(args: &[String]) -> u8 {
         "test" => (&["--quiet"], &["--color"], false),
         "fmt" => (&["--check"], &[], false),
         "install" => (&["--quiet", "--locked", "--offline"], &["--color"], false),
-        "init" | "clean" | "doctor" | "explain" | "target" => (&[], &[], false),
+        "init" | "clean" | "doctor" | "explain" | "target" | "lsp" => (&[], &[], false),
         other => return usage_error(&format!("unknown command `{other}`")),
     };
     let parsed = match parse_args(rest, flags, valued, allow_rest) {
@@ -276,6 +277,14 @@ fn dispatch(args: &[String]) -> u8 {
         },
         "clean" => commands::clean(&options),
         "doctor" => commands::doctor(),
+        "lsp" => {
+            if !parsed.positional.is_empty() {
+                return usage_error("`sayon lsp` takes no arguments; editors start it");
+            }
+            let configure = |entry: &std::path::Path| compile::editor_options(entry);
+            let status = sayon_lsp::serve(std::io::stdin(), std::io::stdout(), &configure);
+            status as u8
+        }
         "target" => match parsed.positional.as_slice() {
             [list] if list == "list" => commands::target_list(),
             [setup, name] if setup == "setup" => commands::target_setup(name),

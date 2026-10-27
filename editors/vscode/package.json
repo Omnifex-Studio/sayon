@@ -1,7 +1,7 @@
 {
   "name": "sayon",
   "displayName": "Sayon",
-  "description": "Syntax highlighting and editing support for the Sayon programming language",
+  "description": "Highlighting, diagnostics, completion, and navigation for the Sayon programming language",
   "version": "0.0.1",
   "publisher": "omnifex-studio",
   "license": "Apache-2.0 WITH LLVM-exception",
@@ -16,7 +16,27 @@
   "categories": [
     "Programming Languages"
   ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:sayon"
+  ],
   "contributes": {
+    "configuration": {
+      "title": "Sayon",
+      "properties": {
+        "sayon.path": {
+          "type": "string",
+          "default": "sayon",
+          "description": "The sayon program, which the extension runs as `sayon lsp` for diagnostics, completion, and navigation."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "sayon.restartServer",
+        "title": "Sayon: Restart the Language Server"
+      }
+    ],
     "languages": [
       {
         "id": "sayon",

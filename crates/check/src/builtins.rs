@@ -13,6 +13,39 @@ pub enum PreludeItem {
     Conversion(Type),
 }
 
+/// The prelude functions every module can call, but for the numeric
+/// conversions, which are named for their types (`integer`, `float32`).
+pub const NAMES: &[&str] = &[
+    "print",
+    "length",
+    "bytelength",
+    "typeof",
+    "assert",
+    "range",
+    "tonumber",
+    "tostring",
+    "push",
+    "pop",
+    "remove",
+    "swap",
+    "view",
+    "mutable_view",
+    "split_view",
+    "share",
+    "cell",
+    "mutex",
+    "haskey",
+    "readfile",
+    "writefile",
+    "clone",
+    "error",
+    "raise",
+    "c_string",
+    "move",
+    "integer",
+    "float",
+];
+
 /// Looks up a prelude function. `host` admits the primitives that only
 /// standard library modules may call; `target` decides the widths of the C
 /// integer conversions.
@@ -96,4 +129,19 @@ pub fn planned(name: &str) -> Option<(&'static str, &'static str)> {
         "Box" => ("explicit shared ownership", "M3"),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_listed_name_is_in_the_prelude() {
+        for name in NAMES {
+            assert!(
+                lookup(name, false, sayon_target::host()).is_some(),
+                "{name}"
+            );
+        }
+    }
 }

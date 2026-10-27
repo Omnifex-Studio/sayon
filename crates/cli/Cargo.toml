@@ -20,6 +20,7 @@ sayon-interp.workspace = true
 sayon-codegen.workspace = true
 sayon-driver.workspace = true
 sayon-runtime.workspace = true
+sayon-lsp.workspace = true
 
 [lints]
 workspace = true

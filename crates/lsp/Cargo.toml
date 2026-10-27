@@ -1,0 +1,16 @@
+[package]
+name = "sayon-lsp"
+description = "The Sayon language server, which editors talk to through `sayon lsp`"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+sayon-syntax.workspace = true
+sayon-check.workspace = true
+sayon-driver.workspace = true
+
+[lints]
+workspace = true

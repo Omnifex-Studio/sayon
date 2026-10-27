@@ -42,7 +42,8 @@ Sayon is in early development and not ready for real programs. What works today:
 - TCP and UDP sockets, TLS from the system, and an HTTP client for `http://` and `https://`, other programs started with pipes to their streams, and C functions: calls, C structures by value, and Sayon functions that C calls back
 - Standard library modules for files, directories, streams and text encodings, JSON (typed values and streams), collections, time with time zones, processes, the network, threads, memory, text, and math, and graphics: drawing on canvases, smooth or not, the same pixels everywhere, text in TrueType fonts and the system's, PNG images, shown in windows on Windows and Linux, in web pages, and in Android apps
 - `test` blocks and the `sayon test` runner, and the `sayon fmt` formatter
-- Projects with a `sayon.toml` manifest, and the `run`, `build`, `check`, `test`, `fmt`, `init`, `clean`, `doctor`, `lint`, and `explain` commands
+- A language server, `sayon lsp`, and a VS Code extension that starts it: diagnostics as you type, hover with signatures and doc comments, going to definitions, references, renaming, completion, and formatting
+- Projects with a `sayon.toml` manifest, and the `run`, `build`, `check`, `test`, `fmt`, `init`, `clean`, `doctor`, `lint`, `lsp`, and `explain` commands
 
 `examples/sketch` is a sketch pad, one program that runs as a window on Windows and Linux, as a web page, and as an Android app:
 
@@ -107,6 +108,7 @@ Native builds need [LLVM](https://releases.llvm.org)'s clang at build time (foun
 | `crates/driver` | Loads a program's modules from disk and runs the compiler phases |
 | `crates/codegen` | Native code generation through LLVM IR |
 | `crates/runtime` | Runtime library linked into compiled programs |
+| `crates/lsp` | The language server `sayon lsp` runs |
 | `crates/cli` | The `sayon` command |
 | `crates/installer` | The installer (`sayon-setup`) |
 | `stdlib` | The standard library, written in Sayon |
@@ -114,7 +116,7 @@ Native builds need [LLVM](https://releases.llvm.org)'s clang at build time (foun
 | `tests` | Example programs and diagnostic snapshots |
 | `docs` | Language reference, feature ledger, and implementation records |
 | `scripts` | Release packaging: the installer and archive for each device |
-| `editors/vscode` | VS Code extension: highlighting and the `.sayon` file icon |
+| `editors/vscode` | VS Code extension: highlighting, the `.sayon` file icon, and the language server's client |
 | `assets` | Logo and icons |
 
 ## License

@@ -260,6 +260,43 @@ fn driver_options(
         lint,
         packages,
         target,
+        overlays: Default::default(),
+        index: false,
+    })
+}
+
+/// The driver's options for checking `entry` in an editor, as `sayon lint`
+/// checks it for this computer: with its project's manifest and packages,
+/// and what is wrong with them told rather than printed, since the editor
+/// shows it.
+pub fn editor_options(entry: &Path) -> Result<sayon_driver::Options, String> {
+    let root = project_root(entry, None);
+    let mut packages = sayon_driver::packages::Packages::default();
+    if let Some(root) = &root {
+        let mut sources = SourceMap::new();
+        let manifest = sayon_driver::read_manifest(root, &mut sources).map_err(|errors| {
+            let shown: Vec<String> = errors
+                .iter()
+                .map(|diagnostic| render(diagnostic, &sources, false))
+                .collect();
+            format!("sayon.toml has errors:\n{}", shown.join("\n"))
+        })?;
+        packages = sayon_driver::packages::load(root, &manifest, false).map_err(|error| {
+            match &error.help {
+                Some(help) => format!("{}\nhelp: {help}", error.message),
+                None => error.message.clone(),
+            }
+        })?;
+    }
+    Ok(sayon_driver::Options {
+        stdlib: stdlib_dir(),
+        tests: false,
+        root,
+        lint: true,
+        packages,
+        target: sayon_target::host(),
+        overlays: Default::default(),
+        index: true,
     })
 }
 

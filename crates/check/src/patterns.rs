@@ -855,6 +855,24 @@ impl<'a> Checker<'a> {
         span: Span,
     ) -> Option<(Type, Option<Type>, u32)> {
         let resolved = self.unifier.resolve(ty);
+        let found = self.pattern_variant_of(cx, ty, &resolved, name, span);
+        if let Some((enum_ty, _, variant)) = &found
+            && let Some(named) = enum_ty.as_named()
+        {
+            self.note(span, crate::index::Noted::Variant(named.id, *variant));
+        }
+        found
+    }
+
+    fn pattern_variant_of(
+        &mut self,
+        cx: &FnCtx,
+        ty: &Type,
+        resolved: &Type,
+        name: &str,
+        span: Span,
+    ) -> Option<(Type, Option<Type>, u32)> {
+        let resolved = resolved.clone();
         match &resolved {
             Type::Named(named) => self
                 .type_def(named.id)

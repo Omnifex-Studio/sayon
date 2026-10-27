@@ -7,6 +7,7 @@ mod closures;
 mod driver;
 mod expr;
 pub mod hir;
+pub mod index;
 pub mod infer;
 pub mod lint;
 mod narrow;
@@ -59,8 +60,21 @@ pub fn check_program(
     span: Span,
     target: &'static sayon_target::Target,
 ) -> CheckOutput {
+    check_program_indexed(modules, entry, span, target, false)
+}
+
+/// Checks a program as [`check_program`] does, and with `index` also gives
+/// what its names refer to ([`index::Index`]), errors or not.
+pub fn check_program_indexed(
+    modules: &[ModuleSource],
+    entry: usize,
+    span: Span,
+    target: &'static sayon_target::Target,
+    index: bool,
+) -> CheckOutput {
     let mut checker = Checker::new();
     checker.target = target;
+    checker.indexing = index;
     checker.entry_module = ModuleId(entry as u32);
     for (index, module) in modules.iter().enumerate() {
         let imports: HashMap<String, (ModuleId, Span)> = module
@@ -71,6 +85,7 @@ pub fn check_program(
             })
             .collect();
         checker.modules.push(ModuleInfo {
+            file: module.ast.file,
             name: module.name.clone(),
             items: HashMap::new(),
             imports,
@@ -95,12 +110,14 @@ pub fn check_program(
     let entry = checker.check_entry(&script, span);
     let tests = checker.check_tests();
 
+    let index = index.then(|| checker.build_index());
     let mut diagnostics = std::mem::take(&mut checker.diagnostics);
     if diagnostics.has_errors() {
         diagnostics.sort();
         return CheckOutput {
             program: None,
             diagnostics,
+            index,
         };
     }
 
@@ -144,6 +161,7 @@ pub fn check_program(
     CheckOutput {
         program: if has_errors { None } else { Some(program) },
         diagnostics,
+        index,
     }
 }
 

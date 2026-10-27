@@ -20,6 +20,7 @@ dependencies = [
  "sayon-driver",
  "sayon-interp",
  "sayon-ir",
+ "sayon-lsp",
  "sayon-runtime",
  "sayon-syntax",
  "sayon-target",
@@ -69,6 +70,15 @@ dependencies = [
  "sayon-runtime",
  "sayon-syntax",
  "sayon-target",
+]
+
+[[package]]
+name = "sayon-lsp"
+version = "0.0.1"
+dependencies = [
+ "sayon-check",
+ "sayon-driver",
+ "sayon-syntax",
 ]
 
 [[package]]

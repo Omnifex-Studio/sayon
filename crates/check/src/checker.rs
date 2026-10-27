@@ -73,6 +73,8 @@ impl Narrowing {
 pub struct ModuleId(pub u32);
 
 pub(crate) struct ModuleInfo {
+    /// The source file the module is.
+    pub file: sayon_syntax::FileId,
     /// The import path or file name shown in messages.
     pub name: String,
     pub items: HashMap<String, Item>,
@@ -158,6 +160,8 @@ pub(crate) enum Deferred {
         name: String,
         result: Type,
         span: Span,
+        /// The field's name as written, which the index notes.
+        name_span: Span,
         module: ModuleId,
     },
 }
@@ -358,11 +362,16 @@ pub(crate) struct Checker<'a> {
     /// `processor`, and `supports`, and so which platform branches are
     /// checked.
     pub target: &'static sayon_target::Target,
+    /// Whether to note what each name refers to, for [`crate::index`].
+    pub indexing: bool,
+    pub(crate) noted: Vec<(Span, crate::index::Noted)>,
 }
 
 pub struct CheckOutput {
     pub program: Option<hir::Program>,
     pub diagnostics: Diagnostics,
+    /// What the program's names refer to, when it was asked for.
+    pub index: Option<crate::index::Index>,
 }
 
 impl<'a> Checker<'a> {
@@ -403,6 +412,8 @@ impl<'a> Checker<'a> {
             enclosing: Vec::new(),
             closures: Vec::new(),
             target: sayon_target::host(),
+            indexing: false,
+            noted: Vec::new(),
         }
     }
 
@@ -411,6 +422,8 @@ impl<'a> Checker<'a> {
     /// for it, initialized from the enclosing one when the closure is made.
     pub fn find_local(&mut self, cx: &mut FnCtx, name: &str, span: Span) -> Option<LocalId> {
         if let Some(local) = cx.lookup(name) {
+            let declared = cx.locals[local.0 as usize].span;
+            self.note(span, crate::index::Noted::Local(declared));
             return Some(local);
         }
         cx.captures.as_ref()?;
@@ -726,6 +739,9 @@ impl<'a> Checker<'a> {
         member: &ast::Ident,
     ) -> Option<Item> {
         let found = self.item(target, &member.name);
+        if let Some(item) = found {
+            self.note(member.span, crate::index::Noted::Item(item));
+        }
         let module_name = self.modules[target.0 as usize].name.clone();
         match found {
             Some(item) if self.item_is_private(item) && self.item_module(item) != module => {
@@ -1094,6 +1110,7 @@ impl<'a> Checker<'a> {
                 name,
                 args,
             } => {
+                self.note_alias(module, alias);
                 let Some(target) = self.import(module, &alias.name) else {
                     self.error(
                         Diagnostic::error(
@@ -1293,6 +1310,9 @@ impl<'a> Checker<'a> {
         args: &[ast::TypeExpr],
         generics: &HashMap<String, u32>,
     ) -> Type {
+        if let ast::TypeExprKind::Named { name, .. } = &ty.kind {
+            self.note(name.span, crate::index::Noted::Item(Item::Type(id)));
+        }
         let expected = self.types[id.0 as usize].generics.len();
         if args.len() != expected {
             let name = self.types[id.0 as usize].name.clone();
@@ -2129,15 +2149,16 @@ impl<'a> Checker<'a> {
                     name: name.name.clone(),
                     result: result.clone(),
                     span,
+                    name_span: name.span,
                     module,
                 });
                 result
             }
-            resolved => self.known_field_type(&resolved, &name.name, name.span),
+            resolved => self.known_field_type(&resolved, &name.name, name.span, name.span),
         }
     }
 
-    fn known_field_type(&mut self, ty: &Type, name: &str, span: Span) -> Type {
+    fn known_field_type(&mut self, ty: &Type, name: &str, span: Span, name_span: Span) -> Type {
         match ty {
             Type::Unknown => Type::Unknown,
             // A shared value is read through `value`.
@@ -2167,7 +2188,11 @@ impl<'a> Checker<'a> {
             Type::Named(named) if !self.type_def(named.id).is_enum() => {
                 let def = self.type_def(named.id);
                 match def.field_index(name) {
-                    Some(index) => def.fields()[index].ty.substitute(&named.args),
+                    Some(index) => {
+                        let ty = def.fields()[index].ty.substitute(&named.args);
+                        self.note(name_span, crate::index::Noted::Field(named.id, index));
+                        ty
+                    }
                     None => {
                         let names: Vec<String> = def
                             .fields()
@@ -2284,11 +2309,12 @@ impl<'a> Checker<'a> {
                 name,
                 result,
                 span,
+                name_span,
                 ..
             } => match self.unifier.shallow(target) {
                 Type::Var(_) => false,
                 resolved => {
-                    let field = self.known_field_type(&resolved, name, *span);
+                    let field = self.known_field_type(&resolved, name, *span, *name_span);
                     self.unify_at(result, &field, *span, "");
                     true
                 }

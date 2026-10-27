@@ -43,6 +43,45 @@ pub enum Keyword {
 }
 
 impl Keyword {
+    /// Every keyword.
+    pub const ALL: &[Keyword] = &[
+        Keyword::And,
+        Keyword::Async,
+        Keyword::Await,
+        Keyword::Break,
+        Keyword::Case,
+        Keyword::Catch,
+        Keyword::Constant,
+        Keyword::Continue,
+        Keyword::Else,
+        Keyword::Elseif,
+        Keyword::Enum,
+        Keyword::False,
+        Keyword::Finally,
+        Keyword::For,
+        Keyword::Foreign,
+        Keyword::Function,
+        Keyword::If,
+        Keyword::Import,
+        Keyword::In,
+        Keyword::Is,
+        Keyword::Match,
+        Keyword::Not,
+        Keyword::Nothing,
+        Keyword::Or,
+        Keyword::Own,
+        Keyword::Private,
+        Keyword::Public,
+        Keyword::Return,
+        Keyword::True,
+        Keyword::Try,
+        Keyword::Type,
+        Keyword::Unsafe,
+        Keyword::Update,
+        Keyword::Variable,
+        Keyword::While,
+    ];
+
     pub fn lookup(text: &str) -> Option<Keyword> {
         use Keyword::*;
         Some(match text {

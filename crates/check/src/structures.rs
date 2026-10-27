@@ -23,7 +23,10 @@ impl<'a> Checker<'a> {
         match &target.kind {
             ast::ExprKind::Name(name) if !self.is_local_name(cx, &name.name) => {
                 match self.item(cx.module, &name.name) {
-                    Some(Item::Type(id)) => Some(id),
+                    Some(Item::Type(id)) => {
+                        self.note(name.span, crate::index::Noted::Item(Item::Type(id)));
+                        Some(id)
+                    }
                     Some(_) => None,
                     None => (name.name == "Outcome").then_some(OUTCOME),
                 }
@@ -39,6 +42,7 @@ impl<'a> Checker<'a> {
                     return None;
                 }
                 let module = self.import(cx.module, &alias.name)?;
+                self.note_alias(cx.module, alias);
                 let Some(Item::Type(id)) = self.item(module, &name.name) else {
                     return None;
                 };
@@ -138,6 +142,11 @@ impl<'a> Checker<'a> {
                 self.check_expr(cx, value, None);
             }
             return unknown(span);
+        }
+        for (field, _) in fields {
+            if let Some(index) = self.type_def(id).field_index(&field.name) {
+                self.note(field.span, crate::index::Noted::Field(id, index));
+            }
         }
         let ty = if !generic_args.is_empty() {
             let count = self.type_def(id).generics as usize;
@@ -465,6 +474,7 @@ impl<'a> Checker<'a> {
         expected: Option<&Type>,
         span: Span,
     ) -> hir::Expr {
+        self.note(name.span, crate::index::Noted::Variant(id, variant));
         let ty = known
             .or_else(|| self.expected_named(expected, id))
             .unwrap_or_else(|| self.instantiate_named(id, span));

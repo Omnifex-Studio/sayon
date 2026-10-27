@@ -32,6 +32,13 @@ pub struct Options {
     pub packages: packages::Packages,
     /// The target to check and lower the program for.
     pub target: &'static sayon_target::Target,
+    /// Texts to read in place of files, by their canonical paths: what an
+    /// editor holds and has not saved.
+    pub overlays: HashMap<PathBuf, String>,
+    /// Also gather what the program's names refer to, for an editor: then
+    /// the program is checked even past syntax errors, whose follow-on
+    /// errors are left out.
+    pub index: bool,
 }
 
 pub struct Output {
@@ -42,6 +49,8 @@ pub struct Output {
     /// The capabilities the program needs, as [`sayon_check::usage::needs`]
     /// finds them.
     pub needs: Vec<sayon_target::Capability>,
+    /// What the program's names refer to, with [`Options::index`].
+    pub index: Option<sayon_check::index::Index>,
 }
 
 /// The entry file could not be read at all.
@@ -65,7 +74,10 @@ struct Loaded {
 pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
     let mut sources = SourceMap::new();
     let mut diagnostics = Diagnostics::new();
-    let text = read_entry(entry)?;
+    let text = match options.overlays.get(&canonical(entry)) {
+        Some(text) => text.clone().into_bytes(),
+        None => read_entry(entry)?,
+    };
     let entry_name = entry.display().to_string();
     let root = match &options.root {
         Some(root) => root.clone(),
@@ -83,6 +95,7 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
         by_path: HashMap::new(),
         stdlib: options.stdlib.clone(),
         packages: &options.packages,
+        overlays: &options.overlays,
     };
     let entry_file = match decode(entry, &entry_name, text, loader.sources) {
         Ok(file) => file,
@@ -93,6 +106,7 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
                 diagnostics,
                 module: None,
                 needs: Vec::new(),
+                index: None,
             });
         }
     };
@@ -111,13 +125,15 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
     let cycle_free = loader.check_cycles();
     let modules = std::mem::take(&mut loader.modules);
 
-    if diagnostics.has_errors() || !cycle_free {
+    let syntax_errors = diagnostics.has_errors();
+    if !cycle_free || (syntax_errors && !options.index) {
         diagnostics.sort();
         return Ok(Output {
             sources,
             diagnostics,
             module: None,
             needs: Vec::new(),
+            index: None,
         });
     }
     let inputs: Vec<ModuleSource> = modules
@@ -131,7 +147,21 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
         })
         .collect();
     let span = Span::new(modules[0].file, 0, 0);
-    let checked = sayon_check::check_program(&inputs, 0, span, options.target);
+    let mut checked =
+        sayon_check::check_program_indexed(&inputs, 0, span, options.target, options.index);
+    let index = checked.index.take();
+    if syntax_errors {
+        // Checked only for the index: what the syntax errors left behind
+        // would only be reported again.
+        diagnostics.sort();
+        return Ok(Output {
+            sources,
+            diagnostics,
+            module: None,
+            needs: Vec::new(),
+            index,
+        });
+    }
     diagnostics.extend(checked.diagnostics);
     if options.lint
         && let Some(program) = &checked.program
@@ -188,6 +218,7 @@ pub fn compile(entry: &Path, options: &Options) -> Result<Output, EntryError> {
         diagnostics,
         module,
         needs,
+        index,
     })
 }
 
@@ -270,7 +301,8 @@ fn decode(
     }
 }
 
-fn canonical(path: &Path) -> PathBuf {
+/// The path that names a file however it is written, as overlays are keyed.
+pub fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
@@ -281,6 +313,7 @@ struct Loader<'s> {
     by_path: HashMap<PathBuf, usize>,
     stdlib: Option<PathBuf>,
     packages: &'s packages::Packages,
+    overlays: &'s HashMap<PathBuf, String>,
 }
 
 /// Where a module comes from: its package's root and kind.
@@ -449,6 +482,10 @@ impl Loader<'_> {
         let key = canonical(&path);
         if let Some(index) = self.by_path.get(&key) {
             return Some(*index);
+        }
+        if let Some(text) = self.overlays.get(&key) {
+            let file = self.sources.add(name.as_str(), Some(&path), text.clone());
+            return Some(self.add(file, name, origin, key));
         }
         let bytes = match std::fs::read(&path) {
             Ok(bytes) => bytes,
