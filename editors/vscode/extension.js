@@ -38,11 +38,16 @@ class Client {
     const program = vscode.workspace.getConfiguration("sayon").get("path") || "sayon";
     this.process = spawn(program, ["lsp"], { stdio: ["pipe", "pipe", "pipe"] });
     this.process.on("error", (problem) => {
-      vscode.window.showErrorMessage(
+      const message =
         `Sayon's language server could not start (${problem.message}). ` +
-          "Install Sayon, or set `sayon.path` to the sayon program.",
-      );
+        "Install Sayon, or set `sayon.path` to the sayon program.";
+      this.output.appendLine(message);
+      vscode.window.showErrorMessage(message);
+      for (const { reject } of this.pending.values()) reject(problem);
+      this.pending.clear();
     });
+    // Writing to a server that never started, or stopped, fails quietly.
+    this.process.stdin.on("error", () => {});
     this.process.on("exit", (code) => {
       for (const { reject } of this.pending.values()) reject(new Error("the server stopped"));
       this.pending.clear();
@@ -257,11 +262,16 @@ function activate(context) {
   context.subscriptions.push(output);
   client = new Client(output);
   client.start();
+  const restart = async () => {
+    await client.stop();
+    client = new Client(output);
+    client.start();
+  };
   context.subscriptions.push(
-    vscode.commands.registerCommand("sayon.restartServer", async () => {
-      await client.stop();
-      client = new Client(output);
-      client.start();
+    vscode.commands.registerCommand("sayon.restartServer", restart),
+    // Another sayon program takes over at once.
+    vscode.workspace.onDidChangeConfiguration((change) => {
+      if (change.affectsConfiguration("sayon.path")) restart();
     }),
   );
 }

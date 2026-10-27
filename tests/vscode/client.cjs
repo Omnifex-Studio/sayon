@@ -136,6 +136,7 @@ const vscode = {
     onDidOpenTextDocument: event(listeners.open),
     onDidChangeTextDocument: event(listeners.change),
     onDidCloseTextDocument: event(listeners.close),
+    onDidChangeConfiguration: () => disposable,
   },
   window: {
     showErrorMessage: (message) => {

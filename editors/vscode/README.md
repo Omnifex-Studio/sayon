@@ -12,7 +12,14 @@ The language server comes with Sayon: the extension runs `sayon` from the `PATH`
 
 ## Installing from the repository
 
-From this directory, package and install the extension with the `vsce` tool:
+From the repository, package the extension and install it:
+
+```sh
+python scripts/vscode_package.py
+code --install-extension target/editor/sayon-0.0.1.vsix
+```
+
+Or, from this directory, with the `vsce` tool:
 
 ```sh
 npx @vscode/vsce package
