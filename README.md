@@ -119,4 +119,4 @@ Native builds need [LLVM](https://releases.llvm.org)'s clang at build time (foun
 
 ## License
 
-Sayon is licensed under the [Apache License, Version 2.0](LICENSE). [docs/licenses.md](docs/licenses.md) lists what its files and the programs it builds hold from others, and under which licenses.
+Sayon is licensed under the [Apache License, Version 2.0, with LLVM's exception](LICENSE) (`Apache-2.0 WITH LLVM-exception`): the parts of Sayon that a program built with it holds, such as its runtime, can go with that program without its license or notices. [docs/licenses.md](docs/licenses.md) lists what its files and the programs it builds hold from others, and under which licenses.
