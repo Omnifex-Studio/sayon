@@ -65,10 +65,12 @@ function name(path: string) -> string
     return last
 
 # The path without its last component: `parent("docs/notes.txt")` is "docs".
+# A path from the root keeps it: `parent("/home/ada")` is "/home", and
+# `parent("/home")` is "/".
 function parent(path: string) -> string
     parts = components(path)
     pop(parts)
-    return host_join(parts, "/")
+    return root(path) + host_join(parts, "/")
 
 # The extension of the last component, without the dot, or "" when there is
 # none: `extension("notes.txt")` is "txt", and `extension(".profile")` is "".
@@ -87,6 +89,19 @@ private function ends_with_separator(path: string) -> boolean
     if host_ends_with(path, "/")
         return true
     return host_platform() == "windows" and host_ends_with(path, "\\")
+
+# What a path starts from when it starts at a root: "/", or "//" for a
+# Windows network share's `\\server\share`; "" for a relative path. A drive,
+# as in `C:\`, is a component of its own.
+private function root(path: string) -> string
+    normalized = clone(path)
+    if host_platform() == "windows"
+        normalized = host_replace(path, "\\", "/")
+    if host_starts_with(normalized, "//")
+        return "//"
+    if host_starts_with(normalized, "/")
+        return "/"
+    return ""
 
 # The non-empty components of a path.
 private function components(path: string) -> Array<string>

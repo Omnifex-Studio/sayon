@@ -12,6 +12,7 @@ BoundsError: characters 2 to 9 are outside a string of length 3
 1024.0 3.0 3.141592653589793
 true
 docs/notes.txt notes.txt a/b
+/tmp/a / / []
 gz []
 ["first.txt", "second.txt"] 14 ["one", "two", "three"]
 true true false
