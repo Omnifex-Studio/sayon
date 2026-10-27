@@ -28,7 +28,7 @@ pub mod status {
 }
 
 const HELP: &str = "\
-Sayon: a readable language for scripts, applications, and systems programs
+Sayon: Programming made easy. Safety made automatic.
 
 Usage:
     sayon run [file] [-- args]       Check and run a program with the interpreter
