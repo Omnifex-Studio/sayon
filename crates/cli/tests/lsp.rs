@@ -604,17 +604,29 @@ fn completion_fits_the_place() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The VS Code extension's client (`editors/vscode/extension.js`), run in
-/// Node with a stand-in for VS Code's API (`tests/vscode/client.cjs`),
-/// answers through `sayon lsp`. Without Node, the check says it skipped.
+/// The VS Code extension's client, from its repository checked out beside
+/// this one (`../sayon-vscode`, or in `SAYON_REPOSITORIES`), run in Node
+/// with a stand-in for VS Code's API (its `test/client.cjs`), answers
+/// through the `sayon lsp` built here. Without the extension or Node, the
+/// check says it skipped.
 #[test]
 fn the_vscode_extension_talks_to_the_server() {
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let repositories = std::env::var_os("SAYON_REPOSITORIES")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+    let extension = repositories.join("sayon-vscode");
+    if !extension.join("test/client.cjs").is_file() {
+        eprintln!(
+            "SKIPPED: the VS Code extension's check (no sayon-vscode in {})",
+            repositories.display()
+        );
+        return;
+    }
     let node = std::env::var_os("SAYON_NODE").unwrap_or_else(|| "node".into());
     let output = match Command::new(&node)
-        .arg(root.join("tests/vscode/client.cjs"))
+        .arg(extension.join("test/client.cjs"))
         .arg(env!("CARGO_BIN_EXE_sayon"))
-        .arg(root.join("editors/vscode"))
+        .arg(&extension)
         .output()
     {
         Ok(output) => output,

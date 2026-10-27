@@ -427,7 +427,7 @@ pub fn register(prefix: &Path, version: &str, bytes: u64, modify_path: bool) -> 
     key.set_string("Publisher", "Omnifex Studio", REG_SZ)?;
     key.set_string(
         "URLInfoAbout",
-        "https://github.com/Omnifex-Studio/sayon",
+        "https://github.com/sayon-lang/sayon",
         REG_SZ,
     )?;
     key.set_string("InstallLocation", &location, REG_SZ)?;

@@ -7,7 +7,7 @@ version = "0.0.1"
 edition = "2024"
 rust-version = "1.98"
 license = "Apache-2.0 WITH LLVM-exception"
-repository = "https://github.com/Omnifex-Studio/sayon"
+repository = "https://github.com/sayon-lang/sayon"
 publish = false
 
 [workspace.dependencies]

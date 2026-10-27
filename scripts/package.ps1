@@ -15,7 +15,7 @@
 #                            Android apps (x86-64 for emulators, ARM64 for phones)
 #   stdlib/                  the standard library
 #   licenses/                the license texts docs/licenses.md names
-#   docs/, examples/, editors/vscode/, README.md, LICENSE, INSTALL.txt
+#   docs/, examples/, assets/, README.md, LICENSE, INSTALL.txt
 #
 # Usage: powershell -File scripts/package.ps1 [-OutDir dist]
 
@@ -55,7 +55,7 @@ $OutDir = (Resolve-Path $OutDir).Path
 $name = "sayon-$version-$device"
 $stage = Join-Path $OutDir $name
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-foreach ($dir in "bin", "lib", "stdlib", "licenses", "docs", "examples", "editors", "assets") {
+foreach ($dir in "bin", "lib", "stdlib", "licenses", "docs", "examples", "assets") {
     New-Item -ItemType Directory -Force (Join-Path $stage $dir) | Out-Null
 }
 
@@ -93,7 +93,6 @@ foreach ($text in "Apache-2.0.txt", "MIT.txt", "Unicode-3.0.txt", "LLVM-exceptio
     Copy-Item (Join-Path $licenses $text) (Join-Path $stage "licenses")
 }
 Copy-Item "assets/logo.png" (Join-Path $stage "assets")
-Copy-Item -Recurse "editors/vscode" (Join-Path $stage "editors")
 Copy-Item "README.md", "LICENSE" $stage
 
 $install = @"
@@ -119,7 +118,8 @@ host such as wasmtime, and ``sayon build --target web`` ones for web pages, with
 the JavaScript that runs them and a page; they use the same clang.
 
 To start a project: sayon init hello, then cd hello and sayon run.
-Editor support for VS Code is in editors/vscode; see its README.
+The guides are at https://github.com/sayon-lang/docs.sayon-lang.org, and
+the VS Code extension at https://github.com/sayon-lang/sayon-vscode.
 "@
 Set-Content -Path (Join-Path $stage "INSTALL.txt") -Value $install -Encoding utf8
 

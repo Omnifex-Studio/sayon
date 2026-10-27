@@ -16,7 +16,7 @@ use std::process::ExitCode;
 include!(concat!(env!("OUT_DIR"), "/payload.rs"));
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const RELEASES: &str = "https://github.com/Omnifex-Studio/sayon/releases";
+const RELEASES: &str = "https://github.com/sayon-lang/sayon/releases";
 
 const HELP: &str = "\
 Usage:

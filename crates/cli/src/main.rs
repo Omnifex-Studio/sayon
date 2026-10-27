@@ -75,7 +75,8 @@ Options:
     --locked                         Fail instead of changing sayon.lock (install)
     --offline                        Use only dependencies already fetched (install)
     --registry <address>             The registry to use, instead of SAYON_REGISTRY
-                                     or Sayon's (search, info, publish, login, logout)
+                                     or the local one at http://127.0.0.1:4100
+                                     (search, info, publish, login, logout)
     --dry-run                        Show what would be published, without publishing
     --limit <count>                  How many packages to show, at most 50 (search)
 

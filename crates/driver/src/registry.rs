@@ -1,7 +1,7 @@
-//! The package registry's protocol (docs/registry.md), apart from how its
-//! requests travel: registries' addresses, what their answers hold, and
-//! what `sayon install` asks of one ([`Index`]). The `sayon` command
-//! carries the requests over HTTPS.
+//! The package registry's protocol (its repository, packages.sayon-lang.org,
+//! describes it), apart from how its requests travel: registries'
+//! addresses, what their answers hold, and what `sayon install` asks of one
+//! ([`Index`]). The `sayon` command carries the requests over HTTPS.
 
 use crate::json::Json;
 use crate::manifest::{Dependency, Source};
@@ -13,8 +13,10 @@ use sayon_syntax::{FileId, Span};
 /// `<registry>/api/v1/...`.
 pub const PROTOCOL: u32 = 1;
 
-/// The registry used when nothing names another.
-pub const DEFAULT: &str = "https://sayon-registry.sayon-lang.workers.dev";
+/// The registry used when nothing names another: until Sayon's registry is
+/// operated, one run on this computer from packages.sayon-lang.org's
+/// `local.mjs --port 4100`.
+pub const DEFAULT: &str = "http://127.0.0.1:4100";
 
 /// Whether an address can be a registry's: HTTPS, or plain HTTP to this
 /// computer, for a registry run locally.

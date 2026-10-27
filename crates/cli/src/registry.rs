@@ -1,6 +1,7 @@
 //! The registry commands, `sayon login`, `logout`, `publish`, `search`, and
 //! `info`, and the registry client `sayon install` fetches packages with.
-//! The protocol is in docs/registry.md; the driver reads its answers
+//! The protocol is described in the registry's repository,
+//! packages.sayon-lang.org; the driver reads its answers
 //! (`sayon_driver::registry`), and `http` carries its requests.
 
 use crate::compile::{Options, current_project, print_package_error};
@@ -59,7 +60,12 @@ fn refusal(response: &Response) -> String {
 }
 
 fn reach(registry: &str, error: String) -> String {
-    format!("cannot reach the registry {registry}: {error}")
+    let local = if registry == registry::DEFAULT {
+        "; it is the registry run on this computer, which `node local.mjs --port 4100` in packages.sayon-lang.org starts, unless SAYON_REGISTRY names another"
+    } else {
+        ""
+    };
+    format!("cannot reach the registry {registry}: {error}{local}")
 }
 
 /// Asks the registry, reading a JSON answer.

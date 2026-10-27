@@ -1,7 +1,9 @@
 //! The registry end to end: `sayon login`, `publish`, `search`, `info`,
 //! `logout`, and `install` of versions, against the registry's own code run
-//! locally (registry/local.mjs). Without Node 22.5 or later, which has
-//! `node:sqlite`, the tests are skipped.
+//! locally: `local.mjs` of its repository, checked out beside this one
+//! (`../packages.sayon-lang.org`, or in `SAYON_REPOSITORIES`). Without it,
+//! or without Node 22.5 or later, which has `node:sqlite`, the tests are
+//! skipped.
 
 use sayon_driver::json::Json;
 use std::io::{BufRead, BufReader, Write};
@@ -23,6 +25,17 @@ impl Drop for Registry {
 
 /// Starts a registry with the accounts `alice` and `bob`.
 fn registry(base: &Path) -> Option<Registry> {
+    let repositories = std::env::var_os("SAYON_REPOSITORIES")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."));
+    let script = repositories.join("packages.sayon-lang.org/local.mjs");
+    if !script.is_file() {
+        eprintln!(
+            "SKIPPED: the registry's tests (no packages.sayon-lang.org in {})",
+            repositories.display()
+        );
+        return None;
+    }
     let usable = Command::new("node")
         .args(["-e", "require('node:sqlite')"])
         .stderr(Stdio::null())
@@ -32,7 +45,6 @@ fn registry(base: &Path) -> Option<Registry> {
         eprintln!("Node with node:sqlite is not available; skipping");
         return None;
     }
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../registry/local.mjs");
     let log = std::fs::File::create(base.join("registry.log")).unwrap();
     let mut child = Command::new("node")
         .arg("--no-warnings")

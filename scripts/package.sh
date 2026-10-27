@@ -16,7 +16,7 @@
 #                                Android apps (x86-64 for emulators, ARM64 for phones)
 #   stdlib/                      the standard library
 #   licenses/                    the license texts docs/licenses.md names
-#   docs/, examples/, editors/vscode/, README.md, LICENSE, INSTALL.txt
+#   docs/, examples/, assets/, README.md, LICENSE, INSTALL.txt
 #
 # The installer carries the files as a zip archive, which Python writes.
 # This is the Linux and macOS counterpart of scripts/package.ps1.
@@ -59,7 +59,7 @@ out_dir="$(cd "$out_dir" && pwd)"
 name="sayon-$version-$device"
 stage="$out_dir/$name"
 rm -rf "$stage"
-mkdir -p "$stage"/{bin,lib,stdlib,licenses,docs,examples,editors,assets}
+mkdir -p "$stage"/{bin,lib,stdlib,licenses,docs,examples,assets}
 
 cp target/release/sayon "$stage/bin/"
 cp target/release/libsayon_runtime.a "$stage/lib/"
@@ -91,7 +91,6 @@ for text in Apache-2.0.txt MIT.txt Unicode-3.0.txt LLVM-exception.txt; do
     cp "$licenses/$text" "$stage/licenses/"
 done
 cp assets/logo.png "$stage/assets/"
-cp -R editors/vscode "$stage/editors/"
 cp README.md LICENSE "$stage/"
 
 # The newest version of the C library the tool needs, which the systems it
@@ -131,7 +130,8 @@ TLS (https:// and network.connect_secure) uses the system's OpenSSL 3
 $requirement
 
 To start a project: sayon init hello, then cd hello and sayon run.
-Editor support for VS Code is in editors/vscode; see its README.
+The guides are at https://github.com/sayon-lang/docs.sayon-lang.org, and
+the VS Code extension at https://github.com/sayon-lang/sayon-vscode.
 EOF
 
 archive="$out_dir/$name.tar.gz"

@@ -109,7 +109,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Dependencies from local folders and pinned Git commits, `sayon install` (`--locked`, `--offline`), `sayon.lock` with source digests | experimental | M2 |
 | Dependencies by version from a registry: ranges (`^`, `~`, `=`, comparisons, `*`), one version of each package in a graph, the lock's versions kept while the ranges accept them, digests checked on arrival and from the lock | experimental | M5 |
 | Registry commands: `publish` (`--dry-run`), `search`, `info`, `login`, `logout`; tokens in the Windows Credential Manager or a private file; `--registry` and `SAYON_REGISTRY` | experimental | M5 |
-| The registry service (`registry/`): protocol 1, a Cloudflare Worker with D1 and KV, and the same code run locally in Node for tests | experimental | M5 |
+| The registry service ([packages.sayon-lang.org](https://github.com/sayon-lang/packages.sayon-lang.org)): protocol 1, a Cloudflare Worker with D1 and KV, and the same code run locally in Node, the default registry at `http://127.0.0.1:4100` until Sayon's is operated | experimental | M5 |
 | Registry accounts made by people, yanking versions, owners besides the first publisher, `sayon update` | planned | M5, M6 |
 | Language server | planned | before M6 |
 | Debugger, REPL, watch mode | planned | M8 |
