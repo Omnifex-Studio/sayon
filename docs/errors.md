@@ -474,7 +474,7 @@ A module constant depends on itself, directly or through other constants or func
 
 ### E_MANIFEST
 
-`sayon.toml` is invalid: a key is unknown or misspelled, a value has the wrong type, a package name or version is malformed, or `[compiler]` names a target or capability that does not exist. The message points at the problem.
+`sayon.toml` is invalid: a key is unknown or misspelled, a value has the wrong type, a package name, version, or a dependency's version range or registry address is malformed, a dependency mixes `version` with `path` or `git`, or `[compiler]` names a target or capability that does not exist. The message points at the problem.
 
 ## Targets and capabilities
 

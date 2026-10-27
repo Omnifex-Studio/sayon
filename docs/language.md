@@ -1119,7 +1119,7 @@ A single file runs on its own, with imports relative to its directory. A project
 ```toml
 [package]
 name = "hello"                 # lowercase letters, digits, and underscores
-version = "0.1.0"              # major.minor.patch
+version = "0.1.0"              # major.minor.patch, and maybe a pre-release: "1.0.0-beta.1"
 entry = "src/main.sayon"       # optional; this is the default
 authors = ["Ada"]              # optional
 description = "Says hello"     # optional
@@ -1131,10 +1131,13 @@ Unknown or misspelled manifest keys are errors. A `[compiler]` table names the p
 
 ### Dependencies
 
-A project can use other Sayon packages: folders with their own `sayon.toml`. Each dependency has an alias, and comes from a local folder or from one exact commit of a Git repository:
+A project can use other Sayon packages: folders with their own `sayon.toml`. Each dependency has an alias, and comes from the package registry by version, from a local folder, or from one exact commit of a Git repository:
 
 ```toml
 [dependencies]
+json = "1.2"                                   # from the registry: 1.2.0 or later, before 2.0.0
+http = { version = "0.4", package = "web_http" }   # the registry's `web_http`, imported as `http`
+mirror = { version = "2", registry = "https://registry.example.com" }
 utilities = { path = "../utilities" }
 codec = { git = "https://example.com/team/codec.git", revision = "<full commit id>" }
 
@@ -1148,13 +1151,45 @@ A module imports a dependency's files through its alias, with paths inside the d
 utilities = import("dependencies/utilities/src/library.sayon")
 ```
 
-- `sayon install` reads the manifests of the project and of every dependency, fetches Git sources into a cache, and writes `sayon.lock`, which records each package's source, version, and dependencies, and a digest of each Git source's files. Commit `sayon.lock` with the project.
-- `run`, `check`, `build`, `test`, and `lint` read `sayon.lock`. They never fetch anything or change the lock: when the manifests and the lock disagree, or a cached Git source no longer matches its digest, they stop and ask for `sayon install`.
-- `sayon install --locked` fails instead of changing the lock, for automated builds; `sayon install --offline` uses only sources already in the cache.
+- `sayon install` reads the manifests of the project and of every dependency, chooses a version of each registry package, fetches Git and registry sources into a cache, and writes `sayon.lock`, which records each package's source, version, and dependencies, and a digest of each fetched source's files. Commit `sayon.lock` with the project.
+- `run`, `check`, `build`, `test`, and `lint` read `sayon.lock`. They never fetch anything or change the lock: when the manifests and the lock disagree, or a cached source no longer matches its digest, they stop and ask for `sayon install`.
+- `sayon install --locked` fails instead of changing the lock, for automated builds; `sayon install --offline` uses only sources already in the cache, and the versions the lock chose.
 - A dependency's own imports resolve inside its folder, and its `dependencies/...` imports through its own manifest. Packages cannot depend on each other in a cycle. Warnings about a dependency's code are not shown, and `sayon lint` does not lint it.
 - A local folder is used as it is, so changes to it take effect at once. A Git dependency names a full commit (`git rev-parse HEAD` prints one); branches and tags would let the code change under the lock.
-- Fetched sources are kept in `SAYON_CACHE`, or the user's cache folder (`%LOCALAPPDATA%\Sayon\cache` on Windows). Git must be installed to fetch them.
-- Dependencies by version from a package registry arrive with the registry (milestone M5).
+- Fetched sources are kept in `SAYON_CACHE`, or the user's cache folder (`%LOCALAPPDATA%\Sayon\cache` on Windows). Git must be installed to fetch Git sources.
+
+### Versions from the registry
+
+A version is three numbers, `major.minor.patch`, and may name a pre-release after a `-`, as `1.0.0-beta.1`, which comes before `1.0.0`. A dependency's version is a range of versions it accepts:
+
+| Range | Accepts |
+| --- | --- |
+| `"1.2.3"` or `"^1.2.3"` | 1.2.3 and later, before 2.0.0 |
+| `"1.2"`, `"1"` | 1.2.0 and later, before 2.0.0; 1.0.0 and later, before 2.0.0 |
+| `"0.4"`, `"0.4.1"` | 0.4.0 and later, before 0.5.0; 0.4.1 and later, before 0.5.0 |
+| `"0.0.3"` | 0.0.3 only |
+| `"~1.2.3"`, `"~1.2"` | 1.2.3 and later, before 1.3.0; 1.2.0 and later, before 1.3.0 |
+| `"=1.2.3"` | exactly 1.2.3 |
+| `">=1.2, <1.5"` | every version both parts accept: `>`, `>=`, `<`, `<=`, `=`, `^`, and `~`, separated by commas |
+| `"*"` | every release |
+
+A range accepts a pre-release only when one of its parts names a pre-release of the same three numbers, so `"^1.0"` never picks `1.1.0-beta`.
+
+- A project's graph has one version of each registry package: the latest that every range asking for it accepts. When none is, `sayon install` stops and names the ranges and who asks for each.
+- Once `sayon.lock` has a version, `sayon install` keeps it while the ranges still accept it, so installing again changes nothing; to move to a later version, delete `sayon.lock` (or change the range) and install again.
+- A dependency without `registry` comes from the registry `SAYON_REGISTRY` names, or else from Sayon's registry; a registry package's own dependencies without `registry` come from its registry. `package` names the package when it differs from the alias.
+- Each version's files are checked against the digest the registry published for it when they arrive, and against `sayon.lock` from then on.
+
+`sayon search json` finds packages by part of their names or descriptions, and `sayon info json` shows a package's versions, owner, and dependencies. Both, like every registry command, take `--registry <address>`.
+
+### Publishing
+
+`sayon publish` sends the project's package to the registry: every file in the project's folder but hidden ones (any name starting with `.`), and `build`, `target`, and `sayon.lock` at its top, 10 MiB at most. `sayon publish --dry-run` lists those files, their size, and the digest, and sends nothing.
+
+- Publishing needs an account. The registry's operator makes it and gives you its token; `sayon login` asks for the token, checks it with the registry, and keeps it: in the Windows Credential Manager, or elsewhere in `~/.config/sayon/credentials`, which only you can read. `sayon logout` forgets it. Set `SAYON_TOKEN` instead for automated publishing.
+- A package's name belongs to the account that published it first. A version never changes once published, so fixing one means publishing the next.
+- Everything a published package depends on must come from a registry; `dev_dependencies` may be local, since only the package's own tests use them.
+- The registry, its protocol, and how to run one are in [registry.md](registry.md).
 
 `sayon doctor` reports the Unicode version the toolchain follows and where the standard library, the runtime library, and clang were found. `sayon explain CODE` explains a diagnostic or runtime error code; [errors.md](errors.md) lists them all.
 

@@ -8,7 +8,7 @@
 
 mod complete;
 pub mod context;
-pub mod json;
+pub use sayon_driver::json;
 mod server;
 pub mod text;
 

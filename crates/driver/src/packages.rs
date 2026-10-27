@@ -1,19 +1,27 @@
 //! Dependencies: resolving a project's packages, the lock file `sayon.lock`,
-//! package digests, and the cache of Git sources.
+//! package digests, and the cache of fetched sources.
 //!
-//! `sayon install` resolves the graph declared by the manifests, fetches Git
-//! sources into the cache, and writes the lock. Every other command reads the
-//! lock, checks that it still matches the manifests and that cached sources
-//! are intact, and neither fetches nor changes anything.
+//! `sayon install` chooses a version of each registry package the graph
+//! reaches, resolves the graph declared by the manifests, fetches Git and
+//! registry sources into the cache, and writes the lock. Every other command
+//! reads the lock, checks that it still matches the manifests and that
+//! cached sources are intact, and neither fetches nor changes anything.
 //!
 //! A package's identity is its source: `path:<directory>`, relative to the
-//! root package and written with `/`, or `git:<url>#<commit>`. Packages from
-//! local directories are used as they are; Git sources are locked to a
-//! digest of their contents.
+//! root package and written with `/`, `git:<url>#<commit>`, or
+//! `registry:<address>#<name>@<version>`. Packages from local directories
+//! are used as they are; Git and registry sources are locked to a digest of
+//! their contents.
+//!
+//! A graph has one version of each registry package: the latest that every
+//! range asking for it accepts, or, while it still does, the version the
+//! previous lock chose, so that installing again changes nothing.
 
 use crate::manifest::{self, Dependency, Manifest, Source, Value};
+use crate::registry::{Index, Published};
+use crate::semver::{Requirement, Version};
 use crate::sha256::{Sha256, hex};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 
@@ -29,14 +37,14 @@ pub struct PackageError {
 }
 
 impl PackageError {
-    fn new(message: impl Into<String>) -> PackageError {
+    pub fn new(message: impl Into<String>) -> PackageError {
         PackageError {
             message: message.into(),
             help: None,
         }
     }
 
-    fn help(mut self, help: impl Into<String>) -> PackageError {
+    pub fn help(mut self, help: impl Into<String>) -> PackageError {
         self.help = Some(help.into());
         self
     }
@@ -112,7 +120,7 @@ fn relative(from: &Path, to: &Path) -> String {
     }
 }
 
-// ----- the cache of Git sources --------------------------------------------------
+// ----- the cache of fetched sources ----------------------------------------------
 
 /// Where fetched sources are kept: `SAYON_CACHE`, or the user's cache folder.
 pub fn cache_dir() -> PathBuf {
@@ -194,6 +202,59 @@ fn fetch(url: &str, revision: &str, dir: &Path) -> Result<(), PackageError> {
         std::fs::rename(&temporary, dir)
             .map_err(|e| PackageError::new(format!("cannot store {url} in the cache: {e}")))
     })();
+    if result.is_err() {
+        let _ = remove_tree(&temporary);
+    }
+    result
+}
+
+/// The cache folder of one version of a registry package.
+fn registry_dir(address: &str, name: &str, version: &Version) -> PathBuf {
+    let mut hasher = Sha256::default();
+    hasher.update(address.as_bytes());
+    cache_dir()
+        .join("registry")
+        .join(&hex(&hasher.finish())[..16])
+        .join(format!("{name}-{version}"))
+}
+
+/// A registry package's identity.
+fn registry_source(address: &str, name: &str, version: &Version) -> String {
+    format!("registry:{address}#{name}@{version}")
+}
+
+/// The registry, name, and version a registry package's identity names.
+fn registry_parts(source: &str) -> Option<(&str, &str, Version)> {
+    let (address, package) = source.strip_prefix("registry:")?.rsplit_once('#')?;
+    let (name, version) = package.split_once('@')?;
+    Some((address, name, Version::parse(version)?))
+}
+
+/// Writes an archive's files into the cache, through a temporary directory
+/// so that an interrupted fetch leaves nothing behind.
+fn store(archive: &[u8], dir: &Path) -> Result<(), PackageError> {
+    let parent = dir.parent().expect("cache directory");
+    std::fs::create_dir_all(parent).map_err(|e| {
+        PackageError::new(format!(
+            "cannot create the cache folder {}: {e}",
+            parent.display()
+        ))
+    })?;
+    let temporary = parent.join(format!(
+        "{}.{}",
+        dir.file_name().unwrap_or_default().to_string_lossy(),
+        std::process::id()
+    ));
+    let _ = remove_tree(&temporary);
+    let result = crate::archive::unpack(archive, &temporary)
+        .map_err(PackageError::new)
+        .and_then(|()| match std::fs::rename(&temporary, dir) {
+            // Another `sayon install` stored it first.
+            Err(_) if dir.is_dir() => remove_tree(&temporary),
+            other => other.map_err(|e| {
+                PackageError::new(format!("cannot store {} in the cache: {e}", dir.display()))
+            }),
+        });
     if result.is_err() {
         let _ = remove_tree(&temporary);
     }
@@ -284,7 +345,8 @@ fn collect_files(
 
 // ----- resolving ---------------------------------------------------------------------
 
-/// Whether resolving may fetch Git sources that are not in the cache.
+/// Whether resolving may fetch Git and registry sources that are not in the
+/// cache, and ask registries for their packages' versions.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Fetch {
     Allowed,
@@ -297,7 +359,13 @@ pub struct Resolved {
     pub dirs: HashMap<String, PathBuf>,
 }
 
-struct Resolver {
+/// A registry package: its registry's address and its name.
+type Key = (String, String);
+
+/// What asked for a version of a registry package: the range, and who.
+type Wanted = BTreeMap<Key, Vec<(String, String)>>;
+
+struct Resolver<'i> {
     root: PathBuf,
     fetch: Fetch,
     packages: BTreeMap<String, Package>,
@@ -306,6 +374,15 @@ struct Resolver {
     chain: Vec<String>,
     /// The digests the previous lock recorded, by source.
     known: HashMap<String, String>,
+    /// The registries, while fetching is allowed.
+    index: Option<&'i mut dyn Index>,
+    /// The version of each registry package the graph has.
+    choices: HashMap<Key, Version>,
+    /// What registries said of their packages' versions.
+    published: HashMap<Key, Vec<Published>>,
+    /// The registry of dependencies that name none, but those of registry
+    /// packages, which come from their package's registry.
+    default: String,
 }
 
 fn read_package_manifest(dir: &Path, alias: &str) -> Result<Manifest, PackageError> {
@@ -334,11 +411,200 @@ fn read_package_manifest(dir: &Path, alias: &str) -> Result<Manifest, PackageErr
     })
 }
 
-impl Resolver {
-    /// The identity and directory of a dependency of the package at `from`.
+impl Resolver<'_> {
+    fn new(root: PathBuf, fetch: Fetch, index: Option<&mut dyn Index>) -> Resolver<'_> {
+        Resolver {
+            root,
+            fetch,
+            packages: BTreeMap::new(),
+            dirs: HashMap::new(),
+            chain: Vec::new(),
+            known: HashMap::new(),
+            index,
+            choices: HashMap::new(),
+            published: HashMap::new(),
+            default: crate::registry::default_address(),
+        }
+    }
+
+    /// Takes the registry packages' versions and the digests a lock has.
+    fn remember(&mut self, lock: &Lock) {
+        for package in &lock.packages {
+            if !package.digest.is_empty() {
+                self.known
+                    .insert(package.source.clone(), package.digest.clone());
+            }
+            if let Some((address, name, version)) = registry_parts(&package.source) {
+                self.choices
+                    .insert((address.to_string(), name.to_string()), version);
+            }
+        }
+    }
+
+    /// The registry that the dependencies of the package `source` come from
+    /// when they name none.
+    fn home(&self, source: &str) -> String {
+        registry_parts(source)
+            .map_or_else(|| self.default.clone(), |(address, ..)| address.to_string())
+    }
+
+    /// The versions a registry has of a package.
+    fn versions(&mut self, key: &Key) -> Result<Vec<Published>, PackageError> {
+        if let Some(found) = self.published.get(key) {
+            return Ok(found.clone());
+        }
+        let Some(index) = self.index.as_deref_mut() else {
+            return Err(PackageError::new(format!(
+                "choosing a version of `{}` needs its registry, {}, and installing is offline",
+                key.1, key.0
+            ))
+            .help("run `sayon install` without `--offline`"));
+        };
+        let found = index.versions(&key.0, &key.1)?;
+        self.published.insert(key.clone(), found.clone());
+        Ok(found)
+    }
+
+    /// What the registry says of one version of a package.
+    fn version(&mut self, key: &Key, version: &Version) -> Result<Published, PackageError> {
+        self.versions(key)?
+            .into_iter()
+            .find(|published| published.version == *version)
+            .ok_or_else(|| {
+                PackageError::new(format!("{} has no version {version} of `{}`", key.0, key.1))
+                    .help("run `sayon install` to choose a version it has")
+            })
+    }
+
+    /// The dependencies of one version of a registry package: from its
+    /// manifest when it is in the cache, or else from its registry.
+    fn registry_dependencies(
+        &mut self,
+        key: &Key,
+        version: &Version,
+    ) -> Result<Vec<Dependency>, PackageError> {
+        let dir = registry_dir(&key.0, &key.1, version);
+        if dir.join(manifest::FILE_NAME).is_file() {
+            return Ok(read_package_manifest(&dir, &key.1)?.dependencies);
+        }
+        Ok(self.version(key, version)?.dependencies)
+    }
+
+    /// Chooses the version of each registry package the graph reaches. Each
+    /// round walks the graph with the versions chosen so far and chooses
+    /// again for the ranges it found, until nothing changes.
+    fn select(&mut self, manifest: &Manifest) -> Result<(), PackageError> {
+        for _ in 0..100 {
+            let mut wanted = Wanted::new();
+            let mut seen = HashSet::new();
+            let (root, home) = (self.root.clone(), self.default.clone());
+            for dependencies in [&manifest.dependencies, &manifest.dev_dependencies] {
+                self.gather(
+                    &root,
+                    &home,
+                    dependencies,
+                    "this project",
+                    &mut wanted,
+                    &mut seen,
+                )?;
+            }
+            let mut next = HashMap::new();
+            for (key, ranges) in &wanted {
+                let parsed = ranges
+                    .iter()
+                    .map(|(range, _)| Requirement::parse(range))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(PackageError::new)?;
+                let accepted =
+                    |version: &Version| parsed.iter().all(|range| range.matches(version));
+                if let Some(current) = self.choices.get(key)
+                    && accepted(current)
+                {
+                    next.insert(key.clone(), current.clone());
+                    continue;
+                }
+                let versions = self.versions(key)?;
+                let best = versions
+                    .iter()
+                    .map(|published| &published.version)
+                    .filter(|version| accepted(version))
+                    .max();
+                match best {
+                    Some(version) => next.insert(key.clone(), version.clone()),
+                    None => return Err(conflict(key, ranges, &versions)),
+                };
+            }
+            let settled = next == self.choices;
+            self.choices = next;
+            if settled {
+                return Ok(());
+            }
+        }
+        Err(PackageError::new(
+            "the ranges the packages ask for keep changing which versions match them",
+        )
+        .help("name narrower ranges in sayon.toml, such as \"=1.2.3\", for the packages involved"))
+    }
+
+    /// Notes the ranges asked for by the dependencies of the package at
+    /// `dir`, and walks on into the packages they reach.
+    fn gather(
+        &mut self,
+        dir: &Path,
+        home: &str,
+        dependencies: &[Dependency],
+        by: &str,
+        wanted: &mut Wanted,
+        seen: &mut HashSet<String>,
+    ) -> Result<(), PackageError> {
+        for dependency in dependencies {
+            if let Source::Registry {
+                registry,
+                package,
+                requirement,
+            } = &dependency.source
+            {
+                let address = registry.clone().unwrap_or_else(|| home.to_string());
+                let key = (address, package.clone());
+                wanted
+                    .entry(key.clone())
+                    .or_default()
+                    .push((requirement.clone(), by.to_string()));
+                let Some(version) = self.choices.get(&key).cloned() else {
+                    continue;
+                };
+                if !seen.insert(registry_source(&key.0, package, &version)) {
+                    continue;
+                }
+                let inner = self.registry_dependencies(&key, &version)?;
+                let by = format!("{package} {version}");
+                self.gather(dir, &key.0, &inner, &by, wanted, seen)?;
+            } else {
+                let (source, package_dir) = self.locate(dir, home, dependency)?;
+                if !seen.insert(source) {
+                    continue;
+                }
+                let found = read_package_manifest(&package_dir, &dependency.alias)?;
+                let default = self.default.clone();
+                self.gather(
+                    &package_dir,
+                    &default,
+                    &found.dependencies,
+                    &found.name,
+                    wanted,
+                    seen,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The identity and directory of a dependency of the package at `from`,
+    /// whose dependencies come from the registry `home` when they name none.
     fn locate(
         &mut self,
         from: &Path,
+        home: &str,
         dependency: &Dependency,
     ) -> Result<(String, PathBuf), PackageError> {
         match &dependency.source {
@@ -386,6 +652,64 @@ impl Resolver {
                 }
                 Ok((source, dir))
             }
+            Source::Registry {
+                registry,
+                package,
+                requirement,
+            } => {
+                let alias = &dependency.alias;
+                let address = registry.clone().unwrap_or_else(|| home.to_string());
+                let key = (address.clone(), package.clone());
+                let Some(version) = self.choices.get(&key).cloned() else {
+                    return Err(PackageError::new(format!(
+                        "the dependency `{alias}` ({package} from {address}) is not in sayon.lock"
+                    ))
+                    .help("run `sayon install` to choose its version"));
+                };
+                if !Requirement::parse(requirement).is_ok_and(|range| range.matches(&version)) {
+                    return Err(PackageError::new(format!(
+                        "sayon.lock has {package} {version}, which `{alias} = \"{requirement}\"` does not accept"
+                    ))
+                    .help("run `sayon install` to choose another version"));
+                }
+                let source = registry_source(&address, package, &version);
+                let dir = registry_dir(&address, package, &version);
+                let mut expected = self.known.get(&source).cloned();
+                if expected.is_none() && self.index.is_some() {
+                    expected = Some(self.version(&key, &version)?.digest);
+                }
+                if dir.is_dir()
+                    && let Some(expected) = &expected
+                    && digest(&dir)? != *expected
+                {
+                    if self.fetch == Fetch::Offline {
+                        return Err(PackageError::new(format!(
+                            "the cached copy of `{alias}` ({package} {version}) does not match sayon.lock"
+                        ))
+                        .help("run `sayon install` without `--offline` to fetch it again"));
+                    }
+                    remove_tree(&dir)?;
+                }
+                if !dir.is_dir() {
+                    let (Some(index), Some(expected)) = (self.index.as_deref_mut(), expected)
+                    else {
+                        return Err(PackageError::new(format!(
+                            "the dependency `{alias}` ({package} {version} from {address}) is not in the cache"
+                        ))
+                        .help("run `sayon install` without `--offline` to fetch it"));
+                    };
+                    let archive = index.archive(&address, package, &version)?;
+                    let found = crate::archive::digest(&archive);
+                    if found != expected {
+                        return Err(PackageError::new(format!(
+                            "the archive {address} gave of {package} {version} has the digest {found}, not {expected}"
+                        ))
+                        .help("a published version never changes, so the copy was damaged on the way, or the registry is not the one sayon.lock was written with; try again, and if it persists, tell the registry's operator"));
+                    }
+                    store(&archive, &dir)?;
+                }
+                Ok((source, dir))
+            }
         }
     }
 
@@ -394,11 +718,12 @@ impl Resolver {
     fn dependencies(
         &mut self,
         dir: &Path,
+        home: &str,
         dependencies: &[Dependency],
     ) -> Result<Vec<(String, String)>, PackageError> {
         let mut edges = Vec::new();
         for dependency in dependencies {
-            let (source, package_dir) = self.locate(dir, dependency)?;
+            let (source, package_dir) = self.locate(dir, home, dependency)?;
             edges.push((dependency.alias.clone(), source.clone()));
             if self.chain.contains(&source) {
                 let mut cycle = self.chain.clone();
@@ -412,10 +737,19 @@ impl Resolver {
                 continue;
             }
             let found = read_package_manifest(&package_dir, &dependency.alias)?;
+            if let Some((address, name, version)) = registry_parts(&source)
+                && (found.name != name || found.version != version.to_string())
+            {
+                return Err(PackageError::new(format!(
+                    "{address} gave {} {} as {name} {version}",
+                    found.name, found.version
+                )));
+            }
+            let inner_home = self.home(&source);
             self.chain.push(source.clone());
-            let inner = self.dependencies(&package_dir, &found.dependencies)?;
+            let inner = self.dependencies(&package_dir, &inner_home, &found.dependencies)?;
             self.chain.pop();
-            let digest = if source.starts_with("git:") {
+            let digest = if source.starts_with("git:") || source.starts_with("registry:") {
                 digest(&package_dir)?
             } else {
                 String::new()
@@ -437,35 +771,67 @@ impl Resolver {
     }
 }
 
+/// The error for a registry package no version of which every range
+/// asking for it accepts.
+fn conflict(key: &Key, ranges: &[(String, String)], versions: &[Published]) -> PackageError {
+    let (address, name) = key;
+    // The project's own range first, then the packages' by name.
+    let mut ranges = ranges.to_vec();
+    ranges.sort_by_key(|(range, by)| (by != "this project", by.clone(), range.clone()));
+    ranges.dedup();
+    let asked: Vec<String> = ranges
+        .iter()
+        .map(|(range, by)| format!("\"{range}\" ({by})"))
+        .collect();
+    let message = match asked.as_slice() {
+        [one] => format!("no version of `{name}` in {address} matches {one}"),
+        _ => format!(
+            "no version of `{name}` in {address} matches every range asked for: {}",
+            asked.join(", ")
+        ),
+    };
+    let mut shown: Vec<String> = versions
+        .iter()
+        .rev()
+        .take(5)
+        .map(|published| published.version.to_string())
+        .collect();
+    if versions.len() > shown.len() {
+        shown.push("...".to_string());
+    }
+    let help = if shown.is_empty() {
+        format!("`{name}` has no published versions yet")
+    } else {
+        format!(
+            "it has {}; change the ranges so that one version matches them all",
+            shown.join(", ")
+        )
+    };
+    PackageError::new(message).help(help)
+}
+
 /// Resolves the whole dependency graph of the package at `root`.
-/// `previous` is the lock being replaced, whose digests cached Git
-/// sources must still match.
+/// `previous` is the lock being replaced: cached sources must still match
+/// its digests, and its versions of registry packages are kept while the
+/// ranges accept them. `index` reaches the registries; offline, none is.
 pub fn resolve(
     root: &Path,
     manifest: &Manifest,
     fetch: Fetch,
     previous: Option<&Lock>,
+    index: &mut dyn Index,
 ) -> Result<Resolved, PackageError> {
     let root = canonical(root);
-    let known = previous
-        .map(|lock| {
-            lock.packages
-                .iter()
-                .filter(|p| !p.digest.is_empty())
-                .map(|p| (p.source.clone(), p.digest.clone()))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut resolver = Resolver {
-        root: root.clone(),
-        fetch,
-        packages: BTreeMap::new(),
-        dirs: HashMap::new(),
-        chain: vec!["path:.".to_string()],
-        known,
-    };
-    let dependencies = resolver.dependencies(&root, &manifest.dependencies)?;
-    let dev_dependencies = resolver.dependencies(&root, &manifest.dev_dependencies)?;
+    let index = (fetch == Fetch::Allowed).then_some(index);
+    let mut resolver = Resolver::new(root.clone(), fetch, index);
+    if let Some(lock) = previous {
+        resolver.remember(lock);
+    }
+    resolver.select(manifest)?;
+    resolver.chain.push("path:.".to_string());
+    let home = resolver.default.clone();
+    let dependencies = resolver.dependencies(&root, &home, &manifest.dependencies)?;
+    let dev_dependencies = resolver.dependencies(&root, &home, &manifest.dev_dependencies)?;
     Ok(Resolved {
         lock: Lock {
             dependencies,
@@ -615,6 +981,7 @@ pub fn install(
     manifest: &Manifest,
     locked: bool,
     fetch: Fetch,
+    index: &mut dyn Index,
 ) -> Result<Installed, PackageError> {
     let existing = std::fs::read_to_string(root.join(LOCK_FILE)).ok();
     if locked && existing.is_none() {
@@ -622,7 +989,7 @@ pub fn install(
             .help("run `sayon install` without `--locked` to write it"));
     }
     let previous = existing.as_deref().and_then(|text| parse_lock(text).ok());
-    let resolved = resolve(root, manifest, fetch, previous.as_ref())?;
+    let resolved = resolve(root, manifest, fetch, previous.as_ref(), index)?;
     let text = render(&resolved.lock);
     let changed = existing.as_deref() != Some(text.as_str());
     if changed && locked {
@@ -660,31 +1027,36 @@ pub fn load(root: &Path, manifest: &Manifest, tests: bool) -> Result<Packages, P
     })?;
 
     // The sources each manifest names must be the ones locked. Checking
-    // never fetches, so a Git source must already be in the cache.
-    let mut checker = Resolver {
-        root: root.clone(),
-        fetch: Fetch::Offline,
-        packages: BTreeMap::new(),
-        dirs: HashMap::new(),
-        chain: Vec::new(),
-        known: HashMap::new(),
-    };
-    let declared = |checker: &mut Resolver, from: &Path, dependencies: &[Dependency]| {
-        let mut edges = Vec::new();
-        for dependency in dependencies {
-            let (source, dir) = checker.locate(from, dependency).map_err(install_hint)?;
-            edges.push((dependency.alias.clone(), source, dir));
+    // never fetches, so a Git or registry source must already be in the
+    // cache; its digest is checked below.
+    let mut checker = Resolver::new(root.clone(), Fetch::Offline, None);
+    for package in &lock.packages {
+        if let Some((address, name, version)) = registry_parts(&package.source) {
+            checker
+                .choices
+                .insert((address.to_string(), name.to_string()), version);
         }
-        edges.sort();
-        Ok::<_, PackageError>(edges)
-    };
+    }
+    let declared =
+        |checker: &mut Resolver, from: &Path, home: &str, dependencies: &[Dependency]| {
+            let mut edges = Vec::new();
+            for dependency in dependencies {
+                let (source, dir) = checker
+                    .locate(from, home, dependency)
+                    .map_err(install_hint)?;
+                edges.push((dependency.alias.clone(), source, dir));
+            }
+            edges.sort();
+            Ok::<_, PackageError>(edges)
+        };
     let changed = || {
         install_hint(PackageError::new(
             "the dependencies in sayon.toml changed since sayon.lock was written",
         ))
     };
-    let roots = declared(&mut checker, &root, &manifest.dependencies)?;
-    let dev_roots = declared(&mut checker, &root, &manifest.dev_dependencies)?;
+    let home = checker.default.clone();
+    let roots = declared(&mut checker, &root, &home, &manifest.dependencies)?;
+    let dev_roots = declared(&mut checker, &root, &home, &manifest.dev_dependencies)?;
     let strip = |edges: &[(String, String, PathBuf)]| -> Vec<(String, String)> {
         edges
             .iter()
@@ -734,7 +1106,8 @@ pub fn load(root: &Path, manifest: &Manifest, tests: bool) -> Result<Packages, P
             )));
         }
         let found = read_package_manifest(&dir, &package.name)?;
-        let edges = declared(&mut checker, &dir, &found.dependencies)?;
+        let home = checker.home(&source);
+        let edges = declared(&mut checker, &dir, &home, &found.dependencies)?;
         if strip(&edges) != package.dependencies {
             return Err(install_hint(PackageError::new(format!(
                 "the dependencies of `{}` changed since sayon.lock was written",

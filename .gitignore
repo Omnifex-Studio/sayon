@@ -1,3 +1,6 @@
 /target
 /tests/programs/*.tmp
 /dist
+/registry/.wrangler
+/registry/.dev.vars
+/registry/node_modules

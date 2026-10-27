@@ -8,8 +8,12 @@
 //! must name an existing `.sayon` file with exactly the same spelling (also
 //! on case-insensitive file systems), and imports cannot form a cycle.
 
+pub mod archive;
+pub mod json;
 pub mod manifest;
 pub mod packages;
+pub mod registry;
+pub mod semver;
 pub mod sha256;
 
 use sayon_check::ModuleSource;

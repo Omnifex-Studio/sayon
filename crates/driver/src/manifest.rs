@@ -15,6 +15,8 @@
 //! language = "1"                # optional
 //!
 //! [dependencies]
+//! json = "1.2"                  # a version from the registry: 1.2.0 or later, before 2.0.0
+//! http = { version = "0.4", package = "web_http", registry = "https://..." }
 //! utilities = { path = "../utilities" }
 //! codec = { git = "https://example.com/codec.git", revision = "<full commit id>" }
 //!
@@ -63,6 +65,14 @@ pub enum Source {
     Path(String),
     /// A Git repository at one exact commit.
     Git { url: String, revision: String },
+    /// A version of a package in a registry: the registry's address, or
+    /// none for the one the depending package comes from, the package's name
+    /// there, and the range of versions accepted.
+    Registry {
+        registry: Option<String>,
+        package: String,
+        requirement: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,25 +136,15 @@ fn dependency(item: &Entry, errors: &mut Vec<Diagnostic>) -> Option<Dependency> 
         );
         return None;
     }
-    let forms = "use a local package, `{ path = \"../name\" }`, or a Git commit, `{ git = \"https://...\", revision = \"<full commit id>\" }`";
+    let forms = "use a version from the registry, `\"1.2\"`, a local package, `{ path = \"../name\" }`, or a Git commit, `{ git = \"https://...\", revision = \"<full commit id>\" }`";
     let fields = match &item.value {
-        Value::Table(fields) => fields,
-        Value::String(_) => {
-            errors.push(
-                Diagnostic::error(
-                    "E_UNAVAILABLE",
-                    "dependencies by version from a package registry are not available yet",
-                )
-                .primary(item.value_span, "planned for milestone M5")
-                .help(forms),
-            );
-            return None;
-        }
+        Value::Table(fields) => fields.clone(),
+        Value::String(range) => vec![("version".to_string(), range.clone())],
         other => {
             errors.push(
                 Diagnostic::error(
                     "E_MANIFEST",
-                    format!("a dependency is a table, not {}", other.kind()),
+                    format!("a dependency is a version or a table, not {}", other.kind()),
                 )
                 .primary(item.value_span, "")
                 .help(forms),
@@ -158,64 +158,109 @@ fn dependency(item: &Entry, errors: &mut Vec<Diagnostic>) -> Option<Dependency> 
             .find(|(k, _)| k == key)
             .map(|(_, v)| v.clone())
     };
-    for (key, _) in fields {
-        if !["path", "git", "revision"].contains(&key.as_str()) {
+    let fail = |errors: &mut Vec<Diagnostic>, message: String, help: &str| {
+        errors.push(
+            Diagnostic::error("E_MANIFEST", message)
+                .primary(item.value_span, "")
+                .help(help),
+        );
+    };
+    for (key, _) in &fields {
+        if !["path", "git", "revision", "version", "registry", "package"].contains(&key.as_str()) {
             let help = if key == "branch" || key == "tag" {
                 "a Git dependency names one exact commit: `revision = \"<full commit id>\"`"
             } else {
-                "a dependency has `path`, or `git` with `revision`"
+                "a dependency has `version`, `path`, or `git` with `revision`"
             };
-            errors.push(
-                Diagnostic::error("E_MANIFEST", format!("unknown key `{key}` in a dependency"))
-                    .primary(item.value_span, "")
-                    .help(help),
-            );
+            fail(errors, format!("unknown key `{key}` in a dependency"), help);
             return None;
         }
     }
-    let source = match (get("path"), get("git"), get("revision")) {
-        (Some(path), None, None) => {
+    let source = match (get("path"), get("git"), get("revision"), get("version")) {
+        _ if get("version").is_none()
+            && (get("registry").is_some() || get("package").is_some()) =>
+        {
+            fail(
+                errors,
+                "`registry` and `package` go with a `version`".to_string(),
+                "a dependency from a registry has `version`, and may have `registry` and `package`",
+            );
+            return None;
+        }
+        (Some(path), None, None, None) => {
             if path.is_empty() || path.contains('\\') {
-                errors.push(
-                    Diagnostic::error("E_MANIFEST", format!("\"{path}\" is not a usable path"))
-                        .primary(item.value_span, "")
-                        .help("write the directory with forward slashes, relative to this package"),
+                fail(
+                    errors,
+                    format!("\"{path}\" is not a usable path"),
+                    "write the directory with forward slashes, relative to this package",
                 );
                 return None;
             }
             Source::Path(path)
         }
-        (None, Some(url), Some(revision)) => {
+        (None, Some(url), Some(revision), None) => {
             let full = (revision.len() == 40 || revision.len() == 64)
                 && revision
                     .bytes()
                     .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
             if !full {
-                errors.push(
-                    Diagnostic::error(
-                        "E_MANIFEST",
-                        format!("\"{revision}\" is not a full commit id"),
-                    )
-                    .primary(item.value_span, "")
-                    .help("write all 40 lowercase hexadecimal digits, as `git rev-parse HEAD` prints them"),
+                fail(
+                    errors,
+                    format!("\"{revision}\" is not a full commit id"),
+                    "write all 40 lowercase hexadecimal digits, as `git rev-parse HEAD` prints them",
                 );
                 return None;
             }
             Source::Git { url, revision }
         }
-        (None, Some(_), None) => {
-            errors.push(
-                Diagnostic::error("E_MANIFEST", "a Git dependency needs a `revision`")
-                    .primary(item.value_span, "")
-                    .help("pin the exact commit: `revision = \"<full commit id>\"`"),
+        (None, Some(_), None, None) => {
+            fail(
+                errors,
+                "a Git dependency needs a `revision`".to_string(),
+                "pin the exact commit: `revision = \"<full commit id>\"`",
             );
             return None;
         }
+        (None, None, None, Some(range)) => {
+            if let Err(message) = crate::semver::Requirement::parse(&range) {
+                fail(
+                    errors,
+                    message,
+                    "write a range such as \"1.2\" (1.2.0 or later, before 2.0.0), \"~1.2.3\", or \"=1.2.3\"",
+                );
+                return None;
+            }
+            let package = get("package").unwrap_or_else(|| item.key.clone());
+            if !valid_name(&package) {
+                fail(
+                    errors,
+                    format!("\"{package}\" is not a package name"),
+                    "a package's name is lowercase letters, digits, and underscores, starting with a letter",
+                );
+                return None;
+            }
+            let registry = get("registry");
+            if let Some(address) = &registry
+                && !crate::registry::valid_address(address)
+            {
+                fail(
+                    errors,
+                    format!("\"{address}\" is not a registry's address"),
+                    "a registry's address starts with `https://`, or `http://localhost` for one on this computer",
+                );
+                return None;
+            }
+            Source::Registry {
+                registry: registry.map(|address| crate::registry::normalize(&address)),
+                package,
+                requirement: range,
+            }
+        }
         _ => {
-            errors.push(
-                Diagnostic::error("E_MANIFEST", "a dependency has either `path` or `git`")
-                    .primary(item.value_span, "")
-                    .help(forms),
+            fail(
+                errors,
+                "a dependency has one of `version`, `path`, and `git`".to_string(),
+                forms,
             );
             return None;
         }
@@ -317,16 +362,11 @@ pub fn parse(file: FileId, text: &str) -> Result<Manifest, Vec<Diagnostic>> {
             }
             "version" => {
                 if let Some(text) = expect_string(&mut errors) {
-                    let parts: Vec<&str> = text.split('.').collect();
-                    let valid = parts.len() == 3
-                        && parts
-                            .iter()
-                            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
-                    if !valid {
+                    if crate::semver::Version::parse(&text).is_none() {
                         errors.push(
                             Diagnostic::error("E_MANIFEST", format!("\"{text}\" is not a version"))
                                 .primary(item.value_span, "")
-                                .help("versions have three numbers: major.minor.patch, such as \"0.1.0\""),
+                                .help("versions have three numbers, major.minor.patch, without leading zeros, such as \"0.1.0\", and may name a pre-release, as \"1.0.0-beta.1\""),
                         );
                     }
                     version = Some(text);
@@ -844,8 +884,15 @@ flags = []
             vec!["`hello` is not a value; strings need double quotes"]
         );
         assert_eq!(
-            codes("[package]\nname = \"a\"\nversion = \"0.1.0\"\n[dependencies]\nx = \"1.0.0\"\n"),
-            vec!["dependencies by version from a package registry are not available yet"]
+            codes(
+                "[package]\nname = \"a\"\nversion = \"0.1.0\"\n[dependencies]\nx = \"one\"\ny = { version = \"1\", path = \"../y\" }\nz = { version = \"1\", registry = \"ftp://r\" }\nw = { package = \"v\" }\n"
+            ),
+            vec![
+                "\"one\" is not a version range, such as \"^1.2\" or \">=1.0, <2.0\"",
+                "a dependency has one of `version`, `path`, and `git`",
+                "\"ftp://r\" is not a registry's address",
+                "`registry` and `package` go with a `version`"
+            ]
         );
         assert_eq!(
             codes(

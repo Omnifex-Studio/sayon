@@ -92,7 +92,14 @@ pub fn install(options: &Options, locked: bool, offline: bool) -> u8 {
     } else {
         sayon_driver::packages::Fetch::Allowed
     };
-    match sayon_driver::packages::install(&project.root, &project.manifest, locked, fetch) {
+    let mut registries = crate::registry::Client;
+    match sayon_driver::packages::install(
+        &project.root,
+        &project.manifest,
+        locked,
+        fetch,
+        &mut registries,
+    ) {
         Ok(installed) => {
             if !options.quiet {
                 let noun = if installed.packages == 1 {

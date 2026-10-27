@@ -1,0 +1,17 @@
+# The registry on Cloudflare's Workers (docs/registry.md, "Running a
+# registry"). These ids are Sayon's registry's; another registry puts the
+# ids `npx wrangler d1 create sayon-registry` and
+# `npx wrangler kv namespace create ARCHIVES` print in their place.
+name = "sayon-registry"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sayon-registry"
+database_id = "5d602eb7-04bb-4935-af8c-1a13b8d05006"
+
+[[kv_namespaces]]
+binding = "ARCHIVES"
+id = "f35131cab2b5442e9401d496c1605994"

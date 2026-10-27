@@ -1,5 +1,5 @@
-//! JSON, as the language server protocol's messages are written: values,
-//! parsed from text and written back.
+//! JSON, as the language server protocol's messages and the package
+//! registry's answers are written: values, parsed from text and written back.
 
 use std::fmt::Write;
 

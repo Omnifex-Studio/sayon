@@ -2,7 +2,10 @@
 
 mod commands;
 mod compile;
+mod credentials;
 mod explain;
+mod http;
+mod registry;
 
 use std::collections::HashMap;
 use std::process::ExitCode;
@@ -38,6 +41,11 @@ Usage:
     sayon init [name]                Create a project, or without a name make
                                      the current folder one
     sayon install [--locked]         Fetch dependencies and write sayon.lock
+    sayon search <words>             Find packages in the registry
+    sayon info <package>             Show a package's versions and dependencies
+    sayon publish [--dry-run]        Publish the project's package to the registry
+    sayon login                      Keep the token of an account at the registry
+    sayon logout                     Forget the registry's token
     sayon clean                      Remove a project's build output
     sayon doctor                     Check the installation and native toolchain
     sayon target list                List the targets and what each provides
@@ -66,6 +74,10 @@ Options:
     --deny warnings                  Fail when there are warnings (lint)
     --locked                         Fail instead of changing sayon.lock (install)
     --offline                        Use only dependencies already fetched (install)
+    --registry <address>             The registry to use, instead of SAYON_REGISTRY
+                                     or Sayon's (search, info, publish, login, logout)
+    --dry-run                        Show what would be published, without publishing
+    --limit <count>                  How many packages to show, at most 50 (search)
 
 Native builds use clang from LLVM. Set SAYON_CLANG to choose a clang
 executable, SAYON_RUNTIME_LIB the runtime library, and SAYON_STDLIB the
@@ -198,6 +210,9 @@ fn dispatch(args: &[String]) -> u8 {
         "test" => (&["--quiet"], &["--color"], false),
         "fmt" => (&["--check"], &[], false),
         "install" => (&["--quiet", "--locked", "--offline"], &["--color"], false),
+        "publish" => (&["--quiet", "--dry-run"], &["--color", "--registry"], false),
+        "search" => (&["--quiet"], &["--color", "--registry", "--limit"], false),
+        "info" | "login" | "logout" => (&["--quiet"], &["--color", "--registry"], false),
         "init" | "clean" | "doctor" | "explain" | "target" | "lsp" => (&[], &[], false),
         other => return usage_error(&format!("unknown command `{other}`")),
     };
@@ -308,6 +323,38 @@ fn dispatch(args: &[String]) -> u8 {
                 );
             }
             commands::install(&options, parsed.flag("--locked"), parsed.flag("--offline"))
+        }
+        "publish" | "search" | "info" | "login" | "logout" => {
+            let address = match registry::address(parsed.values.get("--registry")) {
+                Ok(address) => address,
+                Err(code) => return code,
+            };
+            match (command.as_str(), parsed.positional.as_slice()) {
+                ("publish", []) => registry::publish(&address, parsed.flag("--dry-run"), &options),
+                ("login", []) => registry::login(&address, &options),
+                ("logout", []) => registry::logout(&address, &options),
+                ("info", [name]) => registry::info(&address, name, &options),
+                ("search", words) if !words.is_empty() => {
+                    let limit = match parsed.values.get("--limit").map(|n| n.parse::<u32>()) {
+                        None => 20,
+                        Some(Ok(limit)) if (1..=50).contains(&limit) => limit,
+                        Some(_) => return usage_error("`--limit` is a number from 1 to 50"),
+                    };
+                    registry::search(&address, &words.join(" "), limit, &options)
+                }
+                ("search", _) => {
+                    usage_error("`sayon search` takes words to look for, as `sayon search json`")
+                }
+                ("info", _) => {
+                    usage_error("`sayon info` takes one package's name, as `sayon info json`")
+                }
+                ("login", _) => usage_error(
+                    "`sayon login` takes no arguments; it asks for the token, so that it stays out of the shell's history",
+                ),
+                _ => usage_error(&format!(
+                    "`sayon {command}` takes no arguments; it works on the project in the current directory"
+                )),
+            }
         }
         _ => unreachable!("checked above"),
     }
