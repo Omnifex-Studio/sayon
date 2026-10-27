@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Sayon logo" width="200">
+  <img src="assets/logo.svg" alt="Sayon logo" width="200">
 </p>
 
 <h1 align="center">Sayon</h1>
