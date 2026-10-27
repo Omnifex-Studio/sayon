@@ -16,7 +16,7 @@
 #                                Android apps (x86-64 for emulators, ARM64 for phones)
 #   stdlib/                      the standard library
 #   licenses/                    the license texts docs/licenses.md names
-#   docs/, examples/, editors/vscode/, README.md, INSTALL.txt
+#   docs/, examples/, editors/vscode/, README.md, LICENSE, INSTALL.txt
 #
 # The installer carries the files as a zip archive, which Python writes.
 # This is the Linux and macOS counterpart of scripts/package.ps1.
@@ -92,7 +92,7 @@ for text in Apache-2.0.txt MIT.txt Unicode-3.0.txt LLVM-exception.txt; do
 done
 cp assets/logo.png "$stage/assets/"
 cp -R editors/vscode "$stage/editors/"
-cp README.md "$stage/"
+cp README.md LICENSE "$stage/"
 
 # The newest version of the C library the tool needs, which the systems it
 # runs on must have at least.

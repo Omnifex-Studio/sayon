@@ -15,7 +15,7 @@
 #                            Android apps (x86-64 for emulators, ARM64 for phones)
 #   stdlib/                  the standard library
 #   licenses/                the license texts docs/licenses.md names
-#   docs/, examples/, editors/vscode/, README.md, INSTALL.txt
+#   docs/, examples/, editors/vscode/, README.md, LICENSE, INSTALL.txt
 #
 # Usage: powershell -File scripts/package.ps1 [-OutDir dist]
 
@@ -94,7 +94,7 @@ foreach ($text in "Apache-2.0.txt", "MIT.txt", "Unicode-3.0.txt", "LLVM-exceptio
 }
 Copy-Item "assets/logo.png" (Join-Path $stage "assets")
 Copy-Item -Recurse "editors/vscode" (Join-Path $stage "editors")
-Copy-Item "README.md" $stage
+Copy-Item "README.md", "LICENSE" $stage
 
 $install = @"
 Sayon $version for Windows ($processor)

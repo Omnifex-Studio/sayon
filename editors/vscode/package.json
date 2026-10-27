@@ -4,6 +4,7 @@
   "description": "Syntax highlighting and editing support for the Sayon programming language",
   "version": "0.0.1",
   "publisher": "omnifex-studio",
+  "license": "Apache-2.0",
   "icon": "images/icon.png",
   "repository": {
     "type": "git",

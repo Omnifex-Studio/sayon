@@ -116,3 +116,7 @@ Native builds need [LLVM](https://releases.llvm.org)'s clang at build time (foun
 | `scripts` | Release packaging: the installer and archive for each device |
 | `editors/vscode` | VS Code extension: highlighting and the `.sayon` file icon |
 | `assets` | Logo and icons |
+
+## License
+
+Sayon is licensed under the [Apache License, Version 2.0](LICENSE). [docs/licenses.md](docs/licenses.md) lists what its files and the programs it builds hold from others, and under which licenses.

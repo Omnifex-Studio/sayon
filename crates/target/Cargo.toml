@@ -4,6 +4,7 @@ description = "The targets Sayon builds for, and what each provides"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [lints]

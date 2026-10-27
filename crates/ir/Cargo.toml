@@ -4,6 +4,7 @@ description = "Control-flow IR with explicit ownership operations, shared by the
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+license.workspace = true
 publish.workspace = true
 
 [dependencies]
