@@ -20,7 +20,7 @@
         if (stream === 1) stdout += text;
         else stderr += text;
       };
-      status = await run({ write, options: { SAYON_DEBUG_ALLOC: 1 } });
+      status = await run({ write, options: { SAYON_DEBUG_ALLOC: 1, SAYON_CLOSE_WINDOWS: 1 } });
     } catch (problem) {
       stderr += `runner: ${problem}\n`;
     }

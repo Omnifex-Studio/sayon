@@ -229,6 +229,15 @@ impl Env {
         }
     }
 
+    pub(crate) fn call_boolean(self, object: Object, method: Method, args: &[Value]) -> bool {
+        // SAFETY: `CallBooleanMethodA`.
+        unsafe {
+            let call: unsafe extern "C" fn(*mut c_void, Object, Method, *const Value) -> u8 =
+                self.get(39);
+            call(self.0, object, method, args.as_ptr()) != 0
+        }
+    }
+
     pub(crate) fn call_int(self, object: Object, method: Method, args: &[Value]) -> i32 {
         // SAFETY: `CallIntMethodA`.
         unsafe {

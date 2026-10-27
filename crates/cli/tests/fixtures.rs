@@ -134,7 +134,7 @@ fn run_programs(dir: &Path) {
         let outcome = sayon_with_env(
             dir,
             &["run", "--color", "never", &name],
-            &[],
+            &[CLOSE_WINDOWS],
             input.as_deref(),
         );
         compare(
@@ -195,7 +195,7 @@ fn run_native_programs(dir: &Path) {
         let outcome = sayon_with_env(
             dir,
             &["run", "--native", "--color", "never", &name],
-            &[("SAYON_DEBUG_ALLOC", "1")],
+            &[("SAYON_DEBUG_ALLOC", "1"), CLOSE_WINDOWS],
             read_expectation(&source.with_extension("stdin")).as_deref(),
         );
         // Status 4 means the build failed, unless the program itself returns 4.
@@ -371,19 +371,59 @@ fn has_screen() -> bool {
     cfg!(windows) || (cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_some())
 }
 
-/// The programs under `tests/windows` open a window, show a few frames,
-/// and close it, on this computer's screen: in the interpreter, compiled
-/// (releasing every allocation), and in each browser found, where the
-/// window is a canvas of the page. The Android check runs them as apps.
-/// Without a screen (on Linux, no `DISPLAY`), the check says it skipped;
-/// the browsers are skipped as their own check is.
+/// The host option that has each window ask to close after 120 frames, so
+/// that a program that runs until its window closes, as an example does,
+/// ends in a check. Every run of a program has it; programs that close
+/// their windows sooner never meet it.
+const CLOSE_WINDOWS: (&str, &str) = ("SAYON_CLOSE_WINDOWS", "1");
+
+/// The programs that show windows, gathered in a work directory named for
+/// `host`: those under `tests/windows`, and the examples that
+/// `tests/examples` records the output of, each project's files beside its
+/// entry, which is named for the project.
+fn window_programs(host: &str) -> PathBuf {
+    let work = std::env::temp_dir().join(format!("sayon-windows-{host}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    std::fs::create_dir_all(&work).expect("create the work directory");
+    let copy = |from: &Path, to: &Path| {
+        std::fs::copy(from, to).unwrap_or_else(|e| panic!("copy {}: {e}", from.display()));
+    };
+    for entry in std::fs::read_dir(tests_dir().join("windows")).expect("read tests/windows") {
+        let path = entry.expect("entry").path();
+        copy(&path, &work.join(path.file_name().unwrap()));
+    }
+    let examples = tests_dir().join("..").join("examples");
+    for recorded in std::fs::read_dir(tests_dir().join("examples")).expect("read tests/examples") {
+        let recorded = recorded.expect("entry").path();
+        let name = recorded.file_stem().unwrap().to_string_lossy().to_string();
+        let project = examples.join(&name);
+        for source in sources(&project) {
+            let file = source.file_name().unwrap().to_string_lossy().to_string();
+            let to = if file == "main.sayon" {
+                format!("{name}.sayon")
+            } else {
+                file
+            };
+            copy(&source, &work.join(to));
+        }
+        copy(&recorded, &work.join(recorded.file_name().unwrap()));
+    }
+    work
+}
+
+/// The programs that show windows (see [`window_programs`]) open a window,
+/// show frames, and close it, on this computer's screen: in the
+/// interpreter, compiled (releasing every allocation), and in each browser
+/// found, where the window is a canvas of the page. The Android check runs
+/// them as apps. Without a screen (on Linux, no `DISPLAY`), the check says
+/// it skipped; the browsers are skipped as their own check is.
 #[test]
 fn window_programs_match_the_interpreter() {
     if !has_screen() {
         eprintln!("SKIPPED: window checks (no screen: DISPLAY is not set)");
         return;
     }
-    let dir = tests_dir().join("windows");
+    let dir = window_programs("screen");
     run_programs(&dir);
     if std::env::var_os("SAYON_SKIP_NATIVE").is_none() {
         run_native_programs(&dir);
@@ -394,12 +434,13 @@ fn window_programs_match_the_interpreter() {
         return;
     }
     check_in_browsers(&browsers, &dir, "browsers-windows");
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The programs the Android check also runs as apps, through their
 /// packages: what they write goes to Android's log, and the files they
-/// write to the app's own directory. Every program under `tests/windows`
-/// runs as an app too, on the app's screen.
+/// write to the app's own directory. Every program that shows a window
+/// (see [`window_programs`]) runs as an app too, on the app's screen.
 const ANDROID_APPS: &[&str] = &[
     "threads.sayon",
     "uncaught.sayon",
@@ -448,7 +489,7 @@ fn android_programs_match_the_interpreter() {
     let dir = tests_dir().join("programs");
     let (built, mut failures) =
         run_android_programs(&device, &dir, "android-x64", ANDROID_SHELL_LEFT_OUT);
-    let windows = tests_dir().join("windows");
+    let windows = window_programs("android");
     let apps = ANDROID_APPS
         .iter()
         .map(|name| (dir.clone(), dir.join(name)))
@@ -465,6 +506,7 @@ fn android_programs_match_the_interpreter() {
         }
     }
     built.finish("Android x64", failures);
+    let _ = std::fs::remove_dir_all(&windows);
     // ARM64 programs run on an x86-64 device through Android's translation
     // of ARM code, where it has it: evidence for the ARM64 build, not for
     // ARM hardware.
@@ -689,7 +731,11 @@ fn run_android_app(
     }
     let id = format!("sayon.app.{name}");
     device.adb(&["logcat", "-c"]);
-    let started = device.shell(&format!("am start -W -n {id}/android.app.NativeActivity"));
+    // An app takes host options as its intent's extras.
+    let started = device.shell(&format!(
+        "am start -W -n {id}/android.app.NativeActivity --ez {} true",
+        CLOSE_WINDOWS.0
+    ));
     if started.status != 0 {
         return Err(format!(
             "starting the app failed:\n{}{}",
@@ -1367,6 +1413,75 @@ fn test_runner_reports_results() {
 
 "
         )
+    );
+}
+
+/// Each example checks for every target it is for: a single file for
+/// `--target all`'s targets, and a project for each target its manifest
+/// names. A project that requires a capability is refused for a target
+/// that lacks it, with the capability named: the sketch pad, which shows a
+/// window, for WASI.
+#[test]
+fn examples_check_for_their_targets() {
+    let examples = tests_dir().join("..").join("examples");
+    let mut failures = Vec::new();
+    for source in sources(&examples) {
+        let name = source.file_name().unwrap().to_string_lossy().to_string();
+        let outcome = sayon(
+            &examples,
+            &["check", "--color", "never", "--target", "all", &name],
+        );
+        if outcome.status != 0 {
+            failures.push(format!("{name}: {}{}", outcome.stdout, outcome.stderr));
+        }
+    }
+    let mut projects: Vec<PathBuf> = std::fs::read_dir(&examples)
+        .expect("read the examples")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.join("sayon.toml").is_file())
+        .collect();
+    projects.sort();
+    for project in &projects {
+        let name = project.file_name().unwrap().to_string_lossy().to_string();
+        let manifest = std::fs::read_to_string(project.join("sayon.toml")).expect("the manifest");
+        let targets: Vec<&str> = manifest
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("targets = ["))
+            .map(|list| {
+                list.trim_end_matches(']')
+                    .split(',')
+                    .map(|t| t.trim().trim_matches('"'))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let outcome = sayon(project, &["check", "--color", "never", "--target", "all"]);
+        if outcome.status != 0 {
+            failures.push(format!("{name}: {}{}", outcome.stdout, outcome.stderr));
+        }
+        // The checks report on standard error.
+        let said = format!("{}{}", outcome.stdout, outcome.stderr);
+        for target in targets {
+            if !said.contains(&format!("no problems found for {target}")) {
+                failures.push(format!("{name} was not checked for {target}:\n{said}"));
+            }
+        }
+    }
+    assert!(!projects.is_empty(), "no example projects");
+    let refused = sayon(
+        &examples.join("sketch"),
+        &["check", "--color", "never", "--target", "wasi"],
+    );
+    if refused.status == 0 || !refused.stderr.contains("requires `graphics`") {
+        failures.push(format!(
+            "sketch should be refused for WASI, which lacks graphics:\n{}{}",
+            refused.stdout, refused.stderr
+        ));
+    }
+    assert!(
+        failures.is_empty(),
+        "{} example problem(s):\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
     );
 }
 

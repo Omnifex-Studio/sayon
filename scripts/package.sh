@@ -15,6 +15,7 @@
 #   lib/x86_64-linux-android/, lib/aarch64-linux-android/  the runtimes for
 #                                Android apps (x86-64 for emulators, ARM64 for phones)
 #   stdlib/                      the standard library
+#   licenses/                    the license texts docs/licenses.md names
 #   docs/, examples/, editors/vscode/, README.md, INSTALL.txt
 #
 # The installer carries the files as a zip archive, which Python writes.
@@ -58,7 +59,7 @@ out_dir="$(cd "$out_dir" && pwd)"
 name="sayon-$version-$device"
 stage="$out_dir/$name"
 rm -rf "$stage"
-mkdir -p "$stage"/{bin,lib,stdlib,docs,examples,editors,assets}
+mkdir -p "$stage"/{bin,lib,stdlib,licenses,docs,examples,editors,assets}
 
 cp target/release/sayon "$stage/bin/"
 cp target/release/libsayon_runtime.a "$stage/lib/"
@@ -80,6 +81,15 @@ done
 cp stdlib/*.sayon "$stage/stdlib/"
 cp docs/*.md "$stage/docs/"
 cp examples/*.sayon "$stage/examples/"
+for project in examples/*/; do
+    cp -R "$project" "$stage/examples/"
+done
+# The texts of the licenses of what the files hold (see docs/licenses.md),
+# as the Rust toolchain ships them.
+licenses="$(rustc --print sysroot)/share/doc/rust/licenses"
+for text in Apache-2.0.txt MIT.txt Unicode-3.0.txt LLVM-exception.txt; do
+    cp "$licenses/$text" "$stage/licenses/"
+done
 cp assets/logo.png "$stage/assets/"
 cp -R editors/vscode "$stage/editors/"
 cp README.md "$stage/"

@@ -43,9 +43,14 @@ pub fn exit(status: i32) -> ! {
     }
 }
 
-/// Whether the host sets the option `name`: an environment variable here.
+/// Whether the host sets the option `name`: an environment variable here,
+/// or in an Android app a boolean extra of the intent that started it.
 #[cfg(not(all(target_family = "wasm", target_os = "unknown")))]
 pub fn option(name: &str) -> bool {
+    #[cfg(target_os = "android")]
+    if crate::android::option(name) {
+        return true;
+    }
     std::env::var_os(name).is_some()
 }
 

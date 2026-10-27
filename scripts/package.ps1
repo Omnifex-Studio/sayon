@@ -14,6 +14,7 @@
 #   lib/x86_64-linux-android/, lib/aarch64-linux-android/  the runtimes for
 #                            Android apps (x86-64 for emulators, ARM64 for phones)
 #   stdlib/                  the standard library
+#   licenses/                the license texts docs/licenses.md names
 #   docs/, examples/, editors/vscode/, README.md, INSTALL.txt
 #
 # Usage: powershell -File scripts/package.ps1 [-OutDir dist]
@@ -54,7 +55,7 @@ $OutDir = (Resolve-Path $OutDir).Path
 $name = "sayon-$version-$device"
 $stage = Join-Path $OutDir $name
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
-foreach ($dir in "bin", "lib", "stdlib", "docs", "examples", "editors", "assets") {
+foreach ($dir in "bin", "lib", "stdlib", "licenses", "docs", "examples", "editors", "assets") {
     New-Item -ItemType Directory -Force (Join-Path $stage $dir) | Out-Null
 }
 
@@ -82,6 +83,15 @@ foreach ($triple in $androidTriples) {
 Copy-Item "stdlib/*.sayon" (Join-Path $stage "stdlib")
 Copy-Item "docs/*.md" (Join-Path $stage "docs")
 Copy-Item "examples/*.sayon" (Join-Path $stage "examples")
+Get-ChildItem -Directory "examples" | ForEach-Object {
+    Copy-Item -Recurse $_.FullName (Join-Path $stage "examples")
+}
+# The texts of the licenses of what the files hold (see docs/licenses.md),
+# as the Rust toolchain ships them.
+$licenses = Join-Path (rustc --print sysroot) "share/doc/rust/licenses"
+foreach ($text in "Apache-2.0.txt", "MIT.txt", "Unicode-3.0.txt", "LLVM-exception.txt") {
+    Copy-Item (Join-Path $licenses $text) (Join-Path $stage "licenses")
+}
 Copy-Item "assets/logo.png" (Join-Path $stage "assets")
 Copy-Item -Recurse "editors/vscode" (Join-Path $stage "editors")
 Copy-Item "README.md" $stage

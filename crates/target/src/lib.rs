@@ -469,6 +469,72 @@ pub const PROCESSORS: &[&str] = &["x64", "arm64", "wasm32"];
 /// The targets `all` means when a project names none.
 pub const DEFAULT_SET: &[&str] = &["windows-x64", "linux-x64"];
 
+/// The version of the capability manifest: the capabilities by their names,
+/// and the platform, processor, and capabilities of each target by its
+/// name. It goes up with any change to these, never with a target's state
+/// or a description's wording, so that a project can name the manifest it
+/// was written against (`capability_manifest` in its `[compiler]` table)
+/// and a compiler tell one it does not know. `sayon target manifest`
+/// prints it.
+pub const CAPABILITY_MANIFEST: u32 = 1;
+
+/// What the version stands for, one line for each capability and target:
+/// a change to it is a new version.
+pub fn manifest_text() -> String {
+    let mut text = String::new();
+    for capability in Capability::ALL {
+        text.push_str(&format!("capability {}\n", capability.name()));
+    }
+    for target in TARGETS {
+        let provides: Vec<&str> = target.capabilities.iter().map(|c| c.name()).collect();
+        text.push_str(&format!(
+            "target {} {} {} {}\n",
+            target.name,
+            target.platform,
+            target.processor,
+            provides.join(",")
+        ));
+    }
+    text
+}
+
+/// The capability manifest as JSON: its version, each capability with what
+/// it lets a program do, and each target with its platform, processor,
+/// state, and the capabilities it provides.
+pub fn manifest_json() -> String {
+    let quote = |text: &str| format!("\"{}\"", text.replace('\\', "\\\\").replace('"', "\\\""));
+    let capabilities: Vec<String> = Capability::ALL
+        .iter()
+        .map(|c| {
+            format!(
+                "    {{ \"name\": {}, \"lets\": {} }}",
+                quote(c.name()),
+                quote(c.description())
+            )
+        })
+        .collect();
+    let targets: Vec<String> = TARGETS
+        .iter()
+        .map(|t| {
+            let provides: Vec<String> = t.capabilities.iter().map(|c| quote(c.name())).collect();
+            format!(
+                "    {{ \"name\": {}, \"triple\": {}, \"platform\": {}, \"processor\": {}, \"state\": {}, \"provides\": [{}] }}",
+                quote(t.name),
+                quote(t.triple),
+                quote(t.platform),
+                quote(t.processor),
+                quote(t.state.name()),
+                provides.join(", ")
+            )
+        })
+        .collect();
+    format!(
+        "{{\n  \"capability_manifest\": {CAPABILITY_MANIFEST},\n  \"capabilities\": [\n{}\n  ],\n  \"targets\": [\n{}\n  ]\n}}\n",
+        capabilities.join(",\n"),
+        targets.join(",\n")
+    )
+}
+
 /// The target the running compiler was built for, which `native` names.
 pub fn host() -> &'static Target {
     let triple = if cfg!(all(windows, target_arch = "x86_64")) {
@@ -522,6 +588,25 @@ pub fn resolve(name: &str) -> Result<&'static Target, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// FNV-1a, 64 bits.
+    fn digest(text: &str) -> u64 {
+        text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ byte as u64).wrapping_mul(0x0100_0000_01b3)
+        })
+    }
+
+    /// The capability manifest is what its version was recorded with: a
+    /// change to the capabilities or to what a target provides needs a new
+    /// version, and its digest here.
+    #[test]
+    fn the_capability_manifest_keeps_its_version() {
+        assert_eq!(
+            (CAPABILITY_MANIFEST, digest(&manifest_text())),
+            (1, 0x3510_7330_1b5e_a1c4),
+            "the capability manifest changed: raise CAPABILITY_MANIFEST and record its digest"
+        );
+    }
 
     #[test]
     fn names_aliases_and_triples_find_targets() {

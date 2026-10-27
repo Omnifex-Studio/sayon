@@ -1,0 +1,163 @@
+# A sketch pad, the same program on a desktop, in a web page, and in an
+# Android app: draw with the mouse or a finger, choose a color from the
+# palette, and clear the page.
+#
+#     cd examples/sketch
+#     sayon run                          # a window on this computer
+#     sayon build --target web           # a page: serve build/debug/web and open sketch.html
+#     sayon build --target android-arm64 # an app: adb install build/debug/android-arm64/sketch.apk
+#
+# Keys 1 to 6 choose a color, c clears the page, and Escape closes it.
+# Sizes follow the screen's density, so the pad looks the same on a phone
+# as on a desktop.
+
+graphics = import("standard/graphics.sayon")
+math = import("standard/math.sayon")
+
+# A line drawn with the pointer: its color, its width, and its points.
+type Stroke = [color: integer, width: integer, points: Array<graphics.Point>]
+
+function palette() -> Array<graphics.Color>
+    return [graphics.rgb(30, 30, 30), graphics.rgb(220, 50, 47), graphics.rgb(38, 139, 210), graphics.rgb(133, 153, 0), graphics.rgb(181, 137, 0), graphics.rgb(108, 113, 196)]
+
+constant PAPER = graphics.Color(red = 252, green = 250, blue = 245, alpha = 255)
+constant BAR = graphics.Color(red = 238, green = 234, blue = 226, alpha = 255)
+constant INK = graphics.Color(red = 60, green = 56, blue = 50, alpha = 255)
+
+# How many pixels a point of the screen's measure is, at least one.
+function pixels(points: integer, scale: float) -> integer
+    return math.max(1, integer(float(points) * scale + 0.5))
+
+# Where the parts of the bar at the top are, for a canvas `width` wide.
+type Layout = [bar: integer, swatch: integer, first_swatch: integer, spacing: integer, clear_left: integer, clear_width: integer]
+
+function layout(width: integer, scale: float) -> Layout
+    spacing = pixels(36, scale)
+    count = length(palette())
+    first = width - spacing * count + spacing / 2 - pixels(8, scale)
+    clear_width = pixels(72, scale)
+    return Layout(bar = pixels(52, scale), swatch = pixels(13, scale), first_swatch = first, spacing = spacing, clear_left = first - spacing / 2 - clear_width - pixels(12, scale), clear_width = clear_width)
+
+# Draws one step of a stroke: the segment to its newest point, with round
+# ends, so that strokes look like ink.
+function ink(update page: graphics.Canvas, stroke: Stroke, from: integer)
+    color = palette()[stroke.color]
+    point = stroke.points[from]
+    if from > 0
+        last = stroke.points[from - 1]
+        page.line(last.x, last.y, point.x, point.y, color, stroke.width)
+    page.fill_circle(point.x, point.y, stroke.width / 2, color)
+
+# The page, drawn again with every stroke, as after a resize.
+function redraw(update page: graphics.Canvas, strokes: Array<Stroke>)
+    page.clear(PAPER)
+    for stroke in strokes
+        for index in range(length(stroke.points))
+            ink(page, stroke, index)
+
+# A wave the page starts with, across its middle.
+function welcome(width: integer, height: integer, scale: float) -> Stroke
+    points: Array<graphics.Point> = []
+    margin = pixels(40, scale)
+    x = margin
+    while x <= width - margin
+        phase = float(x - margin) / float(pixels(60, scale))
+        y = height / 2 + integer(math.sin(phase) * float(pixels(40, scale)))
+        push(points, graphics.Point(x = x, y = y))
+        x += pixels(6, scale)
+    return Stroke(color = 2, width = pixels(5, scale), points = points)
+
+# The bar at the top: the title, the button that clears the page, and the
+# palette, the chosen color ringed.
+function draw_bar(update canvas: graphics.Canvas, fonts: Array<graphics.Font>, chosen: integer, scale: float)
+    parts = layout(canvas.width, scale)
+    canvas.fill_rectangle(0, 0, canvas.width, parts.bar, BAR)
+    canvas.fill_rectangle(0, parts.bar - pixels(1, scale), canvas.width, pixels(1, scale), graphics.rgb(214, 208, 196))
+    size = pixels(20, scale)
+    top = (parts.bar - size) / 2
+    if length(fonts) > 0
+        canvas.write(fonts[0], "Sayon sketch", pixels(14, scale), top, size, INK)
+    else
+        canvas.text("Sayon sketch", pixels(14, scale), top, size, INK)
+    canvas.stroke_rectangle(parts.clear_left, top - pixels(4, scale), parts.clear_width, size + pixels(8, scale), INK, pixels(1, scale))
+    label = pixels(16, scale)
+    if length(fonts) > 0
+        width = fonts[0].width("Clear", label)
+        canvas.write(fonts[0], "Clear", parts.clear_left + (parts.clear_width - width) / 2, (parts.bar - label) / 2, label, INK)
+    else
+        canvas.text("Clear", parts.clear_left + (parts.clear_width - graphics.text_width("Clear", label)) / 2, (parts.bar - label) / 2, label, INK)
+    colors = palette()
+    for index in range(length(colors))
+        x = parts.first_swatch + index * parts.spacing
+        if index == chosen
+            canvas.fill_circle(x, parts.bar / 2, parts.swatch + pixels(4, scale), INK)
+            canvas.fill_circle(x, parts.bar / 2, parts.swatch + pixels(2, scale), BAR)
+        canvas.fill_circle(x, parts.bar / 2, parts.swatch, colors[index])
+
+# The swatch at `x`, `y` in the bar, or -1.
+function swatch_at(parts: Layout, x: integer, y: integer) -> integer
+    for index in range(length(palette()))
+        center = parts.first_swatch + index * parts.spacing
+        if math.abs(x - center) <= parts.spacing / 2 and y < parts.bar
+            return index
+    return -1
+
+print("Sayon sketch: draw with the mouse or a finger; keys 1 to 6 choose a color, c clears the page, and Escape closes it.")
+window = graphics.open("Sayon sketch", 720, 480)
+scale = window.scale()
+page = graphics.canvas(window.width(), window.height())
+page.smooth = true
+fonts: Array<graphics.Font> = []
+try
+    push(fonts, graphics.system_font())
+catch problem
+    print("No system font here ({problem.message}); the built-in one stands in.")
+strokes: Array<Stroke> = []
+chosen = 0
+drawing = false
+quit = false
+while window.is_open() and not quit
+    for event in window.events()
+        match event
+            case resized(width, height)
+                page = graphics.canvas(width, height)
+                page.smooth = true
+                if length(strokes) == 0
+                    push(strokes, welcome(width, height, scale))
+                redraw(page, strokes)
+            case pointer_down(x, y, _button)
+                parts = layout(page.width, scale)
+                if y < parts.bar
+                    picked = swatch_at(parts, x, y)
+                    if picked >= 0
+                        chosen = picked
+                    elseif x >= parts.clear_left and x < parts.clear_left + parts.clear_width
+                        strokes = []
+                        redraw(page, strokes)
+                else
+                    push(strokes, Stroke(color = chosen, width = pixels(4, scale), points = [graphics.Point(x = x, y = y)]))
+                    ink(page, strokes[length(strokes) - 1], 0)
+                    drawing = true
+            case pointer_moved(x, y)
+                if drawing
+                    last = length(strokes) - 1
+                    push(strokes[last].points, graphics.Point(x = x, y = y))
+                    ink(page, strokes[last], length(strokes[last].points) - 1)
+            case pointer_up(_x, _y, _button)
+                drawing = false
+            case key_down(key)
+                if key == "Escape"
+                    quit = true
+                elseif key == "c"
+                    strokes = []
+                    redraw(page, strokes)
+                else
+                    for index in range(length(palette()))
+                        if key == "{index + 1}"
+                            chosen = index
+            case _
+                continue
+    draw_bar(page, fonts, chosen, scale)
+    window.present(page)
+window.close()
+print("Closed.")

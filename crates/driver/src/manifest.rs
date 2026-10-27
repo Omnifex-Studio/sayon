@@ -24,6 +24,7 @@
 //! [compiler]
 //! targets = ["native", "web"]   # what `--target all` builds; optional
 //! required_capabilities = ["console", "files"]   # optional
+//! capability_manifest = 1       # optional; the version written against
 //! ```
 
 use sayon_syntax::{Diagnostic, FileId, Span};
@@ -102,7 +103,7 @@ const PACKAGE_KEYS: [&str; 6] = [
     "description",
     "language",
 ];
-const COMPILER_KEYS: [&str; 2] = ["targets", "required_capabilities"];
+const COMPILER_KEYS: [&str; 3] = ["targets", "required_capabilities", "capability_manifest"];
 const DEPENDENCY_TABLES: [&str; 2] = ["dependencies", "dev_dependencies"];
 
 fn valid_name(text: &str) -> bool {
@@ -417,6 +418,30 @@ fn compiler(
     required: &mut Vec<sayon_target::Capability>,
     errors: &mut Vec<Diagnostic>,
 ) {
+    if item.key == "capability_manifest" {
+        let known = sayon_target::CAPABILITY_MANIFEST;
+        match &item.value {
+            Value::Integer(version) if *version == known as i64 => {}
+            Value::Integer(version) => errors.push(
+                Diagnostic::error(
+                    "E_MANIFEST",
+                    format!("capability manifest {version} is not one this compiler knows"),
+                )
+                .primary(item.value_span, "")
+                .help(format!(
+                    "this compiler checks capabilities by manifest {known}; a project written for a newer one needs a newer Sayon"
+                )),
+            ),
+            other => errors.push(
+                Diagnostic::error(
+                    "E_MANIFEST",
+                    format!("`capability_manifest` must be an integer, not {}", other.kind()),
+                )
+                .primary(item.value_span, ""),
+            ),
+        }
+        return;
+    }
     let names = match &item.value {
         Value::Strings(names) => names,
         other => {
@@ -771,6 +796,7 @@ version = \"0.1.0\"
 [compiler]
 targets = [\"linux\", \"web\", \"linux-x64\"]
 required_capabilities = [\"console\", \"json\"]
+capability_manifest = 1
 ",
         )
         .ok()
@@ -786,12 +812,14 @@ version = \"0.1.0\"
 [compiler]
 targets = [\"plan9\"]
 required_capabilities = [\"netwrok\"]
+capability_manifest = 2
 flags = []
 "
             ),
             vec![
                 "\"plan9\" is not a target",
                 "\"netwrok\" is not a capability",
+                "capability manifest 2 is not one this compiler knows",
                 "unknown key `flags` in [compiler]"
             ]
         );

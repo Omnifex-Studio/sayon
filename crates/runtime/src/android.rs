@@ -297,6 +297,51 @@ pub fn in_app() -> bool {
     IN_APP.load(Ordering::Relaxed)
 }
 
+/// The host options an app knows, and those its intent set, as
+/// `am start --ez SAYON_DEBUG_ALLOC true` sets one: an app has no
+/// environment of its own to take them from.
+const OPTIONS: &[&str] = &["SAYON_DEBUG_ALLOC", crate::window::CLOSE_WINDOWS];
+static SET: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+
+/// Reads the options from the intent that started the activity, `object`.
+fn read_options(object: *mut c_void) {
+    let Some(env) = crate::jni::env() else {
+        return;
+    };
+    env.frame(|| {
+        let activity = env.find_class("android/app/Activity");
+        let intent_class = env.find_class("android/content/Intent");
+        if activity.is_null() || intent_class.is_null() {
+            let _ = env.thrown();
+            return;
+        }
+        let get_intent = env.method(activity, "getIntent", "()Landroid/content/Intent;");
+        let extra = env.method(intent_class, "getBooleanExtra", "(Ljava/lang/String;Z)Z");
+        let intent = env.call_object(object, get_intent, &[]);
+        if env.thrown().is_some() || intent.is_null() {
+            return;
+        }
+        let mut set = SET.lock().unwrap_or_else(|e| e.into_inner());
+        for &name in OPTIONS {
+            let key = crate::jni::Value {
+                l: env.new_string(name),
+            };
+            let otherwise = crate::jni::Value { z: 0 };
+            if env.call_boolean(intent, extra, &[key, otherwise]) && !set.contains(&name) {
+                set.push(name);
+            }
+            let _ = env.thrown();
+        }
+    });
+}
+
+/// Whether the intent that started the app set the option `name`.
+pub fn option(name: &str) -> bool {
+    SET.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(&name)
+}
+
 /// Called by Android when the activity starts, on the app's main thread.
 ///
 /// # Safety
@@ -321,6 +366,7 @@ pub unsafe extern "C" fn ANativeActivity_onCreate(
         callbacks.input_queue_destroyed = Some(input_queue_destroyed);
         // What only Java has, such as TLS, goes through the app's Java VM.
         crate::jni::set_vm((*activity).vm);
+        read_options((*activity).object);
         // The screen's density, in Android's measure: 160 for a point.
         let configuration = AConfiguration_new();
         AConfiguration_fromAssetManager(configuration, (*activity).asset_manager);

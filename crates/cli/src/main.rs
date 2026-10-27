@@ -41,6 +41,7 @@ Usage:
     sayon doctor                     Check the installation and native toolchain
     sayon target list                List the targets and what each provides
     sayon target setup <target>      Show what building for a target needs
+    sayon target manifest            Print the capability manifest as JSON
     sayon explain <code>             Explain an error code, such as E_MOVED_VALUE
     sayon version                    Print the version
     sayon help                       Print this help
@@ -278,8 +279,12 @@ fn dispatch(args: &[String]) -> u8 {
         "target" => match parsed.positional.as_slice() {
             [list] if list == "list" => commands::target_list(),
             [setup, name] if setup == "setup" => commands::target_setup(name),
+            [manifest] if manifest == "manifest" => {
+                print!("{}", sayon_target::manifest_json());
+                status::SUCCESS
+            }
             _ => usage_error(
-                "`sayon target` takes `list`, or `setup` and a target, such as `sayon target setup wasi`",
+                "`sayon target` takes `list`, `manifest`, or `setup` and a target, such as `sayon target setup wasi`",
             ),
         },
         "explain" => explain::explain(&parsed.positional),

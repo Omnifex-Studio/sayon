@@ -1089,6 +1089,7 @@ while window.is_open()
 - `graphics.open(title, width, height)` opens a window: on a desktop a window of its own, in a web page a canvas added to the page, and in an Android app the app's screen, whatever its size. `width` and `height` are the system's points, and the window's own `width()` and `height()` are its pixels, which `scale()` relates, such as 2 on a screen of twice the usual density; a canvas of the window's size fills it a pixel for a pixel. `present(canvas)` shows a canvas, over black, its top left corner at the window's, and waits until the next frame is due, about a sixtieth of a second after the last, letting other tasks run.
 - `events()` gives what happened since it was last asked: `closed` (the user asked to close it; `is_open()` is then false, and the program decides when to `close()`), `resized(width, height)`, which comes first with the window's size, `key_down(key)` and `key_up(key)`, `pointer_down(x, y, button)`, `pointer_up(...)`, and `pointer_moved(x, y)` for a mouse or a finger (button 1 for the primary or a touch, 2 the secondary, 3 the middle), `focused(focused)`, and `paused` and `resumed` when it is minimized or goes to the background. Keys are named as web pages name them: `"a"` to `"z"` and `"0"` to `"9"` by where the key is, `" "`, `"Enter"`, `"Escape"`, `"ArrowLeft"`, and so on.
 - Opening a window where there is no screen fails with `GraphicsError`: under WASI, in Node, from `adb shell`, and on Linux without an X display. A window is used on the thread that opened it.
+- With the host option `SAYON_CLOSE_WINDOWS` set, each window asks to close, as its close button does, once it has shown 120 frames: so a check can run a program that runs until its window closes. The option is an environment variable, a page's option (`run({ options: { SAYON_CLOSE_WINDOWS: 1 } })`), or for an Android app a boolean extra of the intent that starts it (`am start ... --ez SAYON_CLOSE_WINDOWS true`), as `SAYON_DEBUG_ALLOC` is.
 
 ### Display
 
@@ -1168,6 +1169,7 @@ sayon build --target wasi         # a WebAssembly program, on any computer
 sayon build --target android-x64  # an Android app, with the Android SDK
 sayon target list                 # every target, how far it has come, and what it lacks
 sayon target setup wasi           # what building for one needs
+sayon target manifest             # the capability manifest, as JSON
 ```
 
 | Target | Platform | Processor | State |
@@ -1278,9 +1280,12 @@ A project can name its targets and the capabilities it cannot do without:
 [compiler]
 targets = ["native", "web"]                    # what --target all means
 required_capabilities = ["console", "files"]   # every target must have these
+capability_manifest = 1                        # the manifest the project was written for
 ```
 
 Before checking, `check` and `build` stop for any target that lacks a required capability.
+
+The capabilities, and which targets provide which, are the capability manifest, which has a version: it goes up whenever a capability is added, removed, or renamed, or a target provides others, and not when a target only comes further along. `sayon target list` says which version this compiler has, and `sayon target manifest` prints the whole of it as JSON: each capability with what it lets a program do, and each target with its platform, processor, state, and capabilities. A project that names `capability_manifest` is refused by a compiler of another version, which would check its capabilities by other rules.
 
 ## Tests
 

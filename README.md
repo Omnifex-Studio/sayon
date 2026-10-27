@@ -44,6 +44,15 @@ Sayon is in early development and not ready for real programs. What works today:
 - `test` blocks and the `sayon test` runner, and the `sayon fmt` formatter
 - Projects with a `sayon.toml` manifest, and the `run`, `build`, `check`, `test`, `fmt`, `init`, `clean`, `doctor`, `lint`, and `explain` commands
 
+`examples/sketch` is a sketch pad, one program that runs as a window on Windows and Linux, as a web page, and as an Android app:
+
+```text
+cd examples/sketch
+sayon run                         # a window on this computer
+sayon build --target web          # a page: serve build/debug/web and open sketch.html
+sayon build --target android-x64  # an app for the emulator: adb install build/debug/android-x64/sketch.apk
+```
+
 Every example program is checked to behave identically in the interpreter and as a native executable, and to release every allocation it makes. Linux x86-64 now passes every test in both modes, as Windows does, and each example that WASI, a web page, or Android can run behaves the same as a WebAssembly program under wasmtime, and in Edge, Chrome, Firefox, and Node, and on Android's emulator; macOS and ARM64 desktops come next. Features planned for later milestones are rejected with a message that names the milestone, rather than half-working.
 
 ## Installing
@@ -57,6 +66,7 @@ Download the installer for your device from the [releases page](https://github.c
 - [Feature ledger](docs/features.md): what exists, what is planned, and for which milestone
 - [Error codes](docs/errors.md): what each diagnostic and runtime error code means, also shown by `sayon explain CODE`
 - [Implementation records](docs/implementation.md): grammar, ownership rules, cleanup order, data layouts, and the error ABI
+- [Licenses](docs/licenses.md): what is not Sayon's own in its files and in the programs it builds, and under which licenses
 
 ## Building from source
 
@@ -100,7 +110,7 @@ Native builds need [LLVM](https://releases.llvm.org)'s clang at build time (foun
 | `crates/cli` | The `sayon` command |
 | `crates/installer` | The installer (`sayon-setup`) |
 | `stdlib` | The standard library, written in Sayon |
-| `examples` | Small programs written in Sayon |
+| `examples` | Small programs written in Sayon, and `sketch`, a project that runs on every primary platform |
 | `tests` | Example programs and diagnostic snapshots |
 | `docs` | Language reference, feature ledger, and implementation records |
 | `scripts` | Release packaging: the installer and archive for each device |

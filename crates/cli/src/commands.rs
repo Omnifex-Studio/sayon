@@ -468,6 +468,10 @@ pub fn target_list() -> u8 {
         sayon_target::host(),
         aliases.join(", ")
     );
+    println!(
+        "Capability manifest {} (`sayon target manifest` prints it).",
+        sayon_target::CAPABILITY_MANIFEST
+    );
     println!("`sayon check --target <target>` checks a program for any target;");
     println!("`sayon build --target <target>` builds for the ones this computer builds for.");
     status::SUCCESS

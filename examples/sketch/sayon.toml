@@ -1,0 +1,10 @@
+[package]
+name = "sketch"
+version = "0.0.1"
+entry = "main.sayon"
+description = "A sketch pad: the same program on a desktop, in a web page, and in an Android app"
+
+[compiler]
+targets = ["windows-x64", "linux-x64", "macos-arm64", "web", "android-arm64", "android-x64", "ios-arm64"]
+required_capabilities = ["console", "graphics"]
+capability_manifest = 1

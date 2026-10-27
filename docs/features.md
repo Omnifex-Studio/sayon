@@ -74,6 +74,10 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `sayon check` | experimental | M1 |
 | `sayon build`, `sayon run --native` on Windows x64 (M1) and Linux x86-64 (M3) | experimental | M1, M3 |
 | Targets: `--target` for `check`, `lint`, and `build` (repeatable, `all`, `native`, short names, triples); `sayon target list` and `setup`; `[compiler]` `targets` and `required_capabilities` in `sayon.toml` | experimental | M4 |
+| The capability manifest, version 1: the capabilities and each target's, printed by `sayon target manifest`, named by `capability_manifest` in `sayon.toml` | experimental | M4 |
+| `examples/sketch`: one program run as a window on Windows and Linux, as a web page in Edge, Chrome, and Firefox, and as an Android app, by the checks | experimental | M4 |
+| An inventory of the licenses of what Sayon ships and what its programs carry (`docs/licenses.md`), with the license texts in the downloads | experimental | M4 |
+| Sayon's own license | planned | before the first release |
 | Building for WASI (`--target wasi`) on any computer: WebAssembly modules for `wasm32-wasip1`, run under wasmtime with the same behavior as the interpreter | experimental | M4 |
 | Tasks and channels in WebAssembly programs (WASI): functions that can wait lowered to LLVM coroutines, a scheduler without fibers taking the same turns as the interpreter's | experimental | M4 |
 | Building for web pages (`--target web`) on any computer: a `wasm32-unknown-unknown` module with generated JavaScript glue and a page; the program never blocks the page, its tasks waking through the event loop; checked in Edge, Chrome, and Firefox and in Node against the interpreter | experimental | M4 |

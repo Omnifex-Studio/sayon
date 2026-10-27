@@ -113,7 +113,17 @@ fn no_screen(why: &str) -> HostError {
 pub struct Window {
     platform: platform::Window,
     thread: std::thread::ThreadId,
+    /// The frames it has shown, and whether it has asked to close for
+    /// [`CLOSE_WINDOWS`].
+    presented: u64,
+    asked: bool,
 }
+
+/// The host option that has each window ask to close, as its close button
+/// does, once it has shown [`CLOSING_FRAME`] frames: for checks of programs
+/// that run until their window closes, on any host, apps and pages too.
+pub const CLOSE_WINDOWS: &str = "SAYON_CLOSE_WINDOWS";
+pub const CLOSING_FRAME: u64 = 120;
 
 // SAFETY: the window is used only from the thread that opened it, which
 // each use checks; the stream table merely holds it.
@@ -133,6 +143,8 @@ pub fn open(title: &str, width: i64, height: i64) -> Result<Window, HostError> {
     Ok(Window {
         platform: platform::Window::open(title, width, height)?,
         thread: std::thread::current().id(),
+        presented: 0,
+        asked: false,
     })
 }
 
@@ -151,11 +163,17 @@ impl Window {
     /// What happened to the window since the last call, for the library.
     pub fn events(&mut self) -> Result<Vec<String>, HostError> {
         self.here()?;
-        Ok(encode(self.platform.events()))
+        let mut events = self.platform.events();
+        if self.presented >= CLOSING_FRAME && !self.asked && crate::console::option(CLOSE_WINDOWS) {
+            self.asked = true;
+            events.push(Event::Closed);
+        }
+        Ok(encode(events))
     }
 
     pub fn present(&mut self, canvas: &Canvas) -> Result<(), HostError> {
         self.here()?;
+        self.presented += 1;
         self.platform.present(canvas)
     }
 
