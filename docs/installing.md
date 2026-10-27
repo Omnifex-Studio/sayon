@@ -23,7 +23,7 @@ Run the installer and answer its question. It installs Sayon for your user accou
 
 At the end it runs `sayon doctor`, which shows whether native builds are ready. Running and testing programs works straight away; `sayon build` and `sayon run --native` also need clang from [LLVM](https://releases.llvm.org).
 
-Running a newer installer replaces the installed version. The new files are unpacked next to the old ones first, so an interrupted installation leaves the previous one working.
+Running a newer installer replaces the installed version. The new files are unpacked next to the old ones first, so an interrupted installation leaves the previous one working. When a program still has a file of the old version open, such as an editor running `sayon lsp`, the old files it cannot remove stay in `Sayon.previous` beside the installation; the next installation, or uninstalling, removes them.
 
 ### Options
 

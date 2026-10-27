@@ -228,6 +228,7 @@ fn uninstall(options: &Options) -> Result<(), String> {
         }
     };
     platform::unregister(&prefix)?;
+    install::clear_leftovers(&prefix);
     match (moved, gone) {
         (Some(moved), _) => platform::delete_after_exit(&moved, None),
         (None, false) => {

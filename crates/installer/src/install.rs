@@ -5,6 +5,12 @@
 //! marker, so a mistyped `--prefix` can never delete someone's files. Files
 //! are unpacked into a sibling staging directory first and swapped in at the
 //! end, so an interrupted installation leaves the previous one intact.
+//!
+//! Removing a directory takes its marker last, so one that could not be
+//! removed completely, because a program still had a file of it open, is
+//! still recognized and removed by the next installation. Until then the
+//! staging and previous directories take the next free numbered name, so
+//! that a leftover never stops an installation.
 
 use crate::archive::Entry;
 use std::fs;
@@ -72,6 +78,56 @@ fn sibling(prefix: &Path, suffix: &str) -> PathBuf {
     prefix.with_file_name(name)
 }
 
+/// The folders an installation works in next to `prefix`, and how many
+/// numbered ones of each it tries when the first are taken.
+const WORK_FOLDERS: [&str; 2] = [".installing", ".previous"];
+const NUMBERED: u32 = 20;
+
+/// The `n`th folder next to `prefix` with `suffix`: `Sayon.previous`,
+/// then `Sayon.previous-2`, and so on.
+fn work_folder(prefix: &Path, suffix: &str, n: u32) -> PathBuf {
+    match n {
+        1 => sibling(prefix, suffix),
+        n => sibling(prefix, &format!("{suffix}-{n}")),
+    }
+}
+
+/// Removes a folder the installer made earlier, as far as it can now: one
+/// that holds the marker, or an empty one. Anything else is left alone.
+/// Whether the folder is gone.
+fn discard(dir: &Path) -> bool {
+    if !dir.exists() {
+        return true;
+    }
+    if fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none()) {
+        return fs::remove_dir(dir).is_ok();
+    }
+    dir.join(MARKER).is_file() && remove(dir, None).unwrap_or(false)
+}
+
+/// Removes what earlier installations left next to `prefix`, as far as it
+/// can now.
+pub fn clear_leftovers(prefix: &Path) {
+    for suffix in WORK_FOLDERS {
+        for n in 1..=NUMBERED {
+            discard(&work_folder(prefix, suffix, n));
+        }
+    }
+}
+
+/// The first folder next to `prefix` with `suffix` that is free.
+fn free_folder(prefix: &Path, suffix: &str) -> Result<PathBuf, String> {
+    (1..=NUMBERED)
+        .map(|n| work_folder(prefix, suffix, n))
+        .find(|dir| !dir.exists())
+        .ok_or_else(|| {
+            format!(
+                "{} and the {NUMBERED} numbered folders after it are in the way; remove those you do not need and try again",
+                sibling(prefix, suffix).display()
+            )
+        })
+}
+
 /// Unpacks `files` and a copy of the installer (as the uninstaller) into
 /// `prefix`, replacing a previous installation. Returns the bytes written.
 pub fn unpack(
@@ -81,9 +137,10 @@ pub fn unpack(
     uninstaller: Option<(&Path, &str)>,
 ) -> Result<u64, String> {
     check_destination(prefix)?;
-    let staging = sibling(prefix, ".installing");
-    // Left by an interrupted installation.
-    clear_leftover(&staging)?;
+    // Left by an interrupted installation, or by one that could not finish
+    // removing the installation it replaced.
+    clear_leftovers(prefix);
+    let staging = free_folder(prefix, ".installing")?;
     fs::create_dir_all(&staging)
         .map_err(|e| format!("cannot create {}: {e}", staging.display()))?;
     // The marker comes first, so a leftover staging folder is recognizable.
@@ -114,22 +171,6 @@ pub fn unpack(
     Ok(total)
 }
 
-/// Removes a folder the installer made earlier, if it is there: one that
-/// holds the marker, or an empty one. Anything else is left alone.
-fn clear_leftover(dir: &Path) -> Result<(), String> {
-    if !dir.exists() {
-        return Ok(());
-    }
-    let empty = fs::read_dir(dir).is_ok_and(|mut entries| entries.next().is_none());
-    if !empty && !dir.join(MARKER).is_file() {
-        return Err(format!(
-            "{} is in the way; move or rename it and try again",
-            dir.display()
-        ));
-    }
-    fs::remove_dir_all(dir).map_err(|e| format!("cannot clear {}: {e}", dir.display()))
-}
-
 /// Moves the staged files into place, keeping the old installation until
 /// the new one is there.
 fn swap(staging: &Path, prefix: &Path) -> Result<(), String> {
@@ -146,15 +187,15 @@ fn swap(staging: &Path, prefix: &Path) -> Result<(), String> {
         }
         return fs::rename(staging, prefix).map_err(busy);
     }
-    let old = sibling(prefix, ".previous");
-    clear_leftover(&old)?;
+    let old = free_folder(prefix, ".previous")?;
     fs::rename(prefix, &old).map_err(busy)?;
     if let Err(error) = fs::rename(staging, prefix) {
         // Put the previous installation back.
         let _ = fs::rename(&old, prefix);
         return Err(busy(error));
     }
-    let _ = fs::remove_dir_all(&old);
+    // What is still open stays, with its marker, for the next installation.
+    discard(&old);
     Ok(())
 }
 
@@ -265,6 +306,75 @@ mod tests {
 
         assert!(remove(&prefix, None).unwrap());
         assert!(!prefix.exists());
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn leftovers_never_stop_an_installation() {
+        let root = scratch("leftovers");
+        let prefix = root.join("Sayon");
+        unpack(&[file("bin/tool", "one")], &prefix, "1.0.0", None).unwrap();
+        // What an older installer left when it could not finish removing an
+        // installation: its files without the marker, so not the installer's
+        // to remove.
+        let stranger = root.join("Sayon.previous");
+        fs::create_dir_all(stranger.join("bin")).unwrap();
+        fs::write(stranger.join("bin/tool"), "old").unwrap();
+        // A staging folder an interrupted installation left, with its marker.
+        let interrupted = root.join("Sayon.installing");
+        fs::create_dir_all(&interrupted).unwrap();
+        fs::write(interrupted.join(MARKER), "version = \"0.9.0\"\n").unwrap();
+        fs::write(interrupted.join("half"), "x").unwrap();
+
+        unpack(&[file("bin/tool", "two")], &prefix, "2.0.0", None).unwrap();
+        assert_eq!(fs::read_to_string(prefix.join("bin/tool")).unwrap(), "two");
+        assert!(!interrupted.exists());
+        assert!(!root.join("Sayon.previous-2").exists());
+        assert_eq!(
+            fs::read_to_string(stranger.join("bin/tool")).unwrap(),
+            "old"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A file a program holds open, as Windows lets no one delete it.
+    #[cfg(windows)]
+    fn hold(path: &Path) -> fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .unwrap()
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_still_open_keeps_its_marker_for_the_next_installation() {
+        let root = scratch("open");
+        let prefix = root.join("Sayon");
+        unpack(&[file("bin/tool", "one")], &prefix, "1.0.0", None).unwrap();
+        let stuck = root.join("Sayon.previous");
+        unpack(
+            &[file("bin/tool", "old"), file("docs/a.md", "a")],
+            &stuck,
+            "0.9.0",
+            None,
+        )
+        .unwrap();
+        let open = hold(&stuck.join("bin/tool"));
+        assert!(!discard(&stuck));
+        assert!(stuck.join(MARKER).is_file());
+
+        // The installation goes on beside it, and the next one clears it.
+        unpack(&[file("bin/tool", "two")], &prefix, "2.0.0", None).unwrap();
+        assert_eq!(fs::read_to_string(prefix.join("bin/tool")).unwrap(), "two");
+        assert!(stuck.join(MARKER).is_file());
+        assert!(!root.join("Sayon.previous-2").exists());
+        drop(open);
+        unpack(&[file("bin/tool", "three")], &prefix, "3.0.0", None).unwrap();
+        assert!(!stuck.exists());
+        assert!(remove(&prefix, None).unwrap());
         fs::remove_dir_all(&root).unwrap();
     }
 
