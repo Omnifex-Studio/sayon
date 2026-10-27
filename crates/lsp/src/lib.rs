@@ -4,8 +4,10 @@
 //! texts of the open documents in place of their files, and answers from
 //! what the checker resolved (`sayon_check::index`): diagnostics as the
 //! documents change, hover, going to a definition, references, renaming,
-//! completion, and formatting.
+//! completion and signature help (`complete`), and formatting.
 
+mod complete;
+pub mod context;
 pub mod json;
 mod server;
 pub mod text;

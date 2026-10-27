@@ -3,7 +3,7 @@
 
 use crate::json::Json;
 use crate::text::{offset, path_of, position, uri_of};
-use sayon_check::index::{Index, Owner, Symbol, SymbolKind};
+use sayon_check::index::Index;
 use sayon_syntax::{Diagnostic, FileId, Severity, SourceMap, Span};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -27,11 +27,15 @@ struct Document {
 }
 
 /// What checking a document gave: its program's sources, among them the
-/// document as it was, and what the names in them refer to.
-struct Analysis {
-    sources: SourceMap,
-    index: Index,
-    file: FileId,
+/// document as it was, what the names in them refer to, and where its
+/// program's modules are found.
+pub(crate) struct Analysis {
+    pub(crate) sources: SourceMap,
+    pub(crate) index: Index,
+    pub(crate) file: FileId,
+    pub(crate) stdlib: Option<PathBuf>,
+    /// The program's root: its project's, or its entry's directory.
+    pub(crate) root: Option<PathBuf>,
 }
 
 struct Server<'c, W: Write> {
@@ -271,6 +275,11 @@ impl<W: Write> Server<'_, W> {
             .collect();
         options.index = true;
         options.lint = true;
+        let stdlib = options.stdlib.clone();
+        let root = options
+            .root
+            .clone()
+            .or_else(|| path.parent().map(Path::to_path_buf));
         let checked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             sayon_driver::compile(&path, &options)
         }));
@@ -309,6 +318,8 @@ impl<W: Write> Server<'_, W> {
                 sources: output.sources,
                 index: output.index.unwrap_or_default(),
                 file,
+                stdlib,
+                root,
             },
         );
     }
@@ -400,6 +411,7 @@ impl<W: Write> Server<'_, W> {
             "textDocument/prepareRename" => self.prepare_rename(params),
             "textDocument/rename" => self.rename(params),
             "textDocument/completion" => Ok(self.completion(params).unwrap_or(Json::Null)),
+            "textDocument/signatureHelp" => Ok(self.signature_help(params).unwrap_or(Json::Null)),
             "textDocument/formatting" => Ok(self.formatting(params)),
             _ => Err((
                 METHOD_NOT_FOUND,
@@ -430,7 +442,7 @@ impl<W: Write> Server<'_, W> {
         let analysis = self.analyses.get(&uri)?;
         let found = &analysis.index.symbols[symbol];
         let mut value = format!("```sayon\n{}\n```", found.detail);
-        if let Some(doc) = documentation(&analysis.sources, found) {
+        if let Some(doc) = crate::complete::documentation(&analysis.sources, found) {
             value.push_str("\n\n");
             value.push_str(&doc);
         }
@@ -575,83 +587,14 @@ impl<W: Write> Server<'_, W> {
         let (uri, offset) = self.at(params)?;
         let text = self.documents.get(&uri)?.text.clone();
         let analysis = self.fresh(&uri)?;
-        let before = &text[..offset];
-        let start = name_start(before);
-        let mut items = Vec::new();
-        if before[..start].ends_with('.') {
-            // A member of what is before the dot.
-            let receiver_end = start - 1;
-            let receiver_start = name_start(&before[..receiver_end]);
-            let receiver = &before[receiver_start..receiver_end];
-            if let Some(owner) = owner_named(analysis, receiver, receiver_end)
-                && let Some(members) = analysis.index.members.get(&owner)
-            {
-                for (name, symbol) in members {
-                    items.push(item(name, &analysis.index.symbols[*symbol], true));
-                }
-            }
-        } else {
-            let index = &analysis.index;
-            let file = analysis.file;
-            let inside: Vec<_> = index
-                .locals
-                .iter()
-                .filter(|scope| scope.file == file)
-                .filter(|scope| {
-                    scope
-                        .body
-                        .is_some_and(|b| b.start as usize <= offset && offset <= b.end as usize)
-                })
-                .collect();
-            let scopes: Vec<_> = if inside.is_empty() {
-                index
-                    .locals
-                    .iter()
-                    .filter(|scope| scope.file == file && scope.body.is_none())
-                    .collect()
-            } else {
-                inside
-            };
-            let mut seen = std::collections::HashSet::new();
-            for scope in scopes {
-                for &symbol in &scope.locals {
-                    let found = &index.symbols[symbol];
-                    if (found.span.start as usize) < offset && seen.insert(found.name.clone()) {
-                        items.push(item(&found.name, found, false));
-                    }
-                }
-            }
-            for &symbol in index
-                .scopes
-                .get(&file)
-                .map(Vec::as_slice)
-                .unwrap_or_default()
-            {
-                let found = &index.symbols[symbol];
-                if seen.insert(found.name.clone()) {
-                    items.push(item(&found.name, found, false));
-                }
-            }
-            for name in sayon_check::builtins::NAMES {
-                if seen.insert(name.to_string()) {
-                    items.push(Json::object(vec![
-                        ("label", Json::string(*name)),
-                        ("kind", Json::number(3)),
-                        ("detail", Json::string("built in")),
-                    ]));
-                }
-            }
-            for keyword in sayon_syntax::token::Keyword::ALL {
-                items.push(Json::object(vec![
-                    ("label", Json::string(keyword.as_str())),
-                    ("kind", Json::number(14)),
-                ]));
-            }
-        }
-        Some(Json::object(vec![
-            ("isIncomplete", Json::Bool(false)),
-            ("items", Json::Array(items)),
-        ]))
+        Some(crate::complete::completion(analysis, &text, offset))
+    }
+
+    fn signature_help(&mut self, params: &Json) -> Option<Json> {
+        let (uri, offset) = self.at(params)?;
+        let text = self.documents.get(&uri)?.text.clone();
+        let analysis = self.fresh(&uri)?;
+        crate::complete::signature_help(analysis, &text, offset)
     }
 
     fn formatting(&mut self, params: &Json) -> Json {
@@ -731,8 +674,22 @@ fn capabilities() -> Json {
                     "completionProvider",
                     Json::object(vec![(
                         "triggerCharacters",
-                        Json::Array(vec![Json::string(".")]),
+                        Json::Array(vec![
+                            Json::string("."),
+                            Json::string("/"),
+                            Json::string("\""),
+                        ]),
                     )]),
+                ),
+                (
+                    "signatureHelpProvider",
+                    Json::object(vec![
+                        (
+                            "triggerCharacters",
+                            Json::Array(vec![Json::string("("), Json::string(",")]),
+                        ),
+                        ("retriggerCharacters", Json::Array(vec![Json::string(",")])),
+                    ]),
                 ),
                 ("documentFormattingProvider", Json::Bool(true)),
             ]),
@@ -747,14 +704,6 @@ fn capabilities() -> Json {
     ])
 }
 
-/// Where the name that ends `text` starts.
-fn name_start(text: &str) -> usize {
-    text.char_indices()
-        .rev()
-        .find(|(_, c)| !(c.is_alphanumeric() || *c == '_'))
-        .map_or(0, |(index, c)| index + c.len_utf8())
-}
-
 /// Whether `text` can name something: letters, digits, and `_`, not
 /// starting with a digit, and no keyword.
 fn is_name(text: &str) -> bool {
@@ -762,67 +711,4 @@ fn is_name(text: &str) -> bool {
     chars.next().is_some_and(|c| c.is_alphabetic() || c == '_')
         && chars.all(|c| c.is_alphanumeric() || c == '_')
         && sayon_syntax::token::Keyword::lookup(text).is_none()
-}
-
-/// What follows a dot after `name`, written before `end`: the members of
-/// what the nearest such name before it means.
-fn owner_named(analysis: &Analysis, name: &str, end: usize) -> Option<Owner> {
-    if name.is_empty() {
-        return None;
-    }
-    let file = analysis.sources.get(analysis.file);
-    analysis
-        .index
-        .references
-        .iter()
-        .filter(|r| r.span.file == analysis.file && r.span.end as usize <= end)
-        .filter(|r| file.slice(r.span) == name)
-        .filter_map(|r| analysis.index.symbols[r.symbol].members)
-        .next_back()
-}
-
-/// A completion item for a symbol, by the name a dot or a scope writes.
-fn item(name: &str, symbol: &Symbol, member: bool) -> Json {
-    let kind = match symbol.kind {
-        SymbolKind::Variable | SymbolKind::Parameter => 6,
-        SymbolKind::Constant => 21,
-        SymbolKind::Function if member => 2,
-        SymbolKind::Function => 3,
-        SymbolKind::Type if symbol.detail.starts_with("enum") => 13,
-        SymbolKind::Type => 22,
-        SymbolKind::Field => 5,
-        SymbolKind::Variant => 20,
-        SymbolKind::Module => 9,
-    };
-    Json::object(vec![
-        ("label", Json::string(name)),
-        ("kind", Json::number(kind)),
-        ("detail", Json::String(symbol.detail.clone())),
-    ])
-}
-
-/// The comment lines just above a definition, which describe it.
-fn documentation(sources: &SourceMap, symbol: &Symbol) -> Option<String> {
-    if matches!(
-        symbol.kind,
-        SymbolKind::Variable | SymbolKind::Parameter | SymbolKind::Module
-    ) {
-        return None;
-    }
-    let file = sources.get(symbol.span.file);
-    let mut line = file.line_index(symbol.span.start);
-    let mut lines = Vec::new();
-    while line > 0 {
-        line -= 1;
-        let text = file.line_text(line).trim_start();
-        let Some(comment) = text.strip_prefix('#') else {
-            break;
-        };
-        lines.push(comment.strip_prefix(' ').unwrap_or(comment).to_string());
-    }
-    if lines.is_empty() {
-        return None;
-    }
-    lines.reverse();
-    Some(lines.join("\n"))
 }

@@ -410,6 +410,200 @@ fn an_editor_gets_answers_about_a_program() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+const SHAPES_PROGRAM: &str = r#"graphics = import("standard/graphics.sayon")
+
+# A shape of one size.
+enum Shape
+    circle(radius: float)
+    square(side: float)
+
+function area(shape: Shape) -> float
+    match shape
+        case circle(radius)
+            return radius * radius * 3.0
+        case square(side)
+            return side * side
+
+canvas = graphics.canvas(8, 8)
+"#;
+
+/// Changes the document to `text`, as the editor does with each keystroke.
+fn change(editor: &mut Editor, uri: &str, version: u32, text: &str) {
+    editor.notify(
+        "textDocument/didChange",
+        Json::object(vec![
+            (
+                "textDocument",
+                Json::object(vec![
+                    ("uri", Json::string(uri)),
+                    ("version", Json::number(version)),
+                ]),
+            ),
+            (
+                "contentChanges",
+                Json::Array(vec![Json::object(vec![("text", Json::string(text))])]),
+            ),
+        ]),
+    );
+}
+
+/// The completion items at the end of the program with `typed` after it.
+fn complete_after(editor: &mut Editor, uri: &str, version: u32, typed: &str) -> Vec<Json> {
+    let text = format!("{SHAPES_PROGRAM}{typed}");
+    change(editor, uri, version, &text);
+    let lines: Vec<&str> = text.split('\n').collect();
+    let line = lines.len() as u32 - 1;
+    let character = lines.last().unwrap().encode_utf16().count() as u32;
+    editor
+        .request("textDocument/completion", at(uri, line, character))
+        .get("items")
+        .as_array()
+        .to_vec()
+}
+
+fn label(item: &Json) -> String {
+    item.get("label").as_str().unwrap_or_default().to_string()
+}
+
+fn item_named(items: &[Json], name: &str) -> Json {
+    items
+        .iter()
+        .find(|item| item.get("label").as_str() == Some(name))
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "no `{name}` in {:?}",
+                items.iter().map(label).collect::<Vec<_>>()
+            )
+        })
+}
+
+/// Whether an item comes first, as fitting the place.
+fn fits(item: &Json) -> bool {
+    item.get("sortText")
+        .as_str()
+        .unwrap_or_default()
+        .starts_with('0')
+}
+
+/// Completion that reads the place: what fits an argument's type first,
+/// fields to name, variants after `case`, types, import paths, modules to
+/// import, and nothing in comments; and signature help.
+#[test]
+fn completion_fits_the_place() {
+    let dir = std::env::temp_dir().join(format!("sayon-lsp-places-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a directory");
+    let dir = std::fs::canonicalize(&dir).expect("its path");
+    let file = dir.join("shapes.sayon");
+    std::fs::write(&file, SHAPES_PROGRAM).expect("the program");
+    let uri = uri_of(&file);
+    let mut editor = Editor::start();
+    editor.request(
+        "initialize",
+        Json::object(vec![
+            ("processId", Json::Null),
+            ("capabilities", Json::object(vec![])),
+        ]),
+    );
+    editor.notify(
+        "textDocument/didOpen",
+        Json::object(vec![(
+            "textDocument",
+            Json::object(vec![
+                ("uri", Json::string(uri.clone())),
+                ("languageId", Json::string("sayon")),
+                ("version", Json::number(1)),
+                ("text", Json::string(SHAPES_PROGRAM)),
+            ]),
+        )]),
+    );
+
+    // A color goes in the fourth argument: the module's colors come first.
+    let items = complete_after(&mut editor, &uri, 2, "canvas.fill_circle(1, 2, 3, ");
+    assert!(fits(&item_named(&items, "graphics.BLACK")));
+    assert!(fits(&item_named(&items, "graphics.rgb")));
+    assert!(!fits(&item_named(&items, "canvas")));
+    // A shape goes in `area`: its variants come first, with their fields.
+    let items = complete_after(&mut editor, &uri, 3, "print(area(");
+    let circle = item_named(&items, "circle");
+    assert!(fits(&circle));
+    assert_eq!(
+        circle.get("insertText").as_str(),
+        Some("circle(${1:radius})")
+    );
+    // The fields left to name in a structure being built.
+    let items = complete_after(&mut editor, &uri, 4, "corner = graphics.Point(x = 1, ");
+    assert_eq!(
+        item_named(&items, "y").get("insertText").as_str(),
+        Some("y = ")
+    );
+    assert!(!items.iter().any(|item| label(item) == "x"));
+    // Variants after `case`.
+    let items = complete_after(
+        &mut editor,
+        &uri,
+        5,
+        "function name(shape: Shape) -> string\n    match shape\n        case ",
+    );
+    let names: Vec<String> = items.iter().map(label).collect();
+    assert!(
+        names.contains(&"circle".to_string()) && names.contains(&"square".to_string()),
+        "{names:?}"
+    );
+    // Types after `:`.
+    let names: Vec<String> = complete_after(&mut editor, &uri, 6, "function f(value: ")
+        .iter()
+        .map(label)
+        .collect();
+    for name in ["integer", "Shape", "graphics"] {
+        assert!(names.contains(&name.to_string()), "{name} in {names:?}");
+    }
+    assert!(!names.contains(&"area".to_string()), "{names:?}");
+    // Paths in an import, replacing what was typed of one.
+    let items = complete_after(&mut editor, &uri, 7, "strings = import(\"standard/st");
+    let path = item_named(&items, "standard/strings.sayon");
+    assert_eq!(
+        path.get("textEdit").get("newText").as_str(),
+        Some("standard/strings.sayon")
+    );
+    // Nothing in a comment.
+    assert!(complete_after(&mut editor, &uri, 8, "# canvas.").is_empty());
+    // A standard module not imported yet, with its import after the others.
+    let items = complete_after(&mut editor, &uri, 9, "");
+    let strings = item_named(&items, "strings");
+    let edit = &strings.get("additionalTextEdits").as_array()[0];
+    assert_eq!(
+        edit.get("newText").as_str(),
+        Some("strings = import(\"standard/strings.sayon\")\n")
+    );
+    assert_eq!(edit.get("range").get("start").get("line").as_u32(), Some(1));
+    // A function comes with placeholders for its arguments.
+    assert_eq!(
+        item_named(&items, "area").get("insertText").as_str(),
+        Some("area(${1:shape})")
+    );
+    assert!(!items.iter().any(|item| label(item) == "graphics.BLACK"));
+
+    // Signature help, the third parameter marked.
+    let text = format!("{SHAPES_PROGRAM}canvas.fill_circle(1, 2, ");
+    change(&mut editor, &uri, 10, &text);
+    let (line, character) = find(&text, "fill_circle(1, 2, ", 0);
+    let help = editor.request("textDocument/signatureHelp", at(&uri, line, character + 18));
+    let signature = &help.get("signatures").as_array()[0];
+    assert_eq!(
+        signature.get("label").as_str(),
+        Some("canvas.fill_circle(x: integer, y: integer, radius: integer, color: Color)")
+    );
+    assert_eq!(help.get("activeParameter").as_u32(), Some(2));
+    assert_eq!(signature.get("parameters").as_array().len(), 4);
+
+    editor.request("shutdown", Json::Null);
+    editor.notify("exit", Json::Null);
+    assert!(editor.child.wait().expect("the server ends").success());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The VS Code extension's client (`editors/vscode/extension.js`), run in
 /// Node with a stand-in for VS Code's API (`tests/vscode/client.cjs`),
 /// answers through `sayon lsp`. Without Node, the check says it skipped.

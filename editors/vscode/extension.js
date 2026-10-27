@@ -2,7 +2,7 @@
 // rest comes from Sayon's language server, `sayon lsp`, which this starts
 // and talks to in the language server protocol itself, with no library
 // between them: diagnostics, hover, definitions, references, renaming,
-// completion, and formatting.
+// completion, signature help, and formatting.
 "use strict";
 
 const vscode = require("vscode");
@@ -160,6 +160,28 @@ class Client {
     }
   }
 
+  /// A completion item as VS Code takes it: a snippet's placeholders, the
+  /// range it replaces, the edits that come with it, such as an import, and
+  /// the parameters shown once it is in.
+  completionItem(i) {
+    const item = new vscode.CompletionItem(i.label, completionKind(i.kind));
+    item.detail = i.detail;
+    if (i.documentation) item.documentation = new vscode.MarkdownString(i.documentation.value);
+    item.sortText = i.sortText;
+    item.filterText = i.filterText;
+    item.preselect = i.preselect;
+    const text = i.textEdit ? i.textEdit.newText : i.insertText;
+    if (text !== undefined) {
+      item.insertText = i.insertTextFormat === 2 ? new vscode.SnippetString(text) : text;
+    }
+    if (i.textEdit) item.range = range(i.textEdit.range);
+    if (i.additionalTextEdits) {
+      item.additionalTextEdits = i.additionalTextEdits.map((e) => vscode.TextEdit.replace(range(e.range), e.newText));
+    }
+    if (i.command) item.command = { title: i.command.title, command: i.command.command };
+    return item;
+  }
+
   diagnostic(d) {
     const severity = d.severity === 1 ? vscode.DiagnosticSeverity.Error : vscode.DiagnosticSeverity.Warning;
     const shown = new vscode.Diagnostic(range(d.range), d.message, severity);
@@ -256,14 +278,34 @@ class Client {
         {
           provideCompletionItems: async (document, p) => {
             const list = await this.ask("textDocument/completion", at(document, p));
-            return (list?.items ?? []).map((i) => {
-              const item = new vscode.CompletionItem(i.label, completionKind(i.kind));
-              item.detail = i.detail;
-              return item;
-            });
+            return (list?.items ?? []).map((i) => this.completionItem(i));
           },
         },
         ".",
+        "/",
+        '"',
+      ),
+      languages.registerSignatureHelpProvider(
+        SELECTOR,
+        {
+          provideSignatureHelp: async (document, p) => {
+            const help = await this.ask("textDocument/signatureHelp", at(document, p));
+            if (!help) return null;
+            const shown = new vscode.SignatureHelp();
+            shown.signatures = help.signatures.map((s) => {
+              const signature = new vscode.SignatureInformation(
+                s.label,
+                s.documentation && new vscode.MarkdownString(s.documentation.value),
+              );
+              signature.parameters = s.parameters.map((q) => new vscode.ParameterInformation(q.label));
+              return signature;
+            });
+            shown.activeSignature = help.activeSignature ?? 0;
+            shown.activeParameter = help.activeParameter ?? 0;
+            return shown;
+          },
+        },
+        { triggerCharacters: ["(", ","], retriggerCharacters: [","] },
       ),
       languages.registerDocumentFormattingEditProvider(SELECTOR, {
         provideDocumentFormattingEdits: async (document) => {

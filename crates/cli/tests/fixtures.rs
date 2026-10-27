@@ -1362,6 +1362,48 @@ fn compare_recorded(failures: &mut Vec<String>, source: &Path, outcome: Outcome,
     }
 }
 
+/// `sayon init <name>` makes a project in a new folder, and `sayon init`
+/// alone makes the current folder one, named after it, keeping the files it
+/// has; either project checks, and a folder that is a project is refused.
+#[test]
+fn init_makes_projects() {
+    let work = std::env::temp_dir().join(format!("sayon-init-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    let here = work.join("My Game 2");
+    std::fs::create_dir_all(&here).expect("a folder");
+    std::fs::write(here.join("README.md"), "mine\n").expect("a file of the folder's");
+
+    let made = sayon(&here, &["init"]);
+    assert_eq!(made.status, 0, "{}{}", made.stdout, made.stderr);
+    assert!(
+        made.stdout.contains("Kept the README.md"),
+        "{}",
+        made.stdout
+    );
+    let manifest = std::fs::read_to_string(here.join("sayon.toml")).expect("a manifest");
+    assert!(manifest.contains("name = \"my_game_2\""), "{manifest}");
+    assert_eq!(
+        std::fs::read_to_string(here.join("README.md")).unwrap(),
+        "mine\n"
+    );
+    assert!(here.join("src/main.sayon").is_file() && here.join("src/greetings.sayon").is_file());
+    let checked = sayon(&here, &["check", "--color", "never"]);
+    assert_eq!(checked.status, 0, "{}", checked.stderr);
+    let again = sayon(&here, &["init"]);
+    assert_ne!(again.status, 0);
+    assert!(
+        again.stderr.contains("already a project"),
+        "{}",
+        again.stderr
+    );
+
+    let named = sayon(&work, &["init", "tools"]);
+    assert_eq!(named.status, 0, "{}", named.stderr);
+    assert!(work.join("tools/sayon.toml").is_file());
+    assert_ne!(sayon(&work, &["init", "tools"]).status, 0);
+    let _ = std::fs::remove_dir_all(&work);
+}
+
 /// Runs `sayon test` on each file under `tests/test_runner` and compares
 /// the report and exit status with `NAME.stdout` and `NAME.status`.
 #[test]

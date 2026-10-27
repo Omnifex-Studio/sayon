@@ -73,6 +73,27 @@ class DiagnosticRelatedInformation {
     this.message = message;
   }
 }
+class SnippetString {
+  constructor(value) {
+    this.value = value;
+  }
+}
+class SignatureHelp {
+  constructor() {
+    this.signatures = [];
+  }
+}
+class SignatureInformation {
+  constructor(label, documentation) {
+    this.label = label;
+    this.documentation = documentation;
+  }
+}
+class ParameterInformation {
+  constructor(label) {
+    this.label = label;
+  }
+}
 class WorkspaceEdit {
   constructor() {
     this.edits = [];
@@ -111,6 +132,10 @@ const vscode = {
   DiagnosticRelatedInformation,
   TextEdit: { replace: (range, newText) => ({ range, newText }) },
   WorkspaceEdit,
+  SnippetString,
+  SignatureHelp,
+  SignatureInformation,
+  ParameterInformation,
   languages: {
     createDiagnosticCollection: () => ({
       set(uri, list) {
@@ -128,6 +153,7 @@ const vscode = {
     registerRenameProvider: register("rename"),
     registerCompletionItemProvider: register("completion"),
     registerDocumentFormattingEditProvider: register("formatting"),
+    registerSignatureHelpProvider: register("signatures"),
   },
   workspace: {
     textDocuments: documents,
@@ -244,9 +270,28 @@ async function main() {
   const members = await providers.completion.provideCompletionItems(document, find(text, "canvas.\n", 7));
   const labels = members.map((item) => item.label);
   check(labels.includes("fill_circle") && labels.includes("smooth"), `completion ${labels.join(", ")}`);
+  const fill = members.find((item) => item.label === "fill_circle");
+  check(
+    fill.insertText instanceof SnippetString && fill.insertText.value === "fill_circle(${1:x}, ${2:y}, ${3:radius}, ${4:color})",
+    `a method's snippet ${JSON.stringify(fill.insertText)}`,
+  );
+  check(fill.command && fill.command.command === "editor.action.triggerParameterHints", "parameter hints after it");
+
+  // Signature help in a call's arguments, the second parameter marked.
+  text = `${text}canvas.fill_circle(4, `;
+  document.version = 3;
+  for (const listener of listeners.change) listener({ document });
+  const help = await providers.signatures.provideSignatureHelp(document, find(text, "fill_circle(4, ", 15));
+  check(help && help.signatures[0].label.startsWith("canvas.fill_circle(x: integer"), `signature ${JSON.stringify(help)}`);
+  check(help.activeParameter === 1, `the active parameter ${help.activeParameter}`);
+  // A module not imported yet comes with its import.
+  const names = await providers.completion.provideCompletionItems(document, new Position(9, 0));
+  const strings = names.find((item) => item.label === "strings");
+  check(strings && strings.additionalTextEdits.length === 1, "a standard module to import");
+  check(strings.additionalTextEdits[0].newText.startsWith('strings = import("standard/strings.sayon")'), "its import");
 
   text = "x   =  1\nprint( x )\n";
-  document.version = 3;
+  document.version = 4;
   for (const listener of listeners.change) listener({ document });
   const edits = await providers.formatting.provideDocumentFormattingEdits(document);
   check(edits.length === 1 && edits[0].newText === "x = 1\nprint(x)\n", "formatting");

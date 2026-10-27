@@ -35,7 +35,8 @@ Usage:
     sayon lint [file]                Also report likely mistakes and naming problems
     sayon test [files...]            Run test blocks
     sayon fmt [paths...] [--check]   Format source files
-    sayon init <name>                Create a project
+    sayon init [name]                Create a project, or without a name make
+                                     the current folder one
     sayon install [--locked]         Fetch dependencies and write sayon.lock
     sayon clean                      Remove a project's build output
     sayon doctor                     Check the installation and native toolchain
@@ -272,8 +273,11 @@ fn dispatch(args: &[String]) -> u8 {
         "test" => commands::test(&parsed.positional, &options),
         "fmt" => commands::format_files(&parsed.positional, parsed.flag("--check")),
         "init" => match parsed.positional.as_slice() {
-            [name] => commands::init(name),
-            _ => usage_error("`sayon init` takes a project name, for example `sayon init hello`"),
+            [name] => commands::init(Some(name)),
+            [] => commands::init(None),
+            _ => usage_error(
+                "`sayon init` takes one project name, as `sayon init hello`, or none to make the current folder a project",
+            ),
         },
         "clean" => commands::clean(&options),
         "doctor" => commands::doctor(),

@@ -48,6 +48,26 @@ pub struct Symbol {
     pub members: Option<Owner>,
     /// Declared by the standard library, so not to be renamed.
     pub standard: bool,
+    /// What it is or gives, as Sayon writes the type: a value's type, a
+    /// function's result, or the type a structure or variant builds.
+    pub ty: Option<String>,
+    /// What a call of it takes: a function's parameters, or the fields of
+    /// a structure or a variant it builds.
+    pub params: Vec<Param>,
+}
+
+/// A parameter of a function, or a field a structure or variant is built
+/// with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Param {
+    pub name: String,
+    pub ty: String,
+    /// Whether a call can leave it out.
+    pub default: bool,
+    /// `update` or `own`, when written.
+    pub mode: Option<&'static str>,
+    /// The type whose members a value of it has, for what is passed.
+    pub owner: Option<Owner>,
 }
 
 /// A name as written: its span, and the symbol it means.
@@ -271,6 +291,88 @@ impl<'a> Checker<'a> {
         }
     }
 
+    fn field_params(&self, fields: &[crate::types::FieldDef]) -> Vec<Param> {
+        fields
+            .iter()
+            .map(|f| Param {
+                name: f.name.clone(),
+                ty: f.ty.to_string(),
+                default: false,
+                mode: None,
+                owner: self.owner_of(&f.ty),
+            })
+            .collect()
+    }
+
+    /// What a call of a definition takes, and what it is or gives.
+    fn item_shape(&self, item: Item) -> (Vec<Param>, Option<String>) {
+        match item {
+            Item::Function(id) => {
+                let entry = &self.functions[id.0 as usize];
+                let Some(signature) = &entry.signature else {
+                    return (Vec::new(), None);
+                };
+                let params = signature
+                    .params
+                    .iter()
+                    .enumerate()
+                    .map(|(index, ty)| Param {
+                        name: signature
+                            .param_names
+                            .get(index)
+                            .cloned()
+                            .unwrap_or_default(),
+                        ty: self.shown(ty),
+                        default: entry
+                            .ast
+                            .and_then(|f| f.params.get(index))
+                            .is_some_and(|p| p.default.is_some()),
+                        mode: match signature.explicit_modes.get(index).copied().flatten() {
+                            Some(ast::ParamMode::Update) => Some("update"),
+                            Some(ast::ParamMode::Own) => Some("own"),
+                            _ => None,
+                        },
+                        owner: self.owner_of(ty),
+                    })
+                    .collect();
+                (params, Some(self.shown(&signature.ret)))
+            }
+            Item::Foreign(id) => {
+                let entry = &self.foreign[id.0 as usize];
+                let params = entry
+                    .ast
+                    .params
+                    .iter()
+                    .zip(&entry.params)
+                    .map(|(param, ty)| Param {
+                        name: param.name.name.clone(),
+                        ty: self.shown(ty),
+                        default: false,
+                        mode: None,
+                        owner: self.owner_of(ty),
+                    })
+                    .collect();
+                (params, Some(self.shown(&entry.ret)))
+            }
+            Item::Constant(id) => (
+                Vec::new(),
+                self.constants[id.0 as usize]
+                    .ty
+                    .as_ref()
+                    .map(|ty| self.shown(ty)),
+            ),
+            Item::Type(id) => {
+                let def = &self.type_defs[id.0 as usize];
+                let params = if def.is_enum() {
+                    Vec::new()
+                } else {
+                    self.field_params(def.fields())
+                };
+                (params, Some(self.types[id.0 as usize].name.clone()))
+            }
+        }
+    }
+
     fn module_standard(&self, module: ModuleId) -> bool {
         self.modules
             .get(module.0 as usize)
@@ -318,8 +420,11 @@ impl<'a> Checker<'a> {
                         .ty
                         .as_ref()
                         .and_then(|ty| self.owner_of(ty)),
+                    // An enum's variants follow a dot after it.
+                    Item::Type(id) => Some(Owner::Type(id.0)),
                     _ => None,
                 };
+                let (params, ty) = self.item_shape(*item);
                 let symbol = add(
                     &mut index,
                     &mut keys,
@@ -332,6 +437,8 @@ impl<'a> Checker<'a> {
                         target: None,
                         members,
                         standard: module.standard,
+                        ty,
+                        params,
                     },
                 );
                 scope.push(symbol);
@@ -355,6 +462,8 @@ impl<'a> Checker<'a> {
                         target: Some(target_module.file),
                         members: Some(Owner::Module(target.0)),
                         standard: module.standard,
+                        ty: None,
+                        params: Vec::new(),
                     },
                 );
                 scope.push(symbol);
@@ -394,6 +503,8 @@ impl<'a> Checker<'a> {
                                     .get(field_index)
                                     .and_then(|f| self.owner_of(&f.ty)),
                                 standard,
+                                ty: def.fields().get(field_index).map(|f| f.ty.to_string()),
+                                params: Vec::new(),
                             },
                         );
                         members.push((field.name.name.clone(), symbol));
@@ -433,6 +544,12 @@ impl<'a> Checker<'a> {
                                 target: None,
                                 members: None,
                                 standard,
+                                ty: Some(entry.name.clone()),
+                                params: def
+                                    .variants()
+                                    .get(variant_index)
+                                    .map(|v| self.field_params(&v.fields))
+                                    .unwrap_or_default(),
                             },
                         );
                         members.push((variant.name.name.clone(), symbol));
@@ -489,6 +606,8 @@ impl<'a> Checker<'a> {
                         target: None,
                         members: self.owner_of(&local.ty),
                         standard,
+                        ty: Some(self.shown(&local.ty)),
+                        params: Vec::new(),
                     },
                 );
                 locals.push(symbol);

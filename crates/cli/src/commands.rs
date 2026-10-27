@@ -812,7 +812,47 @@ test \"greets by name\"
 
 /// Creates a project directory with a manifest, a small program with a
 /// test, and ignore rules for build output.
-pub fn init(name: &str) -> u8 {
+/// A project name made from a folder's: lowercase letters and digits, with
+/// `_` for whatever else, starting with a letter.
+fn project_name(folder: &str) -> String {
+    let mut name = String::new();
+    for c in folder.chars() {
+        if c.is_ascii_alphanumeric() {
+            name.push(c.to_ascii_lowercase());
+        } else if !name.ends_with('_') {
+            name.push('_');
+        }
+    }
+    let name = name.trim_matches('_').to_string();
+    if name.starts_with(|c: char| c.is_ascii_lowercase()) {
+        name
+    } else {
+        format!("project_{name}").trim_end_matches('_').to_string()
+    }
+}
+
+/// `sayon init <name>` makes a project in a new folder `name`; `sayon init`
+/// alone makes the current folder a project, named after it, keeping the
+/// files it already has.
+pub fn init(name: Option<&str>) -> u8 {
+    let here = name.is_none();
+    let (name, root) = match name {
+        Some(name) => (name.to_string(), PathBuf::from(name)),
+        None => {
+            let current = match std::env::current_dir() {
+                Ok(current) => current,
+                Err(error) => {
+                    eprintln!("error: cannot find the current folder: {error}");
+                    return status::INPUT;
+                }
+            };
+            let folder = current
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            (project_name(&folder), PathBuf::from("."))
+        }
+    };
     let valid = name.chars().next().is_some_and(|c| c.is_ascii_lowercase())
         && name
             .chars()
@@ -822,8 +862,12 @@ pub fn init(name: &str) -> u8 {
             "`{name}` is not a valid project name; use lowercase letters, digits, and underscores, starting with a letter"
         ));
     }
-    let root = PathBuf::from(name);
-    if root.exists()
+    if here {
+        if root.join("sayon.toml").exists() {
+            eprintln!("error: this folder is already a project: it has a sayon.toml");
+            return status::USAGE;
+        }
+    } else if root.exists()
         && std::fs::read_dir(&root)
             .map(|mut d| d.next().is_some())
             .unwrap_or(true)
@@ -843,8 +887,14 @@ pub fn init(name: &str) -> u8 {
         (".gitignore", "/build/\n"),
         ("README.md", &readme),
     ];
+    let mut kept = Vec::new();
     for (relative, content) in files {
         let path = root.join(relative);
+        // A folder made a project keeps the files it has.
+        if path.exists() {
+            kept.push(relative);
+            continue;
+        }
         if let Some(parent) = path.parent()
             && let Err(error) = std::fs::create_dir_all(parent)
         {
@@ -856,12 +906,23 @@ pub fn init(name: &str) -> u8 {
             return status::INPUT;
         }
     }
-    println!(
-        "Created {name}/ with sayon.toml, src/main.sayon, src/greetings.sayon, .gitignore, and README.md"
-    );
+    if here {
+        println!(
+            "Made this folder the project `{name}`, with sayon.toml, src/main.sayon, src/greetings.sayon, .gitignore, and README.md"
+        );
+    } else {
+        println!(
+            "Created {name}/ with sayon.toml, src/main.sayon, src/greetings.sayon, .gitignore, and README.md"
+        );
+    }
+    for relative in &kept {
+        println!("Kept the {relative} already here.");
+    }
     println!();
     println!("Next steps:");
-    println!("    cd {name}");
+    if !here {
+        println!("    cd {name}");
+    }
     println!("    sayon run       # prints Hello, world!");
     println!("    sayon test      # runs the test in src/greetings.sayon");
     println!("    sayon build     # builds build/debug/{name}");
