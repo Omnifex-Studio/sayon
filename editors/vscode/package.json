@@ -27,7 +27,7 @@
         "sayon.path": {
           "type": "string",
           "default": "sayon",
-          "description": "The sayon program, which the extension runs as `sayon lsp` for diagnostics, completion, and navigation."
+          "description": "The sayon program, which the extension runs as `sayon lsp` for diagnostics, completion, and navigation. By default, the one on the PATH, or else the one Sayon's setup installed."
         }
       }
     },

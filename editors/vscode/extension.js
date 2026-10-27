@@ -7,6 +7,9 @@
 
 const vscode = require("vscode");
 const { spawn } = require("child_process");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 
 const SELECTOR = { language: "sayon" };
 
@@ -21,6 +24,25 @@ const at = (document, p) => ({
   position: { line: p.line, character: p.character },
 });
 
+/// The sayon program to run: the one the setting `sayon.path` names, or else
+/// the one on the PATH, or else the one Sayon's setup installs, which a
+/// VS Code started before the setup cannot find on its PATH.
+function sayonProgram() {
+  const setting = vscode.workspace.getConfiguration("sayon").get("path");
+  if (setting && setting !== "sayon") return setting;
+  const names = process.platform === "win32" ? ["sayon.exe", "sayon.cmd"] : ["sayon"];
+  const onPath = (process.env.PATH ?? "")
+    .split(path.delimiter)
+    .filter(Boolean)
+    .some((dir) => names.some((name) => fs.existsSync(path.join(dir, name))));
+  if (onPath) return "sayon";
+  const installed =
+    process.platform === "win32"
+      ? [path.join(process.env.LOCALAPPDATA ?? "", "Programs", "Sayon", "bin", "sayon.exe")]
+      : [path.join(os.homedir(), ".local", "share", "sayon", "bin", "sayon"), path.join(os.homedir(), ".local", "bin", "sayon")];
+  return installed.find((candidate) => fs.existsSync(candidate)) ?? "sayon";
+}
+
 class Client {
   constructor(output) {
     this.output = output;
@@ -33,9 +55,10 @@ class Client {
     this.stopped = false;
   }
 
-  /// Starts `sayon lsp`, as the setting `sayon.path` names it.
+  /// Starts `sayon lsp`.
   start() {
-    const program = vscode.workspace.getConfiguration("sayon").get("path") || "sayon";
+    const program = sayonProgram();
+    this.output.appendLine(`Starting ${program} lsp`);
     this.process = spawn(program, ["lsp"], { stdio: ["pipe", "pipe", "pipe"] });
     this.process.on("error", (problem) => {
       const message =
