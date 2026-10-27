@@ -214,6 +214,8 @@ hosts! {
     ZoneCheck = "zone_check"(String) -> Nothing;
     LocalZone = "local_zone"() -> String;
     ZonesVersion = "zones_version"() -> String;
+    Sha256 = "sha256"(Bytes) -> Bytes;
+    RandomBytes = "random_bytes"(Integer) -> Bytes;
 }
 
 impl Host {
@@ -1179,6 +1181,12 @@ pub fn invoke(host: Host, args: &[HostArg]) -> Result<HostValue, HostError> {
         Host::Round => unary(f64::round),
         Host::Trunc => unary(f64::trunc),
         Host::Random => Ok(V::Float(random())),
+        Host::Sha256 => {
+            let mut hasher = crate::sha256::Sha256::default();
+            hasher.update(bytes(args, 0));
+            Ok(V::Bytes(hasher.finish().to_vec()))
+        }
+        Host::RandomBytes => crate::secure_random::bytes(integer(args, 0)).map(V::Bytes),
     }
 }
 

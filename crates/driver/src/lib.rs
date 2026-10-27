@@ -14,7 +14,7 @@ pub mod manifest;
 pub mod packages;
 pub mod registry;
 pub mod semver;
-pub mod sha256;
+pub use sayon_runtime::sha256;
 
 use sayon_check::ModuleSource;
 use sayon_syntax::ast::{self, ExprKind, StmtKind};

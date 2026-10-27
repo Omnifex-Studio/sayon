@@ -1,8 +1,10 @@
 //! The registry commands, `sayon login`, `logout`, `publish`, `search`, and
 //! `info`, and the registry client `sayon install` fetches packages with.
 //! The protocol is described in the registry's repository,
-//! packages.sayon-lang.org; the driver reads its answers
-//! (`sayon_driver::registry`), and `http` carries its requests.
+//! packages.sayon-lang.org: a registry is named by its index's address, and
+//! the index's `config.json` says where its API and archives are. The
+//! driver reads what they hold (`sayon_driver::registry`), and `http`
+//! carries the requests.
 
 use crate::compile::{Options, current_project, print_package_error};
 use crate::credentials::{self, Saved};
@@ -11,8 +13,9 @@ use crate::{status, usage_error};
 use sayon_driver::json::Json;
 use sayon_driver::manifest::Source;
 use sayon_driver::packages::PackageError;
-use sayon_driver::registry::{self, Index, Published};
+use sayon_driver::registry::{self, Config, Index, Published};
 use sayon_driver::semver::Version;
+use std::collections::HashMap;
 use std::io::{BufRead, IsTerminal, Write};
 
 /// The registry a command uses: `--registry`, or the default.
@@ -61,14 +64,53 @@ fn refusal(response: &Response) -> String {
 
 fn reach(registry: &str, error: String) -> String {
     let local = if registry == registry::DEFAULT {
-        "; it is the registry run on this computer, which `node local.mjs --port 4100` in packages.sayon-lang.org starts, unless SAYON_REGISTRY names another"
+        "; it is the registry run on this computer, which `sayon run -- --port 4100` in packages.sayon-lang.org starts, unless SAYON_REGISTRY names another"
     } else {
         ""
     };
     format!("cannot reach the registry {registry}: {error}{local}")
 }
 
-/// Asks the registry, reading a JSON answer.
+/// Reads a registry's `config.json`, from the top of its index.
+fn fetch_config(registry: &str) -> Result<Config, String> {
+    let url = format!("{registry}/config.json");
+    let response = http::request("GET", &url, &[("Accept", "application/json")], &[])
+        .map_err(|e| reach(registry, e))?;
+    if response.status != 200 {
+        return Err(format!(
+            "{registry} is not a registry's index: its config.json answered with status {}",
+            response.status
+        ));
+    }
+    std::str::from_utf8(&response.body)
+        .ok()
+        .and_then(|text| Json::parse(text).ok())
+        .ok_or_else(|| format!("{registry}'s config.json is not JSON"))
+        .and_then(|answer| registry::config(&answer))
+}
+
+/// A package's file of a registry's index, or nothing when it has no such
+/// package.
+fn fetch_entries(registry: &str, package: &str) -> Result<Option<Vec<Published>>, String> {
+    let url = format!("{registry}/{}", registry::index_path(package));
+    let response = http::request("GET", &url, &[], &[]).map_err(|e| reach(registry, e))?;
+    if response.status == 404 {
+        return Ok(None);
+    }
+    if response.status != 200 {
+        return Err(format!(
+            "{registry} did not give the versions of `{package}`: {}",
+            refusal(&response)
+        ));
+    }
+    let file = std::str::from_utf8(&response.body)
+        .map_err(|_| format!("{registry}'s index of `{package}` is not text"))?;
+    registry::entries(file)
+        .map(Some)
+        .map_err(|message| format!("{registry}'s index of `{package}` cannot be read: {message}"))
+}
+
+/// Asks the registry's API, reading a JSON answer.
 fn ask(
     registry: &str,
     method: &str,
@@ -76,6 +118,7 @@ fn ask(
     token: Option<&str>,
     body: &[u8],
 ) -> Result<(u16, Json), String> {
+    let api = fetch_config(registry)?.api;
     let bearer = token.map(|token| format!("Bearer {token}"));
     let mut headers = vec![("Accept", "application/json")];
     if let Some(bearer) = &bearer {
@@ -84,8 +127,8 @@ fn ask(
     if !body.is_empty() {
         headers.push(("Content-Type", "application/octet-stream"));
     }
-    let url = format!("{registry}/api/v{}{path}", registry::PROTOCOL);
-    let response = http::request(method, &url, &headers, body).map_err(|e| reach(registry, e))?;
+    let url = format!("{api}/api/v{}{path}", registry::PROTOCOL);
+    let response = http::request(method, &url, &headers, body).map_err(|e| reach(&api, e))?;
     if !(200..300).contains(&response.status) {
         return Err(refusal(&response));
     }
@@ -318,120 +361,99 @@ pub fn search(registry: &str, query: &str, limit: u32, options: &Options) -> u8 
     status::SUCCESS
 }
 
-/// `sayon info`: what the registry knows of a package.
+/// `sayon info`: what the registry's index holds of a package.
 pub fn info(registry: &str, name: &str, options: &Options) -> u8 {
-    let information = match ask(
-        registry,
-        "GET",
-        &format!("/packages/{}", encode(name)),
-        None,
-        &[],
-    )
-    .and_then(|(_, answer)| registry::information(&answer))
-    {
-        Ok(information) => information,
-        Err(message) => {
+    let help = Some("`sayon search` finds packages by part of their names");
+    let versions = match fetch_entries(registry, name) {
+        Ok(Some(versions)) if !versions.is_empty() => versions,
+        Ok(_) => {
             error(
-                &message,
-                Some("`sayon search` finds packages by part of their names"),
+                &format!("there is no package `{name}` in {registry}"),
+                help,
                 options,
             );
             return status::PROGRAM_FAILED;
         }
+        Err(message) => {
+            error(&message, help, options);
+            return status::PROGRAM_FAILED;
+        }
     };
-    println!("{} {}", information.name, information.latest);
-    if !information.description.is_empty() {
-        println!("{}", information.description);
+    let latest = registry::latest(&versions).expect("a version");
+    println!("{name} {}", latest.version);
+    if !latest.description.is_empty() {
+        println!("{}", latest.description);
     }
     println!();
-    println!("owner: {}", information.owner);
     println!("registry: {registry}");
-    let latest = information
-        .versions
-        .iter()
-        .find(|published| published.version.to_string() == information.latest);
-    if let Some(latest) = latest {
-        if latest.dependencies.is_empty() {
-            println!("dependencies: none");
-        } else {
-            println!("dependencies:");
-            for dependency in &latest.dependencies {
-                if let Source::Registry {
-                    package,
-                    requirement,
-                    registry: other,
-                } = &dependency.source
-                {
-                    let from = other
-                        .as_deref()
-                        .map(|r| format!(" from {r}"))
-                        .unwrap_or_default();
-                    let renamed = if *package == dependency.alias {
-                        String::new()
-                    } else {
-                        format!(" ({package})")
-                    };
-                    println!("    {}{renamed} \"{requirement}\"{from}", dependency.alias);
-                }
+    if latest.dependencies.is_empty() {
+        println!("dependencies: none");
+    } else {
+        println!("dependencies:");
+        for dependency in &latest.dependencies {
+            if let Source::Registry {
+                package,
+                requirement,
+                registry: other,
+            } = &dependency.source
+            {
+                let from = other
+                    .as_deref()
+                    .map(|r| format!(" from {r}"))
+                    .unwrap_or_default();
+                let renamed = if *package == dependency.alias {
+                    String::new()
+                } else {
+                    format!(" ({package})")
+                };
+                println!("    {}{renamed} \"{requirement}\"{from}", dependency.alias);
             }
         }
     }
     println!("versions:");
-    for published in information.versions.iter().rev() {
+    for published in versions.iter().rev() {
         let day = published
             .published
             .get(..10)
             .unwrap_or(&published.published);
         println!(
-            "    {:<12} {day}  {}  {}",
+            "    {:<12} {day}  {}",
             published.version.to_string(),
-            size(published.size as usize),
             published.digest
         );
     }
     println!();
-    println!(
-        "in sayon.toml: {} = \"{}\"",
-        information.name, information.latest
-    );
+    println!("in sayon.toml: {name} = \"{}\"", latest.version);
     status::SUCCESS
 }
 
-/// The registries `sayon install` fetches packages from.
-pub struct Client;
+/// The registries `sayon install` fetches packages from, with each one's
+/// `config.json` once it has been read.
+#[derive(Default)]
+pub struct Client {
+    configs: HashMap<String, Config>,
+}
+
+impl Client {
+    fn config(&mut self, registry: &str) -> Result<Config, PackageError> {
+        if let Some(config) = self.configs.get(registry) {
+            return Ok(config.clone());
+        }
+        let config = fetch_config(registry).map_err(PackageError::new)?;
+        self.configs.insert(registry.to_string(), config.clone());
+        Ok(config)
+    }
+}
 
 impl Index for Client {
     fn versions(&mut self, registry: &str, package: &str) -> Result<Vec<Published>, PackageError> {
-        let url = format!(
-            "{registry}/api/v{}/packages/{}",
-            registry::PROTOCOL,
-            encode(package)
-        );
-        let response = http::request("GET", &url, &[("Accept", "application/json")], &[])
-            .map_err(|e| PackageError::new(reach(registry, e)))?;
-        if response.status == 404 {
-            return Err(PackageError::new(format!(
-                "there is no package `{package}` in {registry}"
-            ))
-            .help("check its name in sayon.toml; `sayon search` finds packages"));
+        match fetch_entries(registry, package).map_err(PackageError::new)? {
+            Some(versions) if !versions.is_empty() => Ok(versions),
+            _ => Err(
+                PackageError::new(format!("there is no package `{package}` in {registry}"))
+                    .help("check its name in sayon.toml; `sayon search` finds packages"),
+            ),
         }
-        if response.status != 200 {
-            return Err(PackageError::new(format!(
-                "{registry} did not tell the versions of `{package}`: {}",
-                refusal(&response)
-            )));
-        }
-        std::str::from_utf8(&response.body)
-            .ok()
-            .and_then(|text| Json::parse(text).ok())
-            .ok_or_else(|| "the answer is not JSON".to_string())
-            .and_then(|answer| registry::information(&answer))
-            .map(|information| information.versions)
-            .map_err(|message| {
-                PackageError::new(format!(
-                    "{registry} gave an answer about `{package}` that Sayon cannot read: {message}"
-                ))
-            })
     }
 
     fn archive(
@@ -440,12 +462,7 @@ impl Index for Client {
         package: &str,
         version: &Version,
     ) -> Result<Vec<u8>, PackageError> {
-        let url = format!(
-            "{registry}/api/v{}/packages/{}/{}/archive",
-            registry::PROTOCOL,
-            encode(package),
-            encode(&version.to_string())
-        );
+        let url = self.config(registry)?.archive(&encode(package), version);
         let response = http::request("GET", &url, &[], &[])
             .map_err(|e| PackageError::new(reach(registry, e)))?;
         if response.status != 200 {

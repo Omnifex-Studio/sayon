@@ -43,6 +43,7 @@ version = "0.0.1"
 dependencies = [
  "sayon-check",
  "sayon-ir",
+ "sayon-runtime",
  "sayon-syntax",
  "sayon-target",
 ]

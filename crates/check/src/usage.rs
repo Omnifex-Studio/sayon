@@ -42,7 +42,7 @@ pub fn host_capability(host: Host) -> Option<Capability> {
         | Host::IsLink => Files,
         Host::Arguments | Host::Environment | Host::CurrentDirectory => Environment,
         Host::Monotonic | Host::UnixTime => Clock,
-        Host::Random => Random,
+        Host::Random | Host::RandomBytes => Random,
         Host::Start
         | Host::ProcessInput
         | Host::ProcessOutput

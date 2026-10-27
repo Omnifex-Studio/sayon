@@ -92,7 +92,7 @@ pub fn install(options: &Options, locked: bool, offline: bool) -> u8 {
     } else {
         sayon_driver::packages::Fetch::Allowed
     };
-    let mut registries = crate::registry::Client;
+    let mut registries = crate::registry::Client::default();
     match sayon_driver::packages::install(
         &project.root,
         &project.manifest,

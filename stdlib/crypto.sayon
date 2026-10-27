@@ -1,0 +1,40 @@
+# Hashing and secure random bytes: SHA-256 digests, and bytes from the
+# system's secure source, fit for keys and tokens, unlike `math.random`.
+#
+#     crypto = import("standard/crypto.sayon")
+#     strings = import("standard/strings.sayon")
+#     print(crypto.hex(crypto.sha256(strings.bytes("abc"))))
+#     token = crypto.hex(crypto.random_bytes(32))
+
+strings = import("standard/strings.sayon")
+
+constant DIGITS = "0123456789abcdef"
+
+# The SHA-256 digest of bytes (FIPS 180-4): 32 bytes.
+function sha256(data: Array<byte>) -> Array<byte>
+    return host_sha256(data)
+
+# `count` bytes from the system's secure random source, 1 MiB at most at a
+# time; a negative or larger count raises `ValueError`.
+function random_bytes(count: integer) -> Array<byte>
+    return host_random_bytes(count)
+
+# Bytes as lowercase hexadecimal, two digits for each.
+function hex(data: Array<byte>) -> string
+    digits: Array<string> = []
+    for value in data
+        number = integer(value)
+        push(digits, DIGITS[number / 16])
+        push(digits, DIGITS[number % 16])
+    return strings.join(digits, "")
+
+# Whether two byte arrays are equal, looking at every byte rather than
+# stopping at the first that differs, for comparing secrets such as tokens.
+function same(first: Array<byte>, second: Array<byte>) -> boolean
+    if length(first) != length(second)
+        return false
+    differences = 0
+    for index in range(length(first))
+        if first[index] != second[index]
+            differences += 1
+    return differences == 0

@@ -34,6 +34,8 @@ pub mod network;
 pub mod parallel;
 pub mod png;
 pub mod processes;
+pub mod secure_random;
+pub mod sha256;
 pub mod streams;
 pub mod tasks;
 pub mod text;

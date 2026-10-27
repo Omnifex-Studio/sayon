@@ -11,6 +11,7 @@ publish.workspace = true
 sayon-target.workspace = true
 sayon-syntax.workspace = true
 sayon-check.workspace = true
+sayon-runtime.workspace = true
 sayon-ir.workspace = true
 
 [lints]

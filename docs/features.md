@@ -109,7 +109,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | Dependencies from local folders and pinned Git commits, `sayon install` (`--locked`, `--offline`), `sayon.lock` with source digests | experimental | M2 |
 | Dependencies by version from a registry: ranges (`^`, `~`, `=`, comparisons, `*`), one version of each package in a graph, the lock's versions kept while the ranges accept them, digests checked on arrival and from the lock | experimental | M5 |
 | Registry commands: `publish` (`--dry-run`), `search`, `info`, `login`, `logout`; tokens in the Windows Credential Manager or a private file; `--registry` and `SAYON_REGISTRY` | experimental | M5 |
-| The registry service ([packages.sayon-lang.org](https://github.com/sayon-lang/packages.sayon-lang.org)): protocol 1, a Cloudflare Worker with D1 and KV, and the same code run locally in Node, the default registry at `http://127.0.0.1:4100` until Sayon's is operated | experimental | M5 |
+| The registry ([packages.sayon-lang.org](https://github.com/sayon-lang/packages.sayon-lang.org)), written in Sayon: its pages, its API, and its index, served by one program, the default registry at `http://127.0.0.1:4100/index` until Sayon's is operated; the index ([packages.sayon-lang.org-index](https://github.com/sayon-lang/packages.sayon-lang.org-index)) holds a line of JSON for each version, which `sayon install` reads | experimental | M5 |
 | Registry accounts made by people, yanking versions, owners besides the first publisher, `sayon update` | planned | M5, M6 |
 | Language server | planned | before M6 |
 | Debugger, REPL, watch mode | planned | M8 |
@@ -124,6 +124,7 @@ Nothing is beta or stable yet. Milestones: M1 first usable release, M2 expressiv
 | `standard/filesystem`: listing, metadata, create, remove, rename, copy, paths | experimental | M1 |
 | `standard/strings`: split, join, trim, case, replace, search, slicing, character codes | experimental | M1 |
 | `standard/math`: functions, constants, `random` | experimental | M1 |
+| `standard/crypto`: SHA-256, and random bytes from the system's secure source (`BCryptGenRandom`, `/dev/urandom`, WASI's `random_get`, the browser's `crypto.getRandomValues`) | experimental | M5 |
 | `standard/io` files: `io.open`, buffered reading and writing, `file.lines()` with a line limit, bytes, `seek`, `position`, checked `close`, `io.copy` | experimental | M2 |
 | `os.exit` (in order: `finally` blocks and cleanup run), `filesystem.walk`, `filesystem.is_link` | experimental | M2 |
 | Standard input as a file (`io.input`), running programs and capturing their output (`os.run`) | experimental | M2 |

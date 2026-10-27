@@ -1,9 +1,8 @@
 //! The registry end to end: `sayon login`, `publish`, `search`, `info`,
-//! `logout`, and `install` of versions, against the registry's own code run
-//! locally: `local.mjs` of its repository, checked out beside this one
-//! (`../packages.sayon-lang.org`, or in `SAYON_REPOSITORIES`). Without it,
-//! or without Node 22.5 or later, which has `node:sqlite`, the tests are
-//! skipped.
+//! `logout`, and `install` of versions, against the registry itself, a
+//! Sayon program, run by the `sayon` built here from its repository checked
+//! out beside this one (`../packages.sayon-lang.org`, or in
+//! `SAYON_REPOSITORIES`). Without it, the tests are skipped.
 
 use sayon_driver::json::Json;
 use std::io::{BufRead, BufReader, Write};
@@ -12,6 +11,7 @@ use std::process::{Child, Command, Stdio};
 
 struct Registry {
     child: Child,
+    /// The address of its index, which names the registry.
     url: String,
     tokens: Json,
 }
@@ -28,42 +28,36 @@ fn registry(base: &Path) -> Option<Registry> {
     let repositories = std::env::var_os("SAYON_REPOSITORIES")
         .map(PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.."));
-    let script = repositories.join("packages.sayon-lang.org/local.mjs");
-    if !script.is_file() {
+    let repository = repositories.join("packages.sayon-lang.org");
+    if !repository.join("src/main.sayon").is_file() {
         eprintln!(
             "SKIPPED: the registry's tests (no packages.sayon-lang.org in {})",
             repositories.display()
         );
         return None;
     }
-    let usable = Command::new("node")
-        .args(["-e", "require('node:sqlite')"])
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    if !usable {
-        eprintln!("Node with node:sqlite is not available; skipping");
-        return None;
-    }
     let log = std::fs::File::create(base.join("registry.log")).unwrap();
-    let mut child = Command::new("node")
-        .arg("--no-warnings")
-        .arg(script)
-        .arg("--data")
+    let mut child = Command::new(env!("CARGO_BIN_EXE_sayon"))
+        .args(["run", "--", "--port", "0", "--data"])
         .arg(base.join("registry"))
         .args(["--account", "alice", "--account", "bob"])
+        .current_dir(&repository)
+        .env("NO_COLOR", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(log)
         .spawn()
-        .expect("node runs");
+        .expect("sayon runs the registry");
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut line)
         .unwrap();
-    let started = Json::parse(line.trim()).expect("the registry's first line");
+    let started = Json::parse(line.trim()).unwrap_or_else(|_| {
+        let log = std::fs::read_to_string(base.join("registry.log")).unwrap_or_default();
+        panic!("the registry did not start: {line}{log}")
+    });
     Some(Registry {
-        url: started.get("url").as_str().unwrap().to_string(),
+        url: started.get("index").as_str().unwrap().to_string(),
         tokens: started.get("accounts").clone(),
         child,
     })

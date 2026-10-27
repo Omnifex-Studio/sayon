@@ -40,7 +40,7 @@ Sayon is in early development and not ready for real programs. What works today:
 - Borrowed views of arrays and strings, shared values with weak handles and cells, and finally functions that release what a structure owns when it is destroyed
 - Tasks that take turns on a thread, channels and `select`, timers, and tasks on threads of their own that share data through channels and mutexes
 - TCP and UDP sockets, TLS from the system, and an HTTP client for `http://` and `https://`, other programs started with pipes to their streams, and C functions: calls, C structures by value, and Sayon functions that C calls back
-- Standard library modules for files, directories, streams and text encodings, JSON (typed values and streams), collections, time with time zones, processes, the network, threads, memory, text, and math, and graphics: drawing on canvases, smooth or not, the same pixels everywhere, text in TrueType fonts and the system's, PNG images, shown in windows on Windows and Linux, in web pages, and in Android apps
+- Standard library modules for files, directories, streams and text encodings, JSON (typed values and streams), collections, time with time zones, processes, the network, threads, memory, text, math, and hashing and secure random bytes, and graphics: drawing on canvases, smooth or not, the same pixels everywhere, text in TrueType fonts and the system's, PNG images, shown in windows on Windows and Linux, in web pages, and in Android apps
 - `test` blocks and the `sayon test` runner, and the `sayon fmt` formatter
 - A language server, `sayon lsp`, and a VS Code extension that starts it: diagnostics as you type, hover with signatures and doc comments, going to definitions, references, renaming, completion, and formatting
 - Projects with a `sayon.toml` manifest, and the `run`, `build`, `check`, `test`, `fmt`, `init`, `clean`, `doctor`, `lint`, `lsp`, and `explain` commands
@@ -128,7 +128,8 @@ Sayon's other parts have repositories of their own, beside this one:
 | Repository | What it holds |
 | --- | --- |
 | [docs.sayon-lang.org](https://github.com/sayon-lang/docs.sayon-lang.org) | The guides: installing, and the language reference |
-| [packages.sayon-lang.org](https://github.com/sayon-lang/packages.sayon-lang.org) | The package registry and its protocol |
+| [packages.sayon-lang.org](https://github.com/sayon-lang/packages.sayon-lang.org) | The package registry, written in Sayon: its website, its API, and its protocol |
+| [packages.sayon-lang.org-index](https://github.com/sayon-lang/packages.sayon-lang.org-index) | The registry's index: every published version, which `sayon install` reads |
 | [sayon-vscode](https://github.com/sayon-lang/sayon-vscode) | The VS Code extension: highlighting, the `.sayon` file icon, and the language server's client |
 | [www.sayon-lang.org](https://github.com/sayon-lang/www.sayon-lang.org) | The website |
 
